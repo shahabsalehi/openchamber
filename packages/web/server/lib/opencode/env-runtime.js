@@ -916,6 +916,10 @@ export const createOpenCodeEnvRuntime = (deps) => {
     return error;
   };
 
+  const createConfiguredWslOpencodeError = (raw) => new Error(
+    `Configured settings.opencodeBinary uses WSL but OpenChamber could not resolve a WSL OpenCode command: ${raw}. Ensure WSL is available and opencode is installed in the configured distro.`
+  );
+
   const normalizeOpencodeBinarySetting = (raw) => {
     if (typeof raw !== 'string') {
       return null;
@@ -974,6 +978,9 @@ export const createOpenCodeEnvRuntime = (deps) => {
         if (applied) {
           return applied;
         }
+        if (strict) {
+          throw createConfiguredWslOpencodeError(raw);
+        }
       }
 
       if (process.platform === 'win32' && (isWslExecutableValue(raw) || isWslExecutableValue(normalized || ''))) {
@@ -986,6 +993,9 @@ export const createOpenCodeEnvRuntime = (deps) => {
         });
         if (applied) {
           return applied;
+        }
+        if (strict) {
+          throw createConfiguredWslOpencodeError(raw);
         }
       }
 

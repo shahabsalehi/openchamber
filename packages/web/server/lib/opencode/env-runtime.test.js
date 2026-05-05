@@ -5,8 +5,30 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createOpenCodeEnvRuntime } from './env-runtime.js';
 
 const originalOpencodeBinary = process.env.OPENCODE_BINARY;
+const originalPlatform = process.platform;
+const tempDirs = [];
+
+const createTempDir = (prefix) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+};
+
+const setPlatform = (platform) => {
+  Object.defineProperty(process, 'platform', {
+    value: platform,
+  });
+};
 
 afterEach(() => {
+  Object.defineProperty(process, 'platform', {
+    value: originalPlatform,
+  });
+
+  for (const dir of tempDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
   if (typeof originalOpencodeBinary === 'string') {
     process.env.OPENCODE_BINARY = originalOpencodeBinary;
     return;
@@ -49,7 +71,7 @@ describe('OpenCode env runtime', () => {
   });
 
   it('throws a specific error for a configured directory without an executable CLI in strict mode', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-opencode-dir-'));
+    const dir = createTempDir('openchamber-opencode-dir-');
     const { runtime } = createRuntime({ opencodeBinary: dir });
 
     await expect(runtime.applyOpencodeBinaryFromSettings({ strict: true })).rejects.toMatchObject({
@@ -59,7 +81,7 @@ describe('OpenCode env runtime', () => {
   });
 
   it('applies a valid configured executable OpenCode binary', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-opencode-bin-'));
+    const dir = createTempDir('openchamber-opencode-bin-');
     const binary = path.join(dir, 'opencode');
     fs.writeFileSync(binary, '#!/bin/sh\nexit 0\n');
     fs.chmodSync(binary, 0o755);
@@ -77,6 +99,16 @@ describe('OpenCode env runtime', () => {
     await expect(runtime.applyOpencodeBinaryFromSettings({ strict: true })).rejects.toMatchObject({
       code: 'OPENCODE_BINARY_INVALID',
       message: expect.stringContaining('macOS desktop app bundle'),
+    });
+  });
+
+  it('does not classify failed WSL resolution as an invalid configured binary in strict mode', async () => {
+    setPlatform('win32');
+    const { runtime } = createRuntime({ opencodeBinary: 'wsl:/usr/local/bin/opencode' });
+
+    await expect(runtime.applyOpencodeBinaryFromSettings({ strict: true })).rejects.toThrow('uses WSL');
+    await runtime.applyOpencodeBinaryFromSettings({ strict: true }).catch((error) => {
+      expect(error.code).toBeUndefined();
     });
   });
 });
