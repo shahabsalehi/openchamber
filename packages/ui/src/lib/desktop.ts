@@ -200,6 +200,14 @@ export const isTauriShell = (): boolean => {
 
 export const isElectronShell = (): boolean => getElectronRuntime()?.runtime === 'electron';
 
+export const hasDesktopInvoke = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__;
+  return typeof tauri?.core?.invoke === 'function';
+};
+
+export const canUseElectronDesktopIPC = (): boolean => isElectronShell() && hasDesktopInvoke();
+
 const normalizeOrigin = (raw: string): string | null => {
   const trimmed = raw.trim();
   if (!trimmed) return null;
