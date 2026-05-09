@@ -39,6 +39,8 @@ export const dict: Record<I18nKey, string> = {
   "mobile.sessions.unassignedProject": "Інші сесії",
   "mobile.sessions.newSessionAria": "Почати нову сесію в цьому проєкті",
   "mobile.sessions.untitled": "Сесія без назви",
+  "mobile.sessions.project.sessionsSingle": "1 сесія",
+  "mobile.sessions.project.sessionsPlural": "Сесій: {count}",
   "mobile.files.refreshAria": "Оновити файли",
   "mobile.files.rootDirectory": "Файли проєкту",
   "mobile.files.search.placeholder": "Шукати файли",

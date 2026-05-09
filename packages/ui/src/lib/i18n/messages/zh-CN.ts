@@ -39,6 +39,8 @@ export const dict: Record<I18nKey, string> = {
   'mobile.sessions.unassignedProject': '其他会话',
   'mobile.sessions.newSessionAria': '在此项目中开始新会话',
   'mobile.sessions.untitled': '未命名会话',
+  'mobile.sessions.project.sessionsSingle': '1 个会话',
+  'mobile.sessions.project.sessionsPlural': '{count} 个会话',
   'mobile.files.refreshAria': '刷新文件',
   'mobile.files.rootDirectory': '项目文件',
   'mobile.files.search.placeholder': '搜索文件',

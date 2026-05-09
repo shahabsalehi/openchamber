@@ -39,6 +39,8 @@ export const dict: Record<I18nKey, string> = {
   'mobile.sessions.unassignedProject': '기타 세션',
   'mobile.sessions.newSessionAria': '이 프로젝트에서 새 세션 시작',
   'mobile.sessions.untitled': '제목 없는 세션',
+  'mobile.sessions.project.sessionsSingle': '세션 1개',
+  'mobile.sessions.project.sessionsPlural': '세션 {count}개',
   'mobile.files.refreshAria': '파일 새로고침',
   'mobile.files.rootDirectory': '프로젝트 파일',
   'mobile.files.search.placeholder': '파일 검색',

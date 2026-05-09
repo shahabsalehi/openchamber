@@ -38,6 +38,8 @@ export const dict = {
   'mobile.sessions.unassignedProject': 'Other sessions',
   'mobile.sessions.newSessionAria': 'Start a new session in this project',
   'mobile.sessions.untitled': 'Untitled session',
+  'mobile.sessions.project.sessionsSingle': '1 session',
+  'mobile.sessions.project.sessionsPlural': '{count} sessions',
   'mobile.files.refreshAria': 'Refresh files',
   'mobile.files.rootDirectory': 'Project files',
   'mobile.files.search.placeholder': 'Search files',
