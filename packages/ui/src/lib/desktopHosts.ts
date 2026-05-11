@@ -34,7 +34,7 @@ export type DesktopHostsConfigInput = {
 };
 
 export type HostProbeResult = {
-  status: 'ok' | 'auth' | 'incompatible' | 'wrong-service' | 'unreachable';
+  status: 'ok' | 'auth' | 'update-recommended' | 'incompatible' | 'wrong-service' | 'unreachable';
   latencyMs: number;
 };
 
@@ -203,7 +203,7 @@ export const desktopHostProbe = async (url: string, options?: { clientToken?: st
 
   const rawStatus = raw.status;
   const status: HostProbeResult['status'] =
-    rawStatus === 'ok' || rawStatus === 'auth' || rawStatus === 'incompatible' || rawStatus === 'wrong-service' || rawStatus === 'unreachable'
+    rawStatus === 'ok' || rawStatus === 'auth' || rawStatus === 'update-recommended' || rawStatus === 'incompatible' || rawStatus === 'wrong-service' || rawStatus === 'unreachable'
       ? rawStatus
       : 'unreachable';
 

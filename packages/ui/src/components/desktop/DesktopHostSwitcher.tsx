@@ -90,6 +90,7 @@ const getLocalOrigin = (): string => {
 const statusDotClass = (status: HostDisplayStatus): string => {
   if (status === 'ok') return 'bg-status-success';
   if (status === 'auth') return 'bg-status-warning';
+  if (status === 'update-recommended') return 'bg-status-warning';
   if (status === 'incompatible') return 'bg-status-error';
   if (status === 'wrong-service') return 'bg-status-error';
   if (status === 'unreachable') return 'bg-status-error';
@@ -109,6 +110,7 @@ const statusLabelKey = (status: HostDisplayStatus):
   | 'desktopHostSwitcher.status.connected'
   | 'desktopHostSwitcher.status.authRequired'
   | 'desktopHostSwitcher.status.checking'
+  | 'desktopHostSwitcher.status.updateRecommended'
   | 'desktopHostSwitcher.status.incompatible'
   | 'desktopHostSwitcher.status.wrongService'
   | 'desktopHostSwitcher.status.unreachable'
@@ -116,6 +118,7 @@ const statusLabelKey = (status: HostDisplayStatus):
   if (status === 'ok') return 'desktopHostSwitcher.status.connected';
   if (status === 'auth') return 'desktopHostSwitcher.status.authRequired';
   if (status === 'checking') return 'desktopHostSwitcher.status.checking';
+  if (status === 'update-recommended') return 'desktopHostSwitcher.status.updateRecommended';
   if (status === 'incompatible') return 'desktopHostSwitcher.status.incompatible';
   if (status === 'wrong-service') return 'desktopHostSwitcher.status.wrongService';
   if (status === 'unreachable') return 'desktopHostSwitcher.status.unreachable';
@@ -126,6 +129,7 @@ const statusIcon = (status: HostDisplayStatus) => {
   if (status === 'checking') return <RiLoader4Line className="h-4 w-4 animate-spin" />;
   if (status === 'ok') return <RiCheckLine className="h-4 w-4" />;
   if (status === 'auth') return <RiShieldKeyholeLine className="h-4 w-4" />;
+  if (status === 'update-recommended') return <RiShieldKeyholeLine className="h-4 w-4" />;
   if (status === 'incompatible') return <RiCloudOffLine className="h-4 w-4" />;
   if (status === 'wrong-service') return <RiCloudOffLine className="h-4 w-4" />;
   if (status === 'unreachable') return <RiCloudOffLine className="h-4 w-4" />;

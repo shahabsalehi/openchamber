@@ -512,13 +512,21 @@ const buildVersionUrl = (url) => {
   }
 };
 
-const isCompatibleVersionPayload = (payload) => {
+const classifyVersionPayload = (payload) => {
   const compatibility = payload?.compatibility;
-  if (!compatibility || typeof compatibility !== 'object') return false;
-  return compatibility.apiVersion === 1
-    && compatibility.minClientApiVersion <= 1
-    && Array.isArray(compatibility.capabilities)
-    && compatibility.capabilities.includes('api.runtime-url.v1');
+  if (!payload || payload.status !== 'ok' || !compatibility || typeof compatibility !== 'object') {
+    return 'wrong-service';
+  }
+
+  if (!Array.isArray(compatibility.capabilities) || !compatibility.capabilities.includes('api.runtime-url.v1')) {
+    return 'incompatible';
+  }
+
+  if (compatibility.apiVersion !== 1 || compatibility.minClientApiVersion > 1) {
+    return 'update-recommended';
+  }
+
+  return 'ok';
 };
 
 const probeHostWithTimeout = async (url, timeoutMs, clientToken = '') => {
@@ -544,7 +552,7 @@ const probeHostWithTimeout = async (url, timeoutMs, clientToken = '') => {
     }
     const payload = await response.json().catch(() => null);
     return {
-      status: isCompatibleVersionPayload(payload) ? 'ok' : 'incompatible',
+      status: classifyVersionPayload(payload),
       latencyMs: Date.now() - started,
     };
   } catch {

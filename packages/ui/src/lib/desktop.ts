@@ -450,7 +450,7 @@ export const sendAssistantCompletionNotification = async (
 };
 
 export const checkForDesktopUpdates = async (): Promise<UpdateInfo | null> => {
-  if (!isTauriShell() || !isDesktopLocalOriginActive()) {
+  if (!isTauriShell()) {
     return null;
   }
 
@@ -467,7 +467,7 @@ export const checkForDesktopUpdates = async (): Promise<UpdateInfo | null> => {
 export const downloadDesktopUpdate = async (
   onProgress?: (progress: UpdateProgress) => void
 ): Promise<boolean> => {
-  if (!isTauriShell() || !isDesktopLocalOriginActive()) {
+  if (!isTauriShell()) {
     return false;
   }
 
@@ -527,7 +527,7 @@ export const downloadDesktopUpdate = async (
 };
 
 export const restartToApplyUpdate = async (): Promise<boolean> => {
-  if (!isTauriShell() || !isDesktopLocalOriginActive()) {
+  if (!isTauriShell()) {
     return false;
   }
 
