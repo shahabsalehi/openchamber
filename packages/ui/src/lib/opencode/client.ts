@@ -16,7 +16,7 @@ import type { PermissionRequest } from "@/types/permission";
 import type { QuestionRequest } from "@/types/question";
 import { waitForWorktreeBootstrap } from "@/lib/worktrees/worktreeBootstrap";
 import { getRuntimeUrlResolver } from "@/lib/runtime-url";
-import { runtimeFetch } from "@/lib/runtime-fetch";
+import { buildRuntimeFetchUrl, runtimeFetch } from "@/lib/runtime-fetch";
 import { buildRuntimeAuthHeaders, getRuntimeBearerTokenSync } from "@/lib/runtime-auth";
 import {
   assertProviderCircuitClosed,
@@ -130,9 +130,16 @@ const resolveRuntimeBaseUrl = (): string | null => {
 const runtimeSdkFetch: typeof fetch = async (input, init) => {
   const headers = await buildRuntimeAuthHeaders(init?.headers ?? (input instanceof Request ? input.headers : undefined));
   if (input instanceof Request) {
-    return fetch(new Request(input, { ...init, headers }));
+    const target = buildRuntimeFetchUrl(input.url);
+    const request = target === input.url ? input : new Request(target, input);
+    return fetch(new Request(request, { ...init, headers }));
   }
-  return fetch(input, { ...init, headers });
+  const target = typeof input === "string"
+    ? buildRuntimeFetchUrl(input)
+    : input instanceof URL
+      ? buildRuntimeFetchUrl(input.toString())
+      : input;
+  return fetch(target, { ...init, headers });
 };
 
 const createRuntimeOpencodeClient = (config: { baseUrl: string; directory?: string }): OpencodeClient => {
@@ -949,15 +956,38 @@ class OpencodeService {
     return Boolean(response.data);
   }
 
-  async revertSession(sessionId: string, messageId: string, partId?: string): Promise<Session> {
-    const response = await this.client.session.revert({
-      sessionID: sessionId,
-      ...(this.currentDirectory ? { directory: this.currentDirectory } : {}),
-      messageID: messageId,
-      partID: partId
+  async revertSession(sessionId: string, messageId: string, partId?: string, directory?: string | null): Promise<Session> {
+    const base = this.baseUrl.replace(/\/+$/, '');
+    const url = new URL(`${base}/session/${encodeURIComponent(sessionId)}/revert`);
+    const requestDirectory = this.normalizeCandidatePath(directory) ?? this.currentDirectory;
+    if (requestDirectory) {
+      url.searchParams.set('directory', requestDirectory);
+    }
+
+    const body: { messageID: string; partID?: string } = { messageID: messageId };
+    if (partId) body.partID = partId;
+
+    const response = await runtimeSdkFetch(url.toString(), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify(body),
     });
-    if (!response.data) throw new Error('Failed to revert session');
-    return response.data;
+
+    if (!response.ok) {
+      let detail = '';
+      try {
+        detail = await response.text();
+      } catch {
+        // ignore
+      }
+      const suffix = detail && detail.trim().length > 0 ? `: ${detail.trim()}` : '';
+      throw new Error(`session.revert failed (${response.status})${suffix}`);
+    }
+
+    return await response.json() as Session;
   }
 
   async unrevertSession(sessionId: string): Promise<Session> {

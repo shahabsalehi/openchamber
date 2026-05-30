@@ -68,8 +68,9 @@ export type { AttachedFile }
 // Send routing — shell mode, slash commands, or normal prompt
 // ---------------------------------------------------------------------------
 
-function routeMessage(params: {
+export function routeMessage(params: {
   sessionId: string
+  directory?: string | null
   content: string
   providerID: string
   modelID: string
@@ -80,74 +81,82 @@ function routeMessage(params: {
   files?: Array<{ type: "file"; mime: string; url: string; filename: string }>
   additionalParts?: Array<{ text: string; synthetic?: boolean; files?: Array<{ type: "file"; mime: string; url: string; filename: string }> }>
 }): Promise<void> {
-  if (params.inputMode === "shell") {
-    const sdk = opencodeClient.getSdkClient()
-    const dir = opencodeClient.getDirectory() || undefined
-    return sdk.session.shell({
-      sessionID: params.sessionId,
-      directory: dir,
-      agent: params.agent,
-      model: { providerID: params.providerID, modelID: params.modelID },
-      command: params.content,
-    }).then(() => {})
-  }
-
-  // Slash commands — fire and forget, SSE delivers messages and status
-  if (params.content.startsWith("/")) {
-    const [head, ...tail] = params.content.split(" ")
-    const cmdName = head.slice(1)
-
-    const dirState = getDirectoryState()
-    const syncCommands = dirState?.command ?? []
-    const storeCommands = useCommandsStore.getState().commands
-
-    const isCommand = syncCommands.find((c) => c.name === cmdName)
-      || storeCommands.find((c) => c.name === cmdName)
-
-    if (isCommand) {
-      return optimisticSend({
-        sessionId: params.sessionId,
-        content: params.content,
-        providerID: params.providerID,
-        modelID: params.modelID,
+  const run = (): Promise<void> => {
+    if (params.inputMode === "shell") {
+      const sdk = opencodeClient.getSdkClient()
+      const dir = opencodeClient.getDirectory() || undefined
+      return sdk.session.shell({
+        sessionID: params.sessionId,
+        directory: dir,
         agent: params.agent,
-        files: params.files,
-        send: (messageID) => opencodeClient.sendCommand({
-          id: params.sessionId,
+        model: { providerID: params.providerID, modelID: params.modelID },
+        command: params.content,
+      }).then(() => {})
+    }
+
+    // Slash commands — fire and forget, SSE delivers messages and status
+    if (params.content.startsWith("/")) {
+      const [head, ...tail] = params.content.split(" ")
+      const cmdName = head.slice(1)
+
+      const dirState = getDirectoryState(params.directory ?? undefined)
+      const syncCommands = dirState?.command ?? []
+      const storeCommands = useCommandsStore.getState().commands
+
+      const isCommand = syncCommands.find((c) => c.name === cmdName)
+        || storeCommands.find((c) => c.name === cmdName)
+
+      if (isCommand) {
+        return optimisticSend({
+          sessionId: params.sessionId,
+          content: params.content,
           providerID: params.providerID,
           modelID: params.modelID,
-          command: cmdName,
-          arguments: tail.join(" "),
           agent: params.agent,
-          variant: params.variant,
           files: params.files,
-          messageId: messageID,
-        }).then(() => {}),
-      })
+          send: (messageID) => opencodeClient.sendCommand({
+            id: params.sessionId,
+            providerID: params.providerID,
+            modelID: params.modelID,
+            command: cmdName,
+            arguments: tail.join(" "),
+            agent: params.agent,
+            variant: params.variant,
+            files: params.files,
+            messageId: messageID,
+          }).then(() => {}),
+        })
+      }
     }
-  }
 
-  // Normal prompt — optimistic insert so message appears instantly
-  return optimisticSend({
-    sessionId: params.sessionId,
-    content: params.content,
-    providerID: params.providerID,
-    modelID: params.modelID,
-    agent: params.agent,
-    files: params.files,
-    send: (messageID) => opencodeClient.sendMessage({
-      id: params.sessionId,
+    // Normal prompt — optimistic insert so message appears instantly
+    return optimisticSend({
+      sessionId: params.sessionId,
+      content: params.content,
       providerID: params.providerID,
       modelID: params.modelID,
-      text: params.content,
       agent: params.agent,
-      agentMentions: params.agentMentionName ? [{ name: params.agentMentionName }] : undefined,
-      variant: params.variant,
       files: params.files,
-      additionalParts: params.additionalParts,
-      messageId: messageID,
-    }).then(() => {}),
-  })
+      send: (messageID) => opencodeClient.sendMessage({
+        id: params.sessionId,
+        providerID: params.providerID,
+        modelID: params.modelID,
+        text: params.content,
+        agent: params.agent,
+        agentMentions: params.agentMentionName ? [{ name: params.agentMentionName }] : undefined,
+        variant: params.variant,
+        files: params.files,
+        additionalParts: params.additionalParts,
+        messageId: messageID,
+      }).then(() => {}),
+    })
+  }
+
+  if (params.directory !== undefined) {
+    return opencodeClient.withDirectory(params.directory, run)
+  }
+
+  return run()
 }
 
 function notifyMessageSent(sessionId: string): void {
@@ -877,6 +886,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
       await routeMessage({
         sessionId: created.id,
+        directory: createdDirectory,
         content,
         providerID,
         modelID,
@@ -953,6 +963,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
     await routeMessage({
       sessionId: currentSessionId || "",
+      directory: currentSessionDirectory,
       content,
       providerID,
       modelID,

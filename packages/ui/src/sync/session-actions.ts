@@ -63,6 +63,14 @@ function assertSdkSuccess<T>(result: SdkResult<T>, operation: string): T | undef
   throw new Error(`${operation} failed${status ? ` (${status})` : ""}: ${formatSdkError(result.error)}`)
 }
 
+function assertSdkData<T>(result: SdkResult<T>, operation: string): T {
+  const data = assertSdkSuccess(result, operation)
+  if (data === undefined || data === null) {
+    throw new Error(`${operation} failed: empty response`)
+  }
+  return data
+}
+
 export function setActionRefs(
   sdk: OpencodeClient,
   childStores: ChildStoreManager,
@@ -91,6 +99,20 @@ function dirStore() {
   const d = _getDirectory()
   if (!d) throw new Error("No current directory")
   return _childStores.ensureChild(d)
+}
+
+function dirStoreForDirectory(directory: string) {
+  if (!_childStores) throw new Error("Child stores not initialized")
+  if (!directory) throw new Error("No directory")
+  return _childStores.ensureChild(directory)
+}
+
+function dirStoreForSession(sessionId: string): { store: DirectoryStoreApi; directory?: string } {
+  const directory = getSessionDirectory(sessionId)
+  if (directory) {
+    return { store: dirStoreForDirectory(directory), directory }
+  }
+  return { store: dirStore(), directory: dir() }
 }
 
 function dir() {
@@ -654,14 +676,14 @@ export async function rejectQuestion(
  * 5. Set pendingInputText so the reverted message text appears in the input
  */
 export async function revertToMessage(sessionId: string, messageId: string): Promise<void> {
-  const store = dirStore()
+  const { store, directory } = dirStoreForSession(sessionId)
   const state = store.getState()
 
   // Abort if busy before mutating session state
   const status = state.session_status[sessionId]
   if (status && status.type !== "idle") {
     try {
-      await sdk().session.abort({ sessionID: sessionId, directory: dir() })
+      await sdk().session.abort({ sessionID: sessionId, directory })
     } catch {
       // ignore abort errors
     }
@@ -727,16 +749,13 @@ export async function revertToMessage(sessionId: string, messageId: string): Pro
 
   // Call SDK and merge authoritative result into store
   try {
-    const directory = dir()
-    const result = await sdk().session.revert({ sessionID: sessionId, directory, messageID: messageId })
-    if (result.data) {
-      const current = store.getState()
-      const updated = [...current.session]
-      const idx = updated.findIndex((s) => s.id === sessionId)
-      if (idx >= 0) {
-        updated[idx] = result.data
-        store.setState({ session: updated })
-      }
+    const revertedSession = await opencodeClient.revertSession(sessionId, messageId, undefined, directory)
+    const current = store.getState()
+    const updated = [...current.session]
+    const idx = updated.findIndex((s) => s.id === sessionId)
+    if (idx >= 0) {
+      updated[idx] = revertedSession
+      store.setState({ session: updated })
     }
     if (directory) {
       sessionEvents.requestGitRefresh({ directory })
@@ -763,9 +782,10 @@ export async function revertToMessage(sessionId: string, messageId: string): Pro
 }
 
 export async function refetchSessionMessages(sessionId: string): Promise<void> {
-  const store = dirStore()
-  const result = await sdk().session.messages({ sessionID: sessionId, directory: dir(), limit: MESSAGE_REFETCH_LIMIT })
-  const records = (result.data ?? []).filter((record: { info?: { id?: string } }) => !!record?.info?.id)
+  const { store, directory } = dirStoreForSession(sessionId)
+  const result = await sdk().session.messages({ sessionID: sessionId, directory, limit: MESSAGE_REFETCH_LIMIT })
+  const records = (assertSdkSuccess(result, "session.messages") ?? [])
+    .filter((record: { info?: { id?: string } }) => !!record?.info?.id)
   if (records.length === 0) return
 
   store.setState((state) => {
@@ -787,7 +807,7 @@ export async function refetchSessionMessages(sessionId: string): Promise<void> {
  * Restore all previously reverted messages. Aborts if busy, merges result.
  */
 export async function unrevertSession(sessionId: string): Promise<void> {
-  const store = dirStore()
+  const { store, directory } = dirStoreForSession(sessionId)
   const state = store.getState()
   const previousMessageCount = state.message[sessionId]?.length ?? 0
 
@@ -795,21 +815,20 @@ export async function unrevertSession(sessionId: string): Promise<void> {
   const status = state.session_status[sessionId]
   if (status && status.type !== "idle") {
     try {
-      await sdk().session.abort({ sessionID: sessionId, directory: dir() })
+      await sdk().session.abort({ sessionID: sessionId, directory })
     } catch {
       // ignore
     }
   }
 
-  const result = await sdk().session.unrevert({ sessionID: sessionId, directory: dir() })
-  if (result.data) {
-    const current = store.getState()
-    const sessions = [...current.session]
-    const idx = sessions.findIndex((s) => s.id === sessionId)
-    if (idx >= 0) {
-      sessions[idx] = result.data
-      store.setState({ session: sessions })
-    }
+  const result = await sdk().session.unrevert({ sessionID: sessionId, directory })
+  const unrevertedSession = assertSdkData(result, "session.unrevert")
+  const current = store.getState()
+  const sessions = [...current.session]
+  const idx = sessions.findIndex((s) => s.id === sessionId)
+  if (idx >= 0) {
+    sessions[idx] = unrevertedSession
+    store.setState({ session: sessions })
   }
   for (let attempt = 0; attempt < UNREVERT_REFETCH_ATTEMPTS; attempt += 1) {
     if (attempt > 0) await wait(UNREVERT_REFETCH_RETRY_MS)
@@ -828,7 +847,7 @@ export async function unrevertSession(sessionId: string): Promise<void> {
  * 4. Switch to new session and set pending input text
  */
 export async function forkFromMessage(sessionId: string, messageId: string): Promise<void> {
-  const store = dirStore()
+  const { store, directory } = dirStoreForSession(sessionId)
   const state = store.getState()
 
   // Extract message text and file attachments for input restoration.
@@ -844,7 +863,7 @@ export async function forkFromMessage(sessionId: string, messageId: string): Pro
     .trim()
   const fileParts = parts.filter((p) => p.type === "file" && !isSyntheticPart(p)) as Array<Record<string, unknown>>
 
-  const result = await sdk().session.fork({ sessionID: sessionId, directory: dir(), messageID: messageId })
+  const result = await sdk().session.fork({ sessionID: sessionId, directory, messageID: messageId })
   if (!result.data) return
 
   const forkedSession = result.data
