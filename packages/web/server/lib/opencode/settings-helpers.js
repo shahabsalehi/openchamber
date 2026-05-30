@@ -115,6 +115,9 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.desktopLanAccessEnabled === 'boolean') {
       result.desktopLanAccessEnabled = candidate.desktopLanAccessEnabled;
     }
+    if (typeof candidate.desktopUiPassword === 'string') {
+      result.desktopUiPassword = candidate.desktopUiPassword.trim();
+    }
     if (Array.isArray(candidate.projects)) {
       const projects = sanitizeProjects(candidate.projects);
       if (projects) {
@@ -141,6 +144,21 @@ export const createSettingsHelpers = (dependencies) => {
           .map((entry) => (typeof entry === 'string' ? normalizePathForPersistence(entry) : entry))
           .filter((entry) => typeof entry === 'string' && entry.length > 0)
       );
+    }
+    if (Array.isArray(candidate.draftStarters)) {
+      const seenStarters = new Set();
+      const starters = [];
+      for (const entry of candidate.draftStarters) {
+        if (!entry || typeof entry !== 'object') continue;
+        const type = entry.type === 'command' || entry.type === 'skill' ? entry.type : null;
+        const name = typeof entry.name === 'string' ? entry.name.trim() : '';
+        if (!type || !name) continue;
+        const key = `${type}:${name}`;
+        if (seenStarters.has(key)) continue;
+        seenStarters.add(key);
+        starters.push({ type, name });
+      }
+      result.draftStarters = starters;
     }
 
 
@@ -221,6 +239,9 @@ export const createSettingsHelpers = (dependencies) => {
     }
     if (candidate.usageDisplayMode === 'usage' || candidate.usageDisplayMode === 'remaining') {
       result.usageDisplayMode = candidate.usageDisplayMode;
+    }
+    if (typeof candidate.usageShowPredValues === 'boolean') {
+      result.usageShowPredValues = candidate.usageShowPredValues;
     }
     if (Array.isArray(candidate.usageDropdownProviders)) {
       result.usageDropdownProviders = normalizeStringArray(candidate.usageDropdownProviders);

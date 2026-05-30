@@ -15,7 +15,9 @@ import { useI18n } from '@/lib/i18n';
 
 type Props = {
   hideDirectoryControls: boolean;
+  showRecentControls: boolean;
   handleOpenDirectoryDialog: () => void;
+  openNewSessionDraft: () => void;
   canOpenMultiRun: boolean;
   openMultiRunLauncher: () => void;
   headerActionIconClass: string;
@@ -38,7 +40,9 @@ export function SidebarHeader(props: Props): React.ReactNode {
   const { t } = useI18n();
   const {
     hideDirectoryControls,
+    showRecentControls,
     handleOpenDirectoryDialog,
+    openNewSessionDraft,
     canOpenMultiRun,
     openMultiRunLauncher,
     headerActionIconClass,
@@ -83,6 +87,20 @@ export function SidebarHeader(props: Props): React.ReactNode {
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom" sideOffset={4}><p>{t('sessions.sidebar.header.actions.addProject')}</p></TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={openNewSessionDraft}
+                  className={headerActionButtonClass}
+                  aria-label={t('sessions.sidebar.header.actions.newSession')}
+                >
+                  <Icon name="chat-new" className={headerActionIconClass} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={4}><p>{t('sessions.sidebar.header.actions.newSession')}</p></TooltipContent>
             </Tooltip>
 
             <Tooltip>
@@ -182,14 +200,18 @@ export function SidebarHeader(props: Props): React.ReactNode {
                   <span>{t('sessions.sidebar.header.displayMode.minimal')}</span>
                   {displayMode === 'minimal' ? <Icon name="check" className="h-4 w-4 text-primary" /> : null}
                 </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={toggleRecentSection}
-                  className="flex items-center justify-between"
-                >
-                  <span>{t('sessions.sidebar.header.displayMode.showRecent')}</span>
-                  {showRecentSection ? <Icon name="check" className="h-4 w-4 text-primary" /> : null}
-                </DropdownMenuItem>
+                {showRecentControls ? (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={toggleRecentSection}
+                      className="flex items-center justify-between"
+                    >
+                      <span>{t('sessions.sidebar.header.displayMode.showRecent')}</span>
+                      {showRecentSection ? <Icon name="check" className="h-4 w-4 text-primary" /> : null}
+                    </DropdownMenuItem>
+                  </>
+                ) : null}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={collapseAllProjects} className="flex items-center gap-2">
                   <Icon name="contract-up-down" className="h-4 w-4" />

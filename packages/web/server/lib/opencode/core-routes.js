@@ -1,3 +1,27 @@
+const parseLoopbackUrl = (rawUrl) => {
+  if (typeof rawUrl !== 'string') {
+    return null;
+  }
+
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return null;
+  }
+
+  const host = url.hostname;
+  if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1' && host !== '0.0.0.0') {
+    return null;
+  }
+
+  return url;
+};
+
 export const registerServerStatusRoutes = (app, dependencies) => {
   const {
     express,
@@ -265,6 +289,7 @@ export const registerServerStatusRoutes = (app, dependencies) => {
       return res.status(500).json({ error: (error && error.message) || 'Failed to allocate port' });
     }
   });
+
 };
 
 export const registerAuthAndAccessRoutes = (app, dependencies) => {
@@ -285,6 +310,14 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     } catch (error) {
       next(error);
     }
+  };
+
+  const requireApiAuth = async (req, res, next) => {
+    const requestScope = tunnelAuthController.classifyRequestScope(req);
+    if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
+      return tunnelAuthController.requireTunnelSession(req, res, next);
+    }
+    return uiAuthController.requireAuth(req, res, next);
   };
 
   app.get('/auth/session', async (req, res) => {
@@ -468,13 +501,33 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   });
 
+  app.post('/api/system/probe-url', express.json({ limit: '16kb' }), async (req, res, next) => {
+    try {
+      await requireApiAuth(req, res, async () => {
+        const url = parseLoopbackUrl(req.body?.url);
+        if (!url) {
+          return res.status(400).json({ ok: false, error: 'Invalid loopback URL' });
+        }
+
+        try {
+          const response = await fetch(url.toString(), {
+            method: 'GET',
+            redirect: 'manual',
+            signal: AbortSignal.timeout(1500),
+          });
+          return res.json({ ok: response.ok, status: response.status });
+        } catch (error) {
+          return res.json({ ok: false, error: error?.message || 'Probe failed' });
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.use('/api', async (req, res, next) => {
     try {
-      const requestScope = tunnelAuthController.classifyRequestScope(req);
-      if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
-        return tunnelAuthController.requireTunnelSession(req, res, next);
-      }
-      await uiAuthController.requireAuth(req, res, next);
+      await requireApiAuth(req, res, next);
     } catch (err) {
       next(err);
     }
@@ -537,6 +590,7 @@ export const registerCommonRequestMiddleware = (app, dependencies) => {
       req.path.startsWith('/api/config/snippets') ||
       req.path.startsWith('/api/config/settings') ||
       req.path.startsWith('/api/config/skills') ||
+      req.path.startsWith('/api/config/plugins') ||
       req.path.startsWith('/api/projects') ||
       req.path.startsWith('/api/fs') ||
       req.path.startsWith('/api/git') ||

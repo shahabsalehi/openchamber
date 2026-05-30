@@ -158,6 +158,10 @@ export function routeMessage(params: {
   return run()
 }
 
+type SendMessageOptions = {
+  sessionId?: string
+}
+
 function notifyMessageSent(sessionId: string): void {
   runtimeFetch(`/api/sessions/${sessionId}/message-sent`, { method: "POST" })
     .catch(() => { /* ignore */ })
@@ -256,6 +260,7 @@ export type SessionUIState = {
     additionalParts?: Array<{ text: string; attachments?: AttachedFile[]; synthetic?: boolean }>,
     variant?: string,
     inputMode?: "normal" | "shell",
+    options?: SendMessageOptions,
   ) => Promise<void>
 
   createSession: (title?: string, directoryOverride?: string | null, parentID?: string | null) => Promise<Session | null>
@@ -800,9 +805,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     additionalParts?: Array<{ text: string; attachments?: AttachedFile[]; synthetic?: boolean }>,
     variant?: string,
     inputMode?: "normal" | "shell",
+    options?: SendMessageOptions,
   ) => {
     // Clear non-Git changed-files bar on new user message for current session
-    const sid = get().currentSessionId;
+    const sid = options?.sessionId ?? get().currentSessionId;
     if (sid) {
       const map = new Map(get().pendingChangesBarDismissed);
       map.delete(sid);
@@ -813,7 +819,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const trimmedAgent = typeof agent === "string" && agent.trim().length > 0 ? agent.trim() : undefined
 
     // ---- New session from draft ----
-    if (draft?.open) {
+    if (!options?.sessionId && draft?.open) {
       const draftTargetFolderId = draft.targetFolderId
       let draftDirectoryOverride = draft.bootstrapPendingDirectory ?? draft.directoryOverride ?? null
       const draftProjectId = draft.selectedProjectId ?? null
@@ -909,24 +915,24 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     }
 
     // ---- Existing session ----
-    const currentSessionId = get().currentSessionId
-    const sessionAgentSelection = currentSessionId
-      ? useSelectionStore.getState().getSessionAgentSelection(currentSessionId)
+    const targetSessionId = options?.sessionId ?? get().currentSessionId
+    const sessionAgentSelection = targetSessionId
+      ? useSelectionStore.getState().getSessionAgentSelection(targetSessionId)
       : null
     const configAgentName = useConfigStore.getState().currentAgentName
     const effectiveAgent = trimmedAgent || sessionAgentSelection || configAgentName || undefined
 
-    if (currentSessionId && effectiveAgent) {
-      useSelectionStore.getState().saveSessionAgentSelection(currentSessionId, effectiveAgent)
-      useSelectionStore.getState().saveAgentModelVariantForSession(currentSessionId, effectiveAgent, providerID, modelID, variant)
+    if (targetSessionId && effectiveAgent) {
+      useSelectionStore.getState().saveSessionAgentSelection(targetSessionId, effectiveAgent)
+      useSelectionStore.getState().saveAgentModelVariantForSession(targetSessionId, effectiveAgent, providerID, modelID, variant)
     }
 
-    if (currentSessionId) {
+    if (targetSessionId) {
       const viewportState = useViewportStore.getState()
-      const memState = getViewportSessionMemory(currentSessionId)
+      const memState = getViewportSessionMemory(targetSessionId)
       if (!memState || !memState.lastUserMessageAt) {
         const newMemState = new Map(viewportState.sessionMemoryState)
-        newMemState.set(viewportSessionKey(currentSessionId), {
+        newMemState.set(viewportSessionKey(targetSessionId), {
           viewportAnchor: 0,
           isStreaming: false,
           lastAccessedAt: Date.now(),
@@ -938,19 +944,19 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       }
     }
 
-    const currentSessionDirectory = currentSessionId
-      ? normalizePath(get().getDirectoryForSession(currentSessionId))
+    const currentSessionDirectory = targetSessionId
+      ? normalizePath(get().getDirectoryForSession(targetSessionId))
       : null
     if (currentSessionDirectory) {
       await waitForWorktreeBootstrap(currentSessionDirectory)
     }
 
-    if (currentSessionId) {
-      notifyMessageSent(currentSessionId)
+    if (targetSessionId) {
+      notifyMessageSent(targetSessionId)
     }
 
-    if (currentSessionId) {
-      markPendingUserSendAnimation(currentSessionId)
+    if (targetSessionId) {
+      markPendingUserSendAnimation(targetSessionId)
     }
 
     const files = attachments?.map((a) => ({
@@ -961,7 +967,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     }))
 
     await routeMessage({
-      sessionId: currentSessionId || "",
+      sessionId: targetSessionId || "",
       directory: currentSessionDirectory,
       content,
       providerID,

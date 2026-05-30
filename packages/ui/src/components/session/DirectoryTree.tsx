@@ -43,6 +43,18 @@ interface DirectoryTreeProps {
   disabledPaths?: Iterable<string>;
 }
 
+const areStringSetsEqual = (left: Set<string>, right: Set<string>) => {
+  if (left.size !== right.size) {
+    return false;
+  }
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+  return true;
+};
+
 export const DirectoryTree: React.FC<DirectoryTreeProps> = ({
   currentPath,
   onSelectPath,
@@ -245,7 +257,10 @@ export const DirectoryTree: React.FC<DirectoryTreeProps> = ({
           const normalizedPath = path.replace(/\\/g, '/');
           return (stripTrailingSlashes(normalizedPath) as string) ?? normalizedPath;
         });
-      setPinnedPaths(new Set(normalized));
+      setPinnedPaths((prev) => {
+        const next = new Set(normalized);
+        return areStringSetsEqual(prev, next) ? prev : next;
+      });
     };
 
     const loadFromLocalStorage = () => {
@@ -327,7 +342,8 @@ export const DirectoryTree: React.FC<DirectoryTreeProps> = ({
       const filtered = Array.from(prev)
         .map((path) => (stripTrailingSlashes(path.replace(/\\/g, '/')) as string) ?? path)
         .filter((path) => isPathWithinHome(path));
-      return new Set(filtered);
+      const next = new Set(filtered);
+      return areStringSetsEqual(prev, next) ? prev : next;
     });
   }, [effectiveRoot, isPathWithinHome, stripTrailingSlashes]);
 

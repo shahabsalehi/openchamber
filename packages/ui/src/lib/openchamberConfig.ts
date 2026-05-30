@@ -7,6 +7,7 @@
 import type { FilesAPI, RuntimeAPIs } from './api/types';
 import { getDesktopHomeDirectory } from './desktop';
 import { isVSCodeRuntime } from './desktop';
+import { sanitizeStarterRefs, type DraftStarterRef } from './draftStarters';
 import { createProjectIdFromPath } from './projectId';
 import { runtimeFetch } from './runtime-fetch';
 
@@ -37,6 +38,7 @@ export interface OpenChamberConfig {
   projectPlanFiles?: OpenChamberProjectPlanFileLink[];
   projectActions?: OpenChamberProjectAction[];
   projectActionsPrimaryId?: string;
+  draftStarters?: DraftStarterRef[];
 }
 
 export type OpenChamberProjectActionPlatform = 'macos' | 'linux' | 'windows';
@@ -695,6 +697,18 @@ export async function getWorktreeSetupCommands(project: ProjectRef): Promise<str
 export async function saveWorktreeSetupCommands(project: ProjectRef, commands: string[]): Promise<boolean> {
   const filtered = commands.filter((cmd) => cmd.trim().length > 0);
   return updateOpenChamberConfig(project, { 'setup-worktree': filtered });
+}
+
+/**
+ * Get this project's pinned draft welcome starters.
+ */
+export async function getProjectDraftStarters(project: ProjectRef): Promise<DraftStarterRef[]> {
+  const config = await readOpenChamberConfig(project);
+  return sanitizeStarterRefs(config?.draftStarters);
+}
+
+export async function saveProjectDraftStarters(project: ProjectRef, starters: DraftStarterRef[]): Promise<boolean> {
+  return updateOpenChamberConfig(project, { draftStarters: sanitizeStarterRefs(starters) });
 }
 
 export async function getProjectNotesAndTodos(project: ProjectRef): Promise<OpenChamberProjectNotesTodos> {

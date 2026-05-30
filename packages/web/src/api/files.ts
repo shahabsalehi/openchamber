@@ -46,11 +46,14 @@ const toDirectoryListResult = (fallbackDirectory: string, payload: WebDirectoryL
 };
 
 export const createWebFilesAPI = ({ urls }: WebFilesAPIOptions): FilesAPI => ({
-  async listDirectory(path: string): Promise<DirectoryListResult> {
+  async listDirectory(path: string, options): Promise<DirectoryListResult> {
     const target = normalizePath(path);
     const params = new URLSearchParams();
     if (target) {
       params.set('path', target);
+    }
+    if (options?.respectGitignore) {
+      params.set('respectGitignore', 'true');
     }
 
     const response = await runtimeFetch(urls.api('/api/fs/list', params));

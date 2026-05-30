@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,12 +11,36 @@ const repoRoot = path.resolve(__dirname, '..');
 const useDetachedChildren = process.platform === 'darwin';
 const webRoot = path.join(repoRoot, 'packages/web');
 
+const quoteWindowsCommandArg = (value) => `"${String(value).replace(/"/g, '""')}"`;
+
+function resolveWindowsCommand(command) {
+  if (process.platform !== 'win32' || path.isAbsolute(command)) {
+    return command;
+  }
+
+  const result = spawnSync('where.exe', [command], { encoding: 'utf8', windowsHide: true });
+  if (result.error || result.status !== 0) {
+    return command;
+  }
+
+  const candidates = String(result.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return candidates.find((entry) => /\.(exe|cmd|bat)$/i.test(entry)) || candidates[0] || command;
+}
+
 function run(label, command, args, env = {}, options = {}) {
-  return spawn(command, args, {
+  const resolvedCommand = resolveWindowsCommand(command);
+  const isWindowsCommandScript = process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolvedCommand);
+  const spawnCommand = isWindowsCommandScript ? (process.env.ComSpec || 'cmd.exe') : resolvedCommand;
+  const spawnArgs = isWindowsCommandScript
+    ? ['/d', '/s', '/c', ['call', quoteWindowsCommandArg(resolvedCommand), ...args.map(quoteWindowsCommandArg)].join(' ')]
+    : args;
+
+  return spawn(spawnCommand, spawnArgs, {
     cwd: options.cwd || repoRoot,
     stdio: 'inherit',
     env: { ...process.env, ...env },
     detached: useDetachedChildren,
+    windowsVerbatimArguments: isWindowsCommandScript,
   }).on('error', (error) => {
     console.error(`[dev:web:hmr] Failed to start ${label}:`, error);
   });
@@ -41,6 +65,17 @@ function waitForExit(child, timeoutMs) {
 
     child.once('exit', onExit);
   });
+}
+
+function killWindowsProcessTree(pid) {
+  if (!pid) return;
+  try {
+    spawnSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+  } catch {
+  }
 }
 
 function signalChild(child, signal) {
@@ -70,6 +105,11 @@ async function stopChildTree(child) {
   signalChild(child, 'SIGINT');
   await waitForExit(child, 2500);
 
+  if (process.platform === 'win32' && child.exitCode === null && child.signalCode === null) {
+    killWindowsProcessTree(child.pid);
+    await waitForExit(child, 1000);
+  }
+
   if (child.exitCode === null && child.signalCode === null) {
     signalChild(child, 'SIGTERM');
     await waitForExit(child, 2500);
@@ -86,13 +126,12 @@ const backendPort = process.env.OPENCHAMBER_HMR_API_PORT || '3902';
 const hmrHost = process.env.OPENCHAMBER_HMR_HOST || '127.0.0.1';
 
 function getLanAddresses() {
-  const interfaces = os.networkInterfaces();
   const addresses = [];
 
-  for (const entries of Object.values(interfaces)) {
-    for (const entry of entries || []) {
-      if (entry.family !== 'IPv4' || entry.internal) continue;
-      addresses.push(entry.address);
+  for (const networkAddresses of Object.values(os.networkInterfaces())) {
+    for (const address of networkAddresses || []) {
+      if (address.family !== 'IPv4' || address.internal) continue;
+      addresses.push(address.address);
     }
   }
 
@@ -113,9 +152,15 @@ function clearViteCache() {
 
 clearViteCache();
 
-const api = run('api', 'bun', ['run', '--cwd', 'packages/web', 'dev:server:watch'], {
-  OPENCHAMBER_PORT: backendPort,
-});
+const api = run(
+  'api',
+  'bun',
+  ['x', 'nodemon', '--watch', 'server', '--ext', 'js', '--exec', `bun server/index.js --port ${backendPort}`],
+  {
+    OPENCHAMBER_PORT: backendPort,
+  },
+  { cwd: webRoot },
+);
 const vite = run(
   'vite',
   'bun',
@@ -127,16 +172,19 @@ const vite = run(
   { cwd: webRoot },
 );
 
-const lanAddresses = hmrHost === '0.0.0.0' ? getLanAddresses() : [];
+const lanAddresses = hmrHost === '0.0.0.0' || hmrHost === '::' ? getLanAddresses() : [];
 
 console.log(`[dev:web:hmr] UI with HMR: http://127.0.0.1:${uiPort}`);
-for (const address of lanAddresses) {
-  console.log(`[dev:web:hmr] LAN UI with HMR: http://${address}:${uiPort}`);
+if (hmrHost === '0.0.0.0' || hmrHost === '::') {
+  if (lanAddresses.length > 0) {
+    for (const address of lanAddresses) {
+      console.log(`[dev:web:hmr] LAN/mobile UI: http://${address}:${uiPort}`);
+    }
+  } else {
+    console.log('[dev:web:hmr] LAN/mobile UI: no LAN IPv4 address found');
+  }
 }
 console.log(`[dev:web:hmr] API: http://127.0.0.1:${backendPort}`);
-if (hmrHost === '0.0.0.0' && lanAddresses.length === 0) {
-  console.log('[dev:web:hmr] No LAN IPv4 address detected; check your network connection.');
-}
 console.log('[dev:web:hmr] IMPORTANT: open UI URL above for HMR; backend URL has no HMR');
 
 let shuttingDown = false;

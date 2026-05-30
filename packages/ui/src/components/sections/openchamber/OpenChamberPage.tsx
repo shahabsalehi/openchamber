@@ -53,14 +53,14 @@ export const OpenChamberPage: React.FC<OpenChamberPageProps> = ({ section }) => 
                     <div className="border-t border-border/40 pt-6">
                         <DefaultsSettings />
                     </div>
-                    {!isVSCode && (
-                        <div className="border-t border-border/40 pt-6">
-                            <OpenCodeCliSettings />
-                        </div>
-                    )}
                     {showDesktopNetworkSettings && (
                         <div className="border-t border-border/40 pt-6">
                             <DesktopNetworkSettings />
+                        </div>
+                    )}
+                    {!isVSCode && (
+                        <div className="border-t border-border/40 pt-6">
+                            <OpenCodeCliSettings />
                         </div>
                     )}
                     <div className="border-t border-border/40 pt-6">
@@ -154,14 +154,14 @@ const SessionsSectionContent: React.FC = () => {
     return (
         <div className="space-y-6">
             <DefaultsSettings />
-            {!isVSCode && (
-                <div className="border-t border-border/40 pt-6">
-                    <OpenCodeCliSettings />
-                </div>
-            )}
             {showDesktopNetworkSettings && (
                 <div className="border-t border-border/40 pt-6">
                     <DesktopNetworkSettings />
+                </div>
+            )}
+            {!isVSCode && (
+                <div className="border-t border-border/40 pt-6">
+                    <OpenCodeCliSettings />
                 </div>
             )}
             <div className="border-t border-border/40 pt-6">

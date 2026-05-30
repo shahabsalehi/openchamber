@@ -4,11 +4,12 @@ import type { SidebarSection } from '@/constants/sidebar';
 import { getSafeStorage } from './utils/safeStorage';
 import { SEMANTIC_TYPOGRAPHY, getTypographyVariable, type SemanticTypographyKey } from '@/lib/typography';
 import type { ShortcutCombo } from '@/lib/shortcuts';
+import type { DraftStarterRef } from '@/lib/draftStarters';
 import { DEFAULT_MONO_FONT, DEFAULT_UI_FONT, type MonoFontOption, type UiFontOption } from '@/lib/fontOptions';
 import { getStoredMobileKeyboardMode, type MobileKeyboardMode } from '@/lib/mobileKeyboardMode';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 
-export type MainTab = 'chat' | 'plan' | 'git' | 'diff' | 'terminal' | 'files';
+export type MainTab = 'chat' | 'plan' | 'git' | 'diff' | 'terminal' | 'files' | 'context';
 export type RightSidebarTab = 'git' | 'files' | 'context';
 export type ContextPanelMode = 'diff' | 'file' | 'context' | 'plan' | 'chat' | 'preview' | 'browser';
 export type MermaidRenderingMode = 'svg' | 'ascii';
@@ -26,6 +27,7 @@ type ContextPanelTab = {
   dedupeKey: string;
   label: string | null;
   readOnly: boolean;
+  stagedDiff: boolean;
   touchedAt: number;
 };
 
@@ -35,6 +37,7 @@ type ContextPanelTabDescriptor = {
   dedupeKey?: string | null;
   label?: string | null;
   readOnly?: boolean;
+  stagedDiff?: boolean;
 };
 
 type ContextPanelDirectoryState = {
@@ -211,6 +214,7 @@ const createContextPanelTab = (descriptor: ContextPanelTabDescriptor): ContextPa
     dedupeKey,
     label: normalizeContextTabLabel(descriptor.label),
     readOnly: descriptor.readOnly === true,
+    stagedDiff: descriptor.stagedDiff === true,
     touchedAt: Date.now(),
   };
 };
@@ -250,6 +254,7 @@ const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
       dedupeKey?: unknown;
       label?: unknown;
       readOnly?: unknown;
+      stagedDiff?: unknown;
       touchedAt?: unknown;
     };
 
@@ -276,6 +281,7 @@ const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
       dedupeKey,
       label: normalizeContextTabLabel(typeof candidate.label === 'string' ? candidate.label : null),
       readOnly: candidate.readOnly === true,
+      stagedDiff: candidate.stagedDiff === true,
       touchedAt: typeof candidate.touchedAt === 'number' && Number.isFinite(candidate.touchedAt)
         ? candidate.touchedAt
         : Date.now(),
@@ -331,9 +337,10 @@ const upsertContextPanelTab = (
       ? {
           ...tab,
           mode: nextTab.mode,
-          targetPath: nextTab.targetPath,
+          targetPath: nextTab.targetPath || tab.targetPath,
           dedupeKey: nextTab.dedupeKey,
           label: nextTab.label,
+          stagedDiff: nextTab.stagedDiff,
           touchedAt: Date.now(),
         }
       : tab));
@@ -511,6 +518,7 @@ interface UIStore {
   mainTabGuard: MainTabGuard | null;
   sidebarOpenBeforeFullscreenTab: boolean | null;
   pendingDiffFile: string | null;
+  pendingDiffStaged: boolean;
   pendingFileNavigation: PendingFileNavigation | null;
   pendingFileFocusPath: string | null;
   isMobile: boolean;
@@ -544,6 +552,8 @@ interface UIStore {
   autoDeleteLastRunAt: number | null;
   messageLimit: number;
   fontSize: number;
+  // Global draft welcome starters; null = unset (use the default built-in set).
+  globalDraftStarters: DraftStarterRef[] | null;
   terminalFontSize: number;
   uiFont: UiFontOption;
   monoFont: MonoFontOption;
@@ -620,7 +630,7 @@ interface UIStore {
   setRightSidebarWidth: (width: number) => void;
   setRightSidebarTab: (tab: RightSidebarTab) => void;
   openContextPanelTab: (directory: string, tab: ContextPanelTabDescriptor) => void;
-  openContextDiff: (directory: string, filePath: string) => void;
+  openContextDiff: (directory: string, filePath: string, staged?: boolean) => void;
   openContextFile: (directory: string, filePath: string) => void;
   openContextFileAtLine: (directory: string, filePath: string, line: number, column?: number) => void;
   openContextOverview: (directory: string) => void;
@@ -646,10 +656,10 @@ interface UIStore {
   prepareForRuntimeSwitch: (runtimeKey?: string | null) => void;
   restoreForRuntimeSwitch: (runtimeKey?: string | null) => void;
   setMainTabGuard: (guard: MainTabGuard | null) => void;
-  setPendingDiffFile: (filePath: string | null) => void;
+  setPendingDiffFile: (filePath: string | null, staged?: boolean) => void;
   setPendingFileNavigation: (navigation: PendingFileNavigation | null) => void;
   setPendingFileFocusPath: (path: string | null) => void;
-  navigateToDiff: (filePath: string) => void;
+  navigateToDiff: (filePath: string, staged?: boolean) => void;
   consumePendingDiffFile: () => string | null;
   setIsMobile: (isMobile: boolean) => void;
   toggleCommandPalette: () => void;
@@ -680,6 +690,7 @@ interface UIStore {
   setAutoDeleteLastRunAt: (timestamp: number | null) => void;
   setMessageLimit: (value: number) => void;
   setFontSize: (size: number) => void;
+  setGlobalDraftStarters: (refs: DraftStarterRef[]) => void;
   setTerminalFontSize: (size: number) => void;
   setUiFont: (font: UiFontOption) => void;
   setMonoFont: (font: MonoFontOption) => void;
@@ -785,6 +796,7 @@ export const useUIStore = create<UIStore>()(
         mainTabGuard: null,
         sidebarOpenBeforeFullscreenTab: null,
         pendingDiffFile: null,
+        pendingDiffStaged: false,
         pendingFileNavigation: null,
         pendingFileFocusPath: null,
         isMobile: false,
@@ -816,6 +828,7 @@ export const useUIStore = create<UIStore>()(
         autoDeleteLastRunAt: null,
         messageLimit: 200,
         fontSize: 100,
+        globalDraftStarters: null,
         terminalFontSize: 13,
         uiFont: DEFAULT_UI_FONT,
         monoFont: DEFAULT_MONO_FONT,
@@ -871,7 +884,7 @@ export const useUIStore = create<UIStore>()(
         userMessageRenderingMode: 'markdown',
         stickyUserHeader: true,
         showSplitAssistantMessageActions: false,
-        showMobileSessionStatusBar: true,
+        showMobileSessionStatusBar: false,
         isMobileSessionStatusBarCollapsed: false,
         mobileSessionPanelOpen: false,
         mobileSessionFilterProjectId: null,
@@ -990,15 +1003,19 @@ export const useUIStore = create<UIStore>()(
           });
         },
 
-        openContextDiff: (directory, filePath) => {
+        openContextDiff: (directory, filePath, staged = false) => {
           const normalizedDirectory = normalizeDirectoryPath((directory || '').trim());
           const normalizedFilePath = (filePath || '').trim();
           if (!normalizedDirectory || !normalizedFilePath) {
             return;
           }
 
-          get().openContextPanelTab(normalizedDirectory, { mode: 'diff', targetPath: normalizedFilePath });
-          get().setPendingDiffFile(normalizedFilePath);
+          get().openContextPanelTab(normalizedDirectory, {
+            mode: 'diff',
+            targetPath: normalizedFilePath,
+            dedupeKey: staged ? 'staged' : null,
+            stagedDiff: staged,
+          });
         },
 
         openContextFile: (directory, filePath) => {
@@ -1359,8 +1376,8 @@ export const useUIStore = create<UIStore>()(
           set({ activeMainTab: restored });
         },
 
-        setPendingDiffFile: (filePath) => {
-          set({ pendingDiffFile: filePath });
+        setPendingDiffFile: (filePath, staged = false) => {
+          set({ pendingDiffFile: filePath, pendingDiffStaged: filePath ? staged : false });
         },
 
         setPendingFileNavigation: (navigation) => {
@@ -1371,18 +1388,18 @@ export const useUIStore = create<UIStore>()(
           set({ pendingFileFocusPath: path });
         },
 
-        navigateToDiff: (filePath) => {
+        navigateToDiff: (filePath, staged = false) => {
           const guard = get().mainTabGuard;
           if (guard && !guard('diff')) {
             return;
           }
-          set({ pendingDiffFile: filePath, activeMainTab: 'diff' });
+          set({ pendingDiffFile: filePath, pendingDiffStaged: staged, activeMainTab: 'diff' });
         },
 
         consumePendingDiffFile: () => {
           const { pendingDiffFile } = get();
           if (pendingDiffFile) {
-            set({ pendingDiffFile: null });
+            set({ pendingDiffFile: null, pendingDiffStaged: false });
           }
           return pendingDiffFile;
         },
@@ -1513,6 +1530,10 @@ export const useUIStore = create<UIStore>()(
           const clampedSize = Math.max(50, Math.min(200, size));
           set({ fontSize: clampedSize });
           get().applyTypography();
+        },
+
+        setGlobalDraftStarters: (refs) => {
+          set({ globalDraftStarters: refs });
         },
 
         setTerminalFontSize: (size) => {
@@ -2129,6 +2150,7 @@ export const useUIStore = create<UIStore>()(
           autoDeleteLastRunAt: state.autoDeleteLastRunAt,
           messageLimit: state.messageLimit,
           fontSize: state.fontSize,
+          globalDraftStarters: state.globalDraftStarters,
           terminalFontSize: state.terminalFontSize,
           uiFont: state.uiFont,
           monoFont: state.monoFont,

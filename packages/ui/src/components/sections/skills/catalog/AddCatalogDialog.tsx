@@ -37,7 +37,7 @@ const guessLabelFromSource = (value: string) => {
     : trimmed.startsWith("git@")
       ? "ssh"
       : "shorthand";
-  
+
   if (urlFormat === 'ssh') {
     return `${trimmed.split(":")[1].replace(/\.git$/i, '')}`;
   }

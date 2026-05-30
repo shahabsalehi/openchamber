@@ -360,6 +360,22 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     syncSessionsSnapshotRef.current = liveSessions;
   }, [syncSessionStructureSignature, liveSessions]);
 
+  const projectWorktreeDiscoveryKey = React.useMemo(
+    () => projects
+      .map((project) => `${project.id}:${normalizePath(project.path) ?? ''}`)
+      .join('|'),
+    [projects],
+  );
+
+  const initialGlobalSessionsRefreshStartedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (initialGlobalSessionsRefreshStartedRef.current) {
+      return;
+    }
+    initialGlobalSessionsRefreshStartedRef.current = true;
+    void refreshGlobalSessions(syncSessionsSnapshotRef.current);
+  }, []);
+
   React.useEffect(() => {
     let cancelled = false;
 
@@ -397,13 +413,12 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
       });
     };
 
-    void refreshGlobalSessions(syncSessionsSnapshotRef.current);
     void discoverWorktrees();
 
     return () => {
       cancelled = true;
     };
-  }, [currentDirectory, syncSessionStructureSignature, projects]);
+  }, [projectWorktreeDiscoveryKey]);
 
   React.useEffect(() => {
     let refreshTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -995,7 +1010,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
   });
 
   const sectionsForSidebarRender = React.useMemo(() => {
-    if (!isVSCode || hasSessionSearchQuery || recentSessionIds.size === 0) {
+    if (isVSCode || hasSessionSearchQuery || recentSessionIds.size === 0) {
       return sectionsForRender;
     }
 
@@ -1113,7 +1128,6 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     });
 
     void refreshPrStatusTargets([...uniqueTargets.values()], {
-      force: true,
       silent: true,
       markInitialResolved: true,
     });
@@ -1341,7 +1355,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     ],
   );
 
-  const topContent = showRecentSection && !hasSessionSearchQuery ? (
+  const topContent = showRecentSection && !isVSCode && !hasSessionSearchQuery ? (
     <SidebarActivitySections
       sections={activitySections}
       renderSessionNode={renderSessionNode}
@@ -1520,6 +1534,14 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     openMultiRunLauncher();
   }, [mobileVariant, openMultiRunLauncher, setActiveMainTab, setSessionSwitcherOpen]);
 
+  const handleOpenNewSessionDraftFromHeader = React.useCallback(() => {
+    setActiveMainTab('chat');
+    if (mobileVariant) {
+      setSessionSwitcherOpen(false);
+    }
+    openNewSessionDraft();
+  }, [mobileVariant, openNewSessionDraft, setActiveMainTab, setSessionSwitcherOpen]);
+
   return (
     <div
       ref={sessionSearchContainerRef}
@@ -1530,7 +1552,9 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     >
       <SidebarHeader
         hideDirectoryControls={hideDirectoryControls}
+        showRecentControls={!isVSCode}
         handleOpenDirectoryDialog={handleOpenDirectoryDialog}
+        openNewSessionDraft={handleOpenNewSessionDraftFromHeader}
         canOpenMultiRun={projects.length > 0}
         openMultiRunLauncher={handleOpenMultiRunFromHeader}
         headerActionIconClass={headerActionIconClass}

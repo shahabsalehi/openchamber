@@ -1040,6 +1040,7 @@ const AssistantMessageBody = React.memo(({
     const collapsedPreviewCount = 7;
     const isLastAssistantInTurn = turnGroupingContext?.isLastAssistantInTurn ?? false;
     const hasStopFinish = messageFinish === 'stop';
+    const effectiveStreamPhase: StreamPhase = hasStopFinish ? 'completed' : streamPhase;
 
     const availableWorktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
     const currentProjectRef = React.useMemo(() => {
@@ -1501,7 +1502,7 @@ const AssistantMessageBody = React.memo(({
                             onToggleTool={onToggleTool}
                             onShowPopup={onShowPopup}
                             onContentChange={onContentChange}
-                            streamPhase={streamPhase}
+                            streamPhase={effectiveStreamPhase}
                             showHeader={true}
                             animateRows={animateActivityRows}
                             animatedToolIds={animatedToolIdsLookup}
@@ -1546,7 +1547,7 @@ const AssistantMessageBody = React.memo(({
                             part={part}
                             sessionId={sessionId}
                             messageId={messageId}
-                            streamPhase={streamPhase}
+                            streamPhase={effectiveStreamPhase}
                             chatRenderMode={chatRenderMode}
                             onContentChange={onContentChange}
                         />
@@ -1580,7 +1581,7 @@ const AssistantMessageBody = React.memo(({
                                 part={part}
                                 sessionId={sessionId}
                                 messageId={messageId}
-                                streamPhase={streamPhase}
+                                streamPhase={effectiveStreamPhase}
                                 chatRenderMode={chatRenderMode}
                                 onContentChange={onContentChange}
                             />
@@ -1594,7 +1595,7 @@ const AssistantMessageBody = React.memo(({
                                     key={`reasoning-merged-${messageId}`}
                                     parts={flatReasoningParts}
                                     messageId={messageId}
-                                    streamPhase={streamPhase}
+                                    streamPhase={effectiveStreamPhase}
                                     onContentChange={onContentChange}
                                 />
                             );
@@ -1606,7 +1607,7 @@ const AssistantMessageBody = React.memo(({
                                 key={`reasoning-${messageId}-${i}`}
                                 part={part}
                                 messageId={messageId}
-                                streamPhase={streamPhase}
+                                streamPhase={effectiveStreamPhase}
                                 onContentChange={onContentChange}
                             />
                         );
@@ -1714,7 +1715,7 @@ const AssistantMessageBody = React.memo(({
         shouldRenderActivityGroup,
         shouldShowStandaloneMessageActions,
         shouldShowTool,
-        streamPhase,
+        effectiveStreamPhase,
         showReasoningTraces,
         shouldDeferSortedInlineText,
         syntaxTheme,

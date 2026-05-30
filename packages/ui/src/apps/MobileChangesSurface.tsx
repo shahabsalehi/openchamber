@@ -4,14 +4,15 @@ import { RiArrowLeftLine, RiCloseLine, RiGitBranchLine, RiLoader4Line } from '@r
 import { toast } from '@/components/ui';
 import { Button } from '@/components/ui/button';
 import { ScrollShadow } from '@/components/ui/ScrollShadow';
-import { ChangesSection } from '@/components/views/git/ChangesSection';
+import { ChangesPanel, type ChangesGroupConfig } from '@/components/views/git/ChangesPanel';
 import { CommitSection } from '@/components/views/git/CommitSection';
 import { SyncActions } from '@/components/views/git/SyncActions';
 import { PierreDiffViewer } from '@/components/views/PierreDiffViewer';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import type { GitStatus } from '@/lib/api/types';
 import { useI18n } from '@/lib/i18n';
-import { generateCommitMessage } from '@/lib/gitApi';
+import { generateCommitMessage, stageGitFile, stageGitFiles, unstageGitFile, unstageGitFiles } from '@/lib/gitApi';
 import type { GitRemote } from '@/lib/gitApi';
 import { getLanguageFromExtension, isImageFile } from '@/lib/toolHelpers';
 import {
@@ -25,6 +26,17 @@ type SyncAction = 'fetch' | 'pull' | 'push' | 'sync' | null;
 type CommitAction = 'commit' | 'commitAndPush' | null;
 
 const normalizePath = (value?: string | null): string => (value || '').replace(/\\/g, '/').replace(/\/+$/g, '');
+
+const isStagedStatusFile = (file: GitStatus['files'][number]): boolean => {
+  const indexStatus = file.index?.trim();
+  return Boolean(indexStatus && indexStatus !== '?');
+};
+
+const isUnstagedStatusFile = (file: GitStatus['files'][number]): boolean => {
+  const workingStatus = file.working_dir?.trim();
+  const indexStatus = file.index?.trim();
+  return Boolean(workingStatus || indexStatus === '?');
+};
 
 type MobileChangesSurfaceProps = {
   /** When provided, the list header gets a close X that calls this; used when the surface is hosted in MobileSurfaceShell. */
@@ -66,8 +78,6 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
   const [syncAction, setSyncAction] = React.useState<SyncAction>(null);
   const [commitAction, setCommitAction] = React.useState<CommitAction>(null);
   const [commitMessage, setCommitMessage] = React.useState('');
-  const [selectedPaths, setSelectedPaths] = React.useState<Set<string>>(new Set());
-  const [hasUserAdjustedSelection, setHasUserAdjustedSelection] = React.useState(false);
   const [revertingPaths, setRevertingPaths] = React.useState<Set<string>>(new Set());
   const [isRevertingAll, setIsRevertingAll] = React.useState(false);
   const [isGeneratingMessage, setIsGeneratingMessage] = React.useState(false);
@@ -86,6 +96,16 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
     }
     return Array.from(unique.values()).sort((a, b) => a.path.localeCompare(b.path));
   }, [status?.files]);
+
+  const stagedChangeEntries = React.useMemo(
+    () => changeEntries.filter(isStagedStatusFile),
+    [changeEntries],
+  );
+
+  const unstagedChangeEntries = React.useMemo(
+    () => changeEntries.filter(isUnstagedStatusFile),
+    [changeEntries],
+  );
 
   const effectiveRemotes = React.useMemo<GitRemote[]>(() => {
     if (remotes.length > 0) return remotes;
@@ -150,27 +170,9 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
   }, [refreshRemotes]);
 
   React.useEffect(() => {
-    if (!status || changeEntries.length === 0) {
-      setSelectedPaths(new Set());
-      setHasUserAdjustedSelection(false);
-      return;
-    }
-
-    setSelectedPaths((previous) => {
-      const next = new Set<string>();
-      for (const file of changeEntries) {
-        if (previous.has(file.path) || !hasUserAdjustedSelection) {
-          next.add(file.path);
-        }
-      }
-      return next;
-    });
-  }, [changeEntries, hasUserAdjustedSelection, status]);
-
-  React.useEffect(() => {
     if (!currentDirectory || changeEntries.length === 0) return;
     const orderedPaths = Array.from(new Set([
-      ...selectedPaths,
+      ...stagedChangeEntries.map((entry) => entry.path),
       ...visibleChangePaths,
       ...changeEntries.slice(0, 20).map((entry) => entry.path),
     ])).filter(Boolean);
@@ -179,7 +181,7 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
       void prefetchDiffs(currentDirectory, git, orderedPaths, { maxFiles: 40 });
     }, 120);
     return () => window.clearTimeout(timeoutId);
-  }, [changeEntries, currentDirectory, git, prefetchDiffs, selectedPaths, visibleChangePaths]);
+  }, [changeEntries, currentDirectory, git, prefetchDiffs, stagedChangeEntries, visibleChangePaths]);
 
   React.useEffect(() => {
     if (route.type !== 'diff') {
@@ -254,25 +256,27 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
     }
   };
 
-  const toggleFileSelection = (path: string) => {
-    setSelectedPaths((previous) => {
-      const next = new Set(previous);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
-    setHasUserAdjustedSelection(true);
-  };
+  const moveChangePaths = React.useCallback(async (paths: string[], direction: 'stage' | 'unstage') => {
+    if (!currentDirectory || paths.length === 0) return;
+    try {
+      if (direction === 'stage') {
+        if (paths.length > 1) await stageGitFiles(currentDirectory, paths);
+        else await stageGitFile(currentDirectory, paths[0]);
+      } else {
+        if (paths.length > 1) await unstageGitFiles(currentDirectory, paths);
+        else await unstageGitFile(currentDirectory, paths[0]);
+      }
+      await refreshStatusAndBranches(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : direction === 'stage'
+        ? t('gitView.toast.stageFileFailed')
+        : t('gitView.toast.unstageFileFailed'));
+    }
+  }, [currentDirectory, refreshStatusAndBranches, t]);
 
-  const selectAll = () => {
-    setSelectedPaths(new Set(changeEntries.map((file) => file.path)));
-    setHasUserAdjustedSelection(true);
-  };
-
-  const clearSelection = () => {
-    setSelectedPaths(new Set());
-    setHasUserAdjustedSelection(true);
-  };
+  const handleViewChangeDiff = React.useCallback((path: string) => {
+    setRoute({ type: 'diff', path });
+  }, []);
 
   const handleRevertFile = React.useCallback(async (filePath: string) => {
     if (!currentDirectory) return;
@@ -323,13 +327,14 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
 
   const handleGenerateCommitMessage = React.useCallback(async () => {
     if (!currentDirectory) return;
-    if (selectedPaths.size === 0) {
+    const selectedFilePaths = stagedChangeEntries.map((file) => file.path).sort();
+    if (selectedFilePaths.length === 0) {
       toast.error(t('gitView.toast.selectFileToDescribe'));
       return;
     }
     setIsGeneratingMessage(true);
     try {
-      const { message } = await generateCommitMessage(currentDirectory, Array.from(selectedPaths));
+      const { message } = await generateCommitMessage(currentDirectory, selectedFilePaths);
       setCommitMessage(message.subject?.trim() ?? '');
       setGeneratedHighlights(Array.isArray(message.highlights) ? message.highlights : []);
     } catch (error) {
@@ -337,7 +342,7 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
     } finally {
       setIsGeneratingMessage(false);
     }
-  }, [currentDirectory, selectedPaths, t]);
+  }, [currentDirectory, stagedChangeEntries, t]);
 
   const handleCommit = async (options: { pushAfter?: boolean } = {}) => {
     if (!currentDirectory) return;
@@ -345,7 +350,7 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
       toast.error(t('gitView.toast.enterCommitMessage'));
       return;
     }
-    const filesToCommit = Array.from(selectedPaths).sort();
+    const filesToCommit = stagedChangeEntries.map((file) => file.path).sort();
     if (filesToCommit.length === 0) {
       toast.error(t('gitView.toast.selectFileToCommit'));
       return;
@@ -357,8 +362,6 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
       toast.success(t('gitView.toast.commitCreated'));
       setCommitMessage('');
       setGeneratedHighlights([]);
-      setSelectedPaths(new Set());
-      setHasUserAdjustedSelection(false);
 
       if (options.pushAfter) {
         const trackingRemoteName = status?.tracking?.split('/')[0];
@@ -393,6 +396,44 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
       if (options.pushAfter) setSyncAction(null);
     }
   };
+
+  const changeGroups = React.useMemo<ChangesGroupConfig[]>(() => {
+    const groups: ChangesGroupConfig[] = [];
+
+    if (stagedChangeEntries.length > 0) {
+      groups.push({
+        id: 'staged',
+        title: t('gitView.changes.stagedTitle'),
+        entries: stagedChangeEntries,
+        actionSymbol: '-',
+        actionAllLabel: t('gitView.changes.unstageAllAria'),
+        getActionLabel: (path: string) => t('gitView.changes.unstageFileAria', { path }),
+        onActionFile: (path: string) => void moveChangePaths([path], 'unstage'),
+        onActionAll: (paths: string[]) => void moveChangePaths(paths, 'unstage'),
+        onViewDiff: (path: string) => handleViewChangeDiff(path),
+        onRevertFile: handleRevertFile,
+        showRevertActions: false,
+        accent: true,
+      });
+    }
+
+    if (unstagedChangeEntries.length > 0) {
+      groups.push({
+        id: 'unstaged',
+        title: t('gitView.changes.title'),
+        entries: unstagedChangeEntries,
+        actionSymbol: '+',
+        actionAllLabel: t('gitView.changes.stageAllAria'),
+        getActionLabel: (path: string) => t('gitView.changes.stageFileAria', { path }),
+        onActionFile: (path: string) => void moveChangePaths([path], 'stage'),
+        onActionAll: (paths: string[]) => void moveChangePaths(paths, 'stage'),
+        onViewDiff: (path: string) => handleViewChangeDiff(path),
+        onRevertFile: handleRevertFile,
+      });
+    }
+
+    return groups;
+  }, [handleRevertFile, handleViewChangeDiff, moveChangePaths, stagedChangeEntries, t, unstagedChangeEntries]);
 
   if (!currentDirectory) {
     return <MobileChangesState message={t('gitView.empty.selectSessionOrDirectory')} />;
@@ -454,23 +495,16 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
       <ScrollShadow className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {changeEntries.length > 0 ? (
           <div className="flex flex-col gap-4">
-            <ChangesSection
-              changeEntries={changeEntries}
-              selectedPaths={selectedPaths}
+            <ChangesPanel
+              groups={changeGroups}
               diffStats={status?.diffStats}
               revertingPaths={revertingPaths}
-              onToggleFile={toggleFileSelection}
-              onSelectAll={selectAll}
-              onClearSelection={clearSelection}
               onRevertAll={handleRevertAll}
-              onViewDiff={(path) => setRoute({ type: 'diff', path })}
-              onRevertFile={handleRevertFile}
               isRevertingAll={isRevertingAll}
               onVisiblePathsChange={setVisibleChangePaths}
-              maxListHeightClassName="max-h-[48vh]"
             />
             <CommitSection
-              selectedCount={selectedPaths.size}
+              stagedCount={stagedChangeEntries.length}
               commitMessage={commitMessage}
               onCommitMessageChange={setCommitMessage}
               generatedHighlights={generatedHighlights}
