@@ -15,6 +15,8 @@ import { registerSessionDirectory } from "./sync-refs"
 import { isSyntheticPart } from "@/lib/messages/synthetic"
 import { getSessionMaterializationStatus, materializeSessionSnapshots } from "./materialization"
 import { retry } from "./retry"
+import { isVSCodeRuntime } from "@/lib/desktop"
+import { isMobileSurfaceRuntime } from "@/lib/runtimeSurface"
 import { stripMessageDiffSnapshots, stripSessionDiffSnapshots } from "./sanitize"
 import { sessionEvents } from "@/lib/sessionEvents"
 import {
@@ -1045,17 +1047,26 @@ export async function forkFromMessage(sessionId: string, messageId: string): Pro
 // ---------------------------------------------------------------------------
 
 const FETCH_MESSAGES_LOADING = new Set<string>()
-const FETCH_MESSAGES_PAGE_SIZE = 50
+const DESKTOP_INITIAL_PAGE_SIZE = 50
+const CONSTRAINED_INITIAL_PAGE_SIZE = 30
 
-export async function fetchMessagesForSession(sessionID: string): Promise<void> {
+const getFetchPageSize = () => {
+  if (isVSCodeRuntime() || isMobileSurfaceRuntime()) return CONSTRAINED_INITIAL_PAGE_SIZE
+  return DESKTOP_INITIAL_PAGE_SIZE
+}
+
+export async function fetchMessagesForSession(sessionID: string, directory?: string | null): Promise<void> {
+  const resolvedDir = directory ?? dir()
+  if (!resolvedDir) return
+
   const s = sdk()
-  const store = dirStore()
-  const directory = dir()
-  if (!directory) return
+  const store = directory
+    ? dirStoreForDirectory(directory)
+    : dirStore()
 
   if (getSessionMaterializationStatus(store.getState(), sessionID).renderable) return
 
-  const loadingKey = `${directory}:${sessionID}`
+  const loadingKey = `${resolvedDir}:${sessionID}`
   if (FETCH_MESSAGES_LOADING.has(loadingKey)) return
 
   FETCH_MESSAGES_LOADING.add(loadingKey)
@@ -1064,8 +1075,8 @@ export async function fetchMessagesForSession(sessionID: string): Promise<void> 
     const result = await retry(async () => {
       const response = await s.session.messages({
         sessionID,
-        directory,
-        limit: FETCH_MESSAGES_PAGE_SIZE,
+        directory: resolvedDir,
+        limit: getFetchPageSize(),
       })
       return response
     })

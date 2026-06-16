@@ -40,7 +40,14 @@ export const getCachedProjection = (
   showTurnChangedFiles: boolean,
 ): TurnProjectionResult | undefined => {
   const key = buildProjectionCacheKey(sessionKey, messages, showTextJustificationActivity, showTurnChangedFiles);
-  return projectionCache.get(key);
+  const cached = projectionCache.get(key);
+  if (cached) {
+    // LRU re-order: move hit to the end (most recent) so it survives
+    // eviction longer than entries that haven't been read recently.
+    projectionCache.delete(key);
+    projectionCache.set(key, cached);
+  }
+  return cached;
 };
 
 export const setCachedProjection = (

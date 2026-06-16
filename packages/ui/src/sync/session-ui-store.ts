@@ -502,7 +502,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     // state change and fires ChatContainer.useEffect. The fetch is
     // fire-and-forget — any transient failure gets retried by the reactive path.
     if (id) {
-      void fetchMessagesForSession(id)
+      void fetchMessagesForSession(id, resolvedDir)
     }
 
     try {
