@@ -85,22 +85,6 @@ export const useProjectSessionSelection = (args: Args): { currentSessionDirector
 
   const previousActiveProjectRef = React.useRef<string | null>(null);
 
-  // Track explicit user selections so the auto-select fallback never
-  // overwrites an active user choice during rapid project switching.
-  const explicitSelectionRef = React.useRef<{ sessionId: string | null; at: number }>({
-    sessionId: null,
-    at: 0,
-  });
-  const EXPLICIT_SELECTION_GUARD_MS = 500;
-
-  const wrappedHandleSessionSelect = React.useCallback(
-    (sessionId: string, sessionDirectory: string | null, projectId?: string | null) => {
-      explicitSelectionRef.current = { sessionId, at: Date.now() };
-      handleSessionSelect(sessionId, sessionDirectory, projectId);
-    },
-    [handleSessionSelect],
-  );
-
   React.useLayoutEffect(() => {
     if (!activeProjectId) {
       return;
@@ -155,22 +139,13 @@ export const useProjectSessionSelection = (args: Args): { currentSessionDirector
     if (!targetSessionId || targetSessionId === currentSessionId) {
       return;
     }
-    // Suppress auto-select fallback shortly after an explicit user click on the
-    // same session — prevents stale fetch completions from fighting for focus.
-    if (
-      explicitSelectionRef.current.sessionId === targetSessionId &&
-      Date.now() - explicitSelectionRef.current.at < EXPLICIT_SELECTION_GUARD_MS
-    ) {
-      return;
-    }
-
     const targetDirectory = projectMap.get(targetSessionId)?.directory ?? null;
-    wrappedHandleSessionSelect(targetSessionId, targetDirectory, activeProjectId);
+    handleSessionSelect(targetSessionId, targetDirectory, activeProjectId);
   }, [
     activeProjectId,
     activeSessionByProject,
     currentSessionId,
-    wrappedHandleSessionSelect,
+    handleSessionSelect,
     newSessionDraftOpen,
     mobileVariant,
     openNewSessionDraft,

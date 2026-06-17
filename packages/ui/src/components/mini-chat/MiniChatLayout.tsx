@@ -67,6 +67,7 @@ const MiniChatHeader: React.FC<{ mode: MiniChatMode }> = ({ mode }) => {
     return normalizePath(state.newSessionDraft.bootstrapPendingDirectory ?? state.newSessionDraft.directoryOverride ?? '');
   });
   const [pinned, setPinned] = React.useState(false);
+  const lastGitStatusRequestRef = React.useRef<{ directory: string; at: number } | null>(null);
   const macosMajor = typeof window !== 'undefined' ? window.__OPENCHAMBER_MACOS_MAJOR__ ?? 0 : 0;
   const hasMacTrafficLights = Number.isFinite(macosMajor) && macosMajor > 0;
   const isWindowsElectronDesktop = typeof window !== 'undefined'
@@ -112,6 +113,10 @@ const MiniChatHeader: React.FC<{ mode: MiniChatMode }> = ({ mode }) => {
   });
   React.useEffect(() => {
     if (!openDirectory) return;
+    const now = Date.now();
+    const lastRequest = lastGitStatusRequestRef.current;
+    if (lastRequest?.directory === openDirectory && now - lastRequest.at < 5000) return;
+    lastGitStatusRequestRef.current = { directory: openDirectory, at: now };
     void ensureGitStatus(openDirectory, runtimeApis.git).catch(() => {});
   }, [ensureGitStatus, openDirectory, runtimeApis.git]);
 
@@ -293,7 +298,7 @@ const MiniChatHeader: React.FC<{ mode: MiniChatMode }> = ({ mode }) => {
           valueClassName="font-semibold leading-none"
           hideIcon
           showPercentIcon
-          percentIconClassName="h-5 w-5"
+          percentIconClassName="h-4.5 w-4.5"
         />
       ) : null}
       <Button

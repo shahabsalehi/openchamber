@@ -26,6 +26,7 @@ const INITIAL_MESSAGE_PAGE_SIZE = 50
 const VSCODE_INITIAL_MESSAGE_PAGE_SIZE = 30
 const MOBILE_INITIAL_MESSAGE_PAGE_SIZE = 30
 const HISTORY_MESSAGE_PAGE_SIZE = 100
+const INITIAL_PAGE_EXPANSION_LIMITS = [100, 150] as const
 const VSCODE_INITIAL_PAGE_EXPANSION_LIMITS = [50, 80, 120] as const
 const MAX_SEEN_DIRS = 30
 const VSCODE_SESSION_CACHE_LIMIT = 4
@@ -94,6 +95,9 @@ const getInitialMessagePageSize = () => {
   if (isMobileSurfaceRuntime()) return MOBILE_INITIAL_MESSAGE_PAGE_SIZE
   return INITIAL_MESSAGE_PAGE_SIZE
 }
+const getInitialPageExpansionLimits = () => isConstrainedSessionRuntime()
+  ? VSCODE_INITIAL_PAGE_EXPANSION_LIMITS
+  : INITIAL_PAGE_EXPANSION_LIMITS
 const getDefaultMeta = (): SyncMeta => ({ limit: getInitialMessagePageSize(), cursor: undefined, complete: false, loading: false })
 
 function getPrefetchMeta(directory: string, sessionID: string): SyncMeta | undefined {
@@ -348,13 +352,13 @@ export function useSync() {
         const limit = options?.before ? HISTORY_MESSAGE_PAGE_SIZE : m.limit
         let page = await fetchMessages(sessionID, limit, options?.before)
 
-        // Constrained shells keep the initial page small for switch performance. Some
-        // sessions have a very large final turn, so the latest 30 records can
+        // Keep the initial page small for switch performance. Some
+        // sessions have a very large final turn, so the latest records can
         // contain only assistant/tool records and no user boundary. That makes
         // turn projection render an empty chat until the user manually loads
         // older messages. Expand only this initial tail fetch, with a hard cap.
-        if (!options?.before && isConstrainedSessionRuntime() && !page.complete && !hasUserMessage(page.session)) {
-          for (const nextLimit of VSCODE_INITIAL_PAGE_EXPANSION_LIMITS) {
+        if (!options?.before && !page.complete && !hasUserMessage(page.session)) {
+          for (const nextLimit of getInitialPageExpansionLimits()) {
             if (nextLimit <= limit) continue
             page = await fetchMessages(sessionID, nextLimit)
             if (page.complete || hasUserMessage(page.session)) break

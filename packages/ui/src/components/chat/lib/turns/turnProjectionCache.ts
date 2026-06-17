@@ -7,11 +7,31 @@ const VSCODE_TURN_PROJECTION_CACHE_MAX = 4;
 const MOBILE_TURN_PROJECTION_CACHE_MAX = 4;
 
 const projectionCache = new Map<string, TurnProjectionResult>();
+const objectVersionByRef = new WeakMap<object, number>();
+let nextObjectVersion = 1;
 
 const getProjectionCacheMax = () => {
   if (isVSCodeRuntime()) return VSCODE_TURN_PROJECTION_CACHE_MAX;
   if (isMobileSurfaceRuntime()) return MOBILE_TURN_PROJECTION_CACHE_MAX;
   return TURN_PROJECTION_CACHE_MAX;
+};
+
+const getObjectVersion = (value: object): number => {
+  const cached = objectVersionByRef.get(value);
+  if (cached !== undefined) return cached;
+  const next = nextObjectVersion;
+  nextObjectVersion += 1;
+  objectVersionByRef.set(value, next);
+  return next;
+};
+
+const buildMessagesVersionSignature = (messages: ChatMessageEntry[]): string => {
+  return messages.map((message) => {
+    const infoVersion = getObjectVersion(message.info as object);
+    const partsVersion = getObjectVersion(message.parts);
+    const partVersions = message.parts.map((part) => getObjectVersion(part as object)).join(',');
+    return `${infoVersion}:${partsVersion}:${partVersions}`;
+  }).join(';');
 };
 
 export const buildProjectionCacheKey = (
@@ -28,6 +48,7 @@ export const buildProjectionCacheKey = (
     messages.length,
     lastMessageId,
     lastMessagePartCount,
+    buildMessagesVersionSignature(messages),
     showTextJustificationActivity ? '1' : '0',
     showTurnChangedFiles ? '1' : '0',
   ].join('|');
@@ -63,4 +84,3 @@ export const setCachedProjection = (
   }
   projectionCache.set(key, projection);
 };
-
