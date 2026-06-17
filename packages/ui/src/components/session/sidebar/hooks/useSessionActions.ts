@@ -55,26 +55,15 @@ export const useSessionActions = (args: Args) => {
   const [copiedSessionId, setCopiedSessionId] = React.useState<string | null>(null);
   const copyTimeout = React.useRef<number | null>(null);
 
-  // Debounce rapid session selections: the first click executes immediately,
-  // but subsequent clicks within the debounce window are coalesced to the
-  // latest target. This prevents race conditions when the user quickly
-  // switches between recent sessions in different projects.
-  const SESSION_SELECT_DEBOUNCE_MS = 80;
-  const pendingSelectRef = React.useRef<{ timer: number | null }>({ timer: null });
-
   React.useEffect(() => {
-    const pendingSelect = pendingSelectRef.current;
     return () => {
       if (copyTimeout.current) {
         clearTimeout(copyTimeout.current);
       }
-      if (pendingSelect.timer) {
-        clearTimeout(pendingSelect.timer);
-      }
     };
   }, []);
 
-  const executeSessionSelect = React.useCallback(
+  const handleSessionSelect = React.useCallback(
     (sessionId: string, sessionDirectory?: string | null, projectId?: string | null) => {
       const resetSessionSearch = () => {
         if (!args.isSessionSearchOpen && args.sessionSearchQuery.length === 0) {
@@ -109,25 +98,6 @@ export const useSessionActions = (args: Args) => {
       resetSessionSearch();
     },
     [args],
-  );
-
-  const handleSessionSelect = React.useCallback(
-    (sessionId: string, sessionDirectory?: string | null, projectId?: string | null) => {
-      if (pendingSelectRef.current.timer) {
-        window.clearTimeout(pendingSelectRef.current.timer);
-        pendingSelectRef.current.timer = window.setTimeout(() => {
-          executeSessionSelect(sessionId, sessionDirectory, projectId);
-          pendingSelectRef.current.timer = null;
-        }, SESSION_SELECT_DEBOUNCE_MS);
-        return;
-      }
-
-      executeSessionSelect(sessionId, sessionDirectory, projectId);
-      pendingSelectRef.current.timer = window.setTimeout(() => {
-        pendingSelectRef.current.timer = null;
-      }, SESSION_SELECT_DEBOUNCE_MS);
-    },
-    [executeSessionSelect],
   );
 
   const handleSessionDoubleClick = React.useCallback((sessionId: string, sessionTitle: string) => {

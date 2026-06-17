@@ -156,24 +156,6 @@ const SIDEBAR_PR_NO_PR_RETRY_MS = 5 * 60_000;
 
 const EMPTY_SUBTREE_SET: Set<string> = new Set();
 
-/**
- * Returns a stable-identity function whose body always calls the latest
- * version of `handler` from a ref. Used to flatten the ~30-dep
- * `useCallback` for `renderSessionNode` so the React.memo comparator
- * downstream sees a stable reference between renders, even though the
- * underlying handler reads fresh state.
- *
- * Mirrors the useStableEvent pattern in MessageList.tsx.
- */
-const useStableEvent = <T extends (...args: never[]) => unknown>(handler: T) => {
-  const handlerRef = React.useRef(handler);
-  React.useEffect(() => {
-    handlerRef.current = handler;
-  }, [handler]);
-
-  return React.useCallback((...args: Parameters<T>) => handlerRef.current(...args) as ReturnType<T>, []) as T;
-};
-
 interface SessionSidebarProps {
   mobileVariant?: boolean;
   onSessionSelected?: (sessionId: string) => void;
@@ -1288,8 +1270,8 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     projectHeaderSentinelRefs,
   });
 
-  const renderSessionNode = useStableEvent(
-    ((
+  const renderSessionNode = React.useCallback(
+    (
       node: SessionNode,
       depth = 0,
       groupDirectory?: string | null,
@@ -1358,7 +1340,42 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
         childRenderExtrasFor={renderExtras?.childRenderExtrasFor}
         liveSessionById={liveSessionById}
       />
-    ))
+    ),
+    [
+      currentSessionId,
+      pinnedSessionIds,
+      expandedParents,
+      hasSessionSearchQuery,
+      normalizedSessionSearchQuery,
+      notifyOnSubtasks,
+      editingId,
+      setEditingId,
+      editTitle,
+      setEditTitle,
+      handleSaveEdit,
+      handleCancelEdit,
+      toggleParent,
+      handleSessionSelect,
+      handleSessionDoubleClick,
+      togglePinnedSession,
+      handleShareSession,
+      copiedSessionId,
+      handleCopyShareUrl,
+      handleUnshareSession,
+      openSidebarMenuKey,
+      setOpenSidebarMenuKey,
+      renamingFolderId,
+      getFoldersForScope,
+      getSessionFolderId,
+      removeSessionFromFolder,
+      addSessionToFolder,
+      createFolderAndStartRename,
+      openContextPanelTab,
+      handleDeleteSession,
+      mobileVariant,
+      alwaysShowSidebarActions,
+      liveSessionById,
+    ],
   );
 
   const toggleCollapsedGroup = React.useCallback((key: string) => {

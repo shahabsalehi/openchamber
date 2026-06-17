@@ -153,72 +153,6 @@ type Props = {
   liveSessionById: Map<string, Session>;
 };
 
-const areEqual = (prev: Props, next: Props): boolean => {
-  const prevSession = prev.node.session;
-  const nextSession = next.node.session;
-  const prevSessionId = prevSession.id;
-  const nextSessionId = nextSession.id;
-
-  if (prevSessionId !== nextSessionId) return false;
-  if (prev.node.session !== next.node.session) return false;
-  if (prev.nodeStructureKey !== next.nodeStructureKey) return false;
-  if (prev.depth !== next.depth) return false;
-  if (prev.groupDirectory !== next.groupDirectory) return false;
-  if (prev.projectId !== next.projectId) return false;
-  if (prev.archivedBucket !== next.archivedBucket) return false;
-  if (prev.currentSessionId !== next.currentSessionId
-    && (prev.subtreeContainsActive.has(prevSessionId) || next.subtreeContainsActive.has(nextSessionId))) {
-    return false;
-  }
-  if (prev.pinnedSessionIds.has(prevSessionId) !== next.pinnedSessionIds.has(nextSessionId)) return false;
-  // Expansion is keyed per render context, so compare the composite key
-  // matching the one isExpanded reads from in render. If a session appears
-  // in two contexts (project + recent), they have independent state.
-  {
-    const prevRenderContext = prev.renderContext ?? 'project';
-    const nextRenderContext = next.renderContext ?? 'project';
-    const prevArchived = prev.archivedBucket ?? false;
-    const nextArchived = next.archivedBucket ?? false;
-    const prevExpansionKey = `${prevRenderContext}:${prevArchived ? 'archived' : 'active'}:${prevSessionId}`;
-    const nextExpansionKey = `${nextRenderContext}:${nextArchived ? 'archived' : 'active'}:${nextSessionId}`;
-    if (prev.expandedParents.has(prevExpansionKey) !== next.expandedParents.has(nextExpansionKey)) return false;
-  }
-  if (prev.hasSessionSearchQuery !== next.hasSessionSearchQuery) return false;
-  if (prev.normalizedSessionSearchQuery !== next.normalizedSessionSearchQuery) return false;
-  if (prev.notifyOnSubtasks !== next.notifyOnSubtasks) return false;
-  if (prev.editingId !== next.editingId
-    && (prev.subtreeContainsEditing.has(prevSessionId) || next.subtreeContainsEditing.has(nextSessionId))) {
-    return false;
-  }
-  if (prev.editTitle !== next.editTitle
-    && (prev.subtreeContainsEditing.has(prevSessionId) || next.subtreeContainsEditing.has(nextSessionId))) {
-    return false;
-  }
-  if ((prev.copiedSessionId === prevSessionId) !== (next.copiedSessionId === nextSessionId)) return false;
-
-  if (prev.menuOpenSessionId !== next.menuOpenSessionId) {
-    const prevIsOpen = prev.menuOpenSessionId === prevSessionId;
-    const nextIsOpen = next.menuOpenSessionId === nextSessionId;
-    if (prevIsOpen !== nextIsOpen) return false;
-  }
-
-  const prevDirectory = normalizePath((prevSession as Session & { directory?: string | null }).directory ?? null)
-    ?? normalizePath(prev.groupDirectory ?? null);
-  const nextDirectory = normalizePath((nextSession as Session & { directory?: string | null }).directory ?? null)
-    ?? normalizePath(next.groupDirectory ?? null);
-  if (prevDirectory !== nextDirectory) return false;
-
-  if ((prev.secondaryMeta?.projectLabel ?? null) !== (next.secondaryMeta?.projectLabel ?? null)) return false;
-  if ((prev.secondaryMeta?.branchLabel ?? null) !== (next.secondaryMeta?.branchLabel ?? null)) return false;
-  if (prev.mobileVariant !== next.mobileVariant) return false;
-  if (prev.alwaysShowActions !== next.alwaysShowActions) return false;
-  if ((prev.renderContext ?? 'project') !== (next.renderContext ?? 'project')) return false;
-  if (prev.renamingFolderId !== next.renamingFolderId) return false;
-  if (prev.liveSessionById !== next.liveSessionById) return false;
-
-  return true;
-};
-
 function SessionNodeItemComponent(props: Props): React.ReactNode {
   const { t } = useI18n();
   const {
@@ -1255,4 +1189,4 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   );
 }
 
-export const SessionNodeItem = React.memo(SessionNodeItemComponent, areEqual);
+export const SessionNodeItem = SessionNodeItemComponent;
