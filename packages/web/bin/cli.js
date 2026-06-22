@@ -152,6 +152,12 @@ function resolveConfiguredBindHost(hostOverride) {
   return configured || '127.0.0.1';
 }
 
+function isWildcardBindHost(host) {
+  if (typeof host !== 'string') return false;
+  const trimmed = host.trim();
+  return trimmed === '0.0.0.0' || trimmed === '::' || trimmed === '[::]';
+}
+
 function resolveApiHost(hostOverride) {
   const configured = resolveConfiguredBindHost(hostOverride);
 
@@ -232,6 +238,16 @@ async function resolveConnectUrlServerUrl(options) {
   }
 
   const bindHost = resolveConfiguredBindHost(hostOverride);
+
+  // A host that's already a full http(s) URL is a public/server URL, not a bind
+  // address (e.g. `--host https://devchamber.example.com` for a remote deploy
+  // behind a reverse proxy). Use it directly instead of feeding it to
+  // buildLocalUrl, which would produce `http://https://...:port`.
+  const hostAsServerUrl = normalizeServerUrlForConnection(bindHost);
+  if (hostAsServerUrl) {
+    return { serverUrl: hostAsServerUrl, source: 'configured-host' };
+  }
+
   if (!isWildcardBindHost(bindHost)) {
     return {
       serverUrl: buildLocalUrl(options.port, '/', hostOverride).replace(/\/+$/, ''),
