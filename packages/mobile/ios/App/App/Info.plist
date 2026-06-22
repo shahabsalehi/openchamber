@@ -31,6 +31,8 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>OpenChamber connects to OpenChamber servers on your local network.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>OpenChamber uses the camera to scan a server's pairing QR code.</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
