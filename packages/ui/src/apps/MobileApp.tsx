@@ -64,6 +64,7 @@ import { resetAppForRuntimeEndpointChange } from './runtimeEndpointReset';
 import { useAppFontEffects } from './useAppFontEffects';
 import { useFontsReady } from './useFontsReady';
 import { useNativeLocalNotifications } from './useNativeLocalNotifications';
+import { useNativePushRegistration } from './useNativePushRegistration';
 import { useWebNotificationStream } from '@/hooks/useWebNotificationStream';
 
 const MOBILE_SETTINGS_PAGES = [
@@ -1988,6 +1989,8 @@ export function MobileApp({ apis }: MobileAppProps) {
   useWindowTitle();
   useRouter();
   useNativeLocalNotifications({ enabled: isNativeMobileApp });
+  // Register the APNs device token with the server (relay mode) for background push.
+  useNativePushRegistration({ enabled: isNativeMobileApp && isConnected });
   // Subscribe to the server's notification SSE stream so agent ready/error/question/
   // permission events become native local notifications (delivery via the native
   // notifications API wired in renderMobileApp). Gated internally on the notification

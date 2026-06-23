@@ -1,10 +1,13 @@
 // APNs (Apple Push Notification service) runtime for the native iOS mobile app.
 //
-// Mirrors push-runtime.js (web push / VAPID) but speaks APNs over HTTP/2 with no extra
-// dependency: device tokens are persisted per UI session, and pushes are sent with a
-// token-based JWT (ES256) signed by Node's built-in crypto. Wired into the same trigger
-// fanout as web push (see runtime.js), so notification content / dedup tags / focus
-// suppression are shared.
+// Device tokens are persisted per UI session (mirrors push-runtime.js). Delivery has two
+// modes, chosen at send time:
+//   - Relay (default): POST tokens + generic text to the central Cloudflare relay, which
+//     holds the single project APNs key and signs+sends — so users configure nothing.
+//   - Direct (fallback): sign an ES256 JWT with Node crypto and send over HTTP/2 ourselves,
+//     for self-hosters who set OPENCHAMBER_APNS_* and OPENCHAMBER_PUSH_RELAY_DISABLED=true.
+// Wired into the same trigger fanout as web push (see runtime.js); the relay carries only
+// generic, model-based text (no session content) — see APNS.md.
 
 const APNS_TOKENS_VERSION = 1;
 const APNS_HOST_PRODUCTION = 'https://api.push.apple.com';
@@ -12,6 +15,7 @@ const APNS_HOST_SANDBOX = 'https://api.sandbox.push.apple.com';
 // APNs rejects auth tokens older than 1h; refresh well inside that window.
 const JWT_TTL_MS = 50 * 60 * 1000;
 const DEFAULT_BUNDLE_ID = 'com.openchamber.app';
+const DEFAULT_RELAY_URL = 'https://api.openchamber.dev/v1/push/send';
 const MAX_TOKENS_PER_SESSION = 10;
 // APNs reasons that mean the token is permanently invalid → drop it.
 const DEAD_TOKEN_REASONS = new Set(['BadDeviceToken', 'Unregistered', 'DeviceTokenNotForTopic']);
@@ -287,29 +291,67 @@ export const createApnsRuntime = (deps) => {
       req.end(body);
     });
 
-  const sendApnsToAllUiSessions = async (payload, options = {}) => {
-    const requireNoSse = options.requireNoSse === true;
-    if (requireNoSse && typeof isAnyUiVisible === 'function' && isAnyUiVisible()) {
-      return;
-    }
+  // Relay mode (default): the single APNs key lives in the central Cloudflare relay, not on
+  // each user's server — so users configure nothing. The server just POSTs device tokens +
+  // generic text; the relay signs + sends and reports which tokens to drop. Direct mode (below)
+  // is the fallback for self-hosters who set OPENCHAMBER_APNS_* and disable the relay.
+  const resolveRelayConfig = () => {
+    if (trimmedEnv('OPENCHAMBER_PUSH_RELAY_DISABLED') === 'true') return null;
+    return {
+      url: trimmedEnv('OPENCHAMBER_PUSH_RELAY_URL') || DEFAULT_RELAY_URL,
+      token: trimmedEnv('OPENCHAMBER_PUSH_RELAY_TOKEN'),
+      environment:
+        (trimmedEnv('OPENCHAMBER_APNS_ENVIRONMENT') || 'sandbox').toLowerCase() === 'production'
+          ? 'production'
+          : 'sandbox',
+    };
+  };
 
+  const sendViaRelay = async (deviceTokens, payload, relay) => {
+    const requestBody = JSON.stringify({
+      tokens: deviceTokens.slice(0, 100),
+      title: typeof payload?.title === 'string' && payload.title.length > 0 ? payload.title : 'OpenChamber',
+      body: typeof payload?.body === 'string' ? payload.body : '',
+      collapseId: typeof payload?.tag === 'string' ? payload.tag.slice(0, 64) : undefined,
+      env: relay.environment,
+      data: payload?.data && typeof payload.data === 'object' ? payload.data : undefined,
+    });
+    try {
+      const res = await fetch(relay.url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(relay.token ? { authorization: `Bearer ${relay.token}` } : {}),
+        },
+        body: requestBody,
+      });
+      if (!res.ok) {
+        console.warn(`[APNs relay] send failed status=${res.status}`);
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      const results = Array.isArray(data?.results) ? data.results : [];
+      for (const result of results) {
+        if (result && result.drop === true && typeof result.token === 'string') {
+          await removeApnsTokenFromAllSessions(result.token);
+        }
+      }
+    } catch (error) {
+      console.warn('[APNs relay] request failed:', error?.message ?? error);
+    }
+  };
+
+  const sendViaDirectApns = async (deviceTokens, payload) => {
     const config = await resolveApnsConfig();
     if (!config) {
       if (!warnedUnconfigured) {
         warnedUnconfigured = true;
         console.warn(
-          '[APNs] Not configured; set OPENCHAMBER_APNS_KEY_ID / OPENCHAMBER_APNS_TEAM_ID / OPENCHAMBER_APNS_P8 (or settings.apnsConfig) to enable native iOS push.',
+          '[APNs] Relay disabled and no direct config; set OPENCHAMBER_APNS_KEY_ID / OPENCHAMBER_APNS_TEAM_ID / OPENCHAMBER_APNS_P8 for direct send.',
         );
       }
       return;
     }
-
-    const store = await readTokensFromDisk();
-    const deviceTokens = new Set();
-    for (const record of Object.values(store.tokensBySession || {})) {
-      for (const entry of normalizeTokens(record)) deviceTokens.add(entry.deviceToken);
-    }
-    if (deviceTokens.size === 0) return;
 
     const host = config.environment === 'production' ? APNS_HOST_PRODUCTION : APNS_HOST_SANDBOX;
     const jwt = getJwt(config);
@@ -341,9 +383,36 @@ export const createApnsRuntime = (deps) => {
         finish();
       });
       Promise.all(
-        Array.from(deviceTokens).map((token) => sendOne(client, token, body, jwt, sendConfig)),
+        deviceTokens.map((token) => sendOne(client, token, body, jwt, sendConfig)),
       ).finally(finish);
     });
+  };
+
+  const sendApnsToAllUiSessions = async (payload, options = {}) => {
+    const requireNoSse = options.requireNoSse === true;
+    if (requireNoSse && typeof isAnyUiVisible === 'function' && isAnyUiVisible()) {
+      return;
+    }
+
+    const store = await readTokensFromDisk();
+    const deviceTokens = [];
+    const seen = new Set();
+    for (const record of Object.values(store.tokensBySession || {})) {
+      for (const entry of normalizeTokens(record)) {
+        if (!seen.has(entry.deviceToken)) {
+          seen.add(entry.deviceToken);
+          deviceTokens.push(entry.deviceToken);
+        }
+      }
+    }
+    if (deviceTokens.length === 0) return;
+
+    const relay = resolveRelayConfig();
+    if (relay) {
+      await sendViaRelay(deviceTokens, payload, relay);
+      return;
+    }
+    await sendViaDirectApns(deviceTokens, payload);
   };
 
   return {

@@ -1,79 +1,63 @@
-# APNs remote push — implemented but FROZEN
+# APNs remote push — relay mode
 
-Native iOS APNs remote push (notifications delivered even when the app is **suspended or
-killed**) is implemented end‑to‑end but intentionally **dormant**. It is not triggered and
-requires no setup to build/run the app. This document explains why, what exists, and exactly
-how to reinstate it.
+Native iOS background push (notifications even when the app is **suspended or killed**) is
+delivered via APNs through a **central relay**, so no user configures an Apple key.
 
-## Why it's frozen
+## How it works
 
-APNs can only be sent by a server holding an APNs key tied to the app's Apple **Team ID** +
-bundle id (`com.openchamber.app`). For a self‑hosted product that means:
+1. The app registers its APNs device token with **its own server** (`POST /api/push/apns-token`,
+   `useNativePushRegistration`). PWA/desktop never register — only the native Capacitor app.
+2. On a trigger (ready/error/question/permission), the server composes **generic, content-free**
+   text — model name + scenario only ("Opus 4.8 finished task" / "needs your input" / "hit an
+   error"), no session content — and, when a UI client is **not focused** and tokens exist, POSTs
+   `{ tokens, title, body, collapseId, env, data:{sessionId} }` to the relay
+   (`apns-runtime.js` → `sendViaRelay`).
+3. The **relay** (`openchamber-website/apps/api`, Cloudflare Worker, `POST /v1/push/send`) holds
+   the single project APNs `.p8` key, signs an ES256 JWT with `crypto.subtle`, and sends each
+   token to APNs over HTTP/2. It returns per-token results; the server drops tokens flagged
+   `drop` (410 / BadDeviceToken). Generic text means nothing sensitive crosses Cloudflare.
+4. Tapping a push deep-links to its session via the forwarded `sessionId`.
 
-- **Self‑build users** (own Apple account + own build) can configure their own key — fine.
-- **Users of one published App Store app** cannot: they don't own the signing identity, so
-  their own server can't push to it. The only way they get push with zero config is a
-  **central relay** owned by the publisher that holds the single APNs key.
+Cloudflare is touched **only** when: native app + notifications on + app backgrounded + a
+registered token exists. Local notifications (`nativeNotifications.ts`) still cover the
+foreground / brief-background window; APNs covers true background.
 
-OpenChamber will gain its own **encrypted relay** (the same relay that will carry the whole
-connection between the app and a user's remote machine, removing the need for third‑party
-tunnels). When it exists, this APNs path is reused: the relay holds the key and forwards
-notification events to APNs (and, for Android, FCM). Until then, the zero‑config path is
-**local notifications** (see `nativeNotifications.ts`), which work while the app is alive or in
-the brief background window iOS grants — but not once suspended.
+## Modes
 
-## What's built (kept, dormant)
+- **Relay (default):** server has no Apple key; `OPENCHAMBER_PUSH_RELAY_URL` defaults to
+  `https://api.openchamber.dev/v1/push/send`.
+- **Direct (fallback):** set `OPENCHAMBER_PUSH_RELAY_DISABLED=true` + `OPENCHAMBER_APNS_KEY_ID/
+  TEAM_ID/P8` to sign+send from the server itself (HTTP/2 + ES256 JWT).
 
-Server (config‑gated — never fires unless APNs env/settings are present):
-- `apns-runtime.js` — device‑token store (`apns-tokens.json`) + dependency‑free HTTP/2 APNs
-  sender (token‑based ES256 JWT via Node `crypto`). Drops dead tokens on `410`/`BadDeviceToken`.
-- `routes.js` — `POST`/`DELETE /api/push/apns-token` (scoped via `uiAuthController.ensureSessionToken`).
-- `runtime.js` — `fanoutPush()` already calls `sendApnsToAllUiSessions` next to web‑push.
-- `index.js` / `bootstrap-runtime.js` — runtime construction + dependency wiring.
+## Config
 
-Client (present, **not wired**):
-- `packages/ui/src/apps/useNativePushRegistration.ts` — registers the APNs token + tap deep‑link.
-- `packages/web/src/api/push.ts` — `registerApnsToken` / `unregisterApnsToken`.
-- `@capacitor/push-notifications` is still a dependency, and `AppDelegate.swift` still forwards
-  `didRegister*ForRemoteNotifications*` to Capacitor.
+Server (`apns-runtime.js`):
+- `OPENCHAMBER_PUSH_RELAY_URL` (default the public relay), `OPENCHAMBER_PUSH_RELAY_TOKEN` (soft
+  bearer; must match the relay's `PUSH_RELAY_TOKEN` if set), `OPENCHAMBER_APNS_ENVIRONMENT`
+  (`sandbox` default / `production`).
+- Direct fallback: `OPENCHAMBER_APNS_KEY_ID`, `OPENCHAMBER_APNS_TEAM_ID`, `OPENCHAMBER_APNS_P8`
+  (or `_P8_PATH`), `OPENCHAMBER_APNS_BUNDLE_ID`, `OPENCHAMBER_PUSH_RELAY_DISABLED=true`.
 
-## What was removed for the freeze (re‑add to reinstate)
+Relay (Cloudflare Worker secrets via `wrangler secret put` / GitHub Actions): `APNS_P8`,
+`APNS_KEY_ID`, `APNS_TEAM_ID`, optional `APNS_BUNDLE_ID` / `APNS_DEFAULT_ENV` / `PUSH_RELAY_TOKEN`.
 
-1. The hook call in `MobileApp.tsx`:
-   `useNativePushRegistration({ enabled: isNativeMobileApp && isConnected })`.
-2. `packages/mobile/ios/App/App/App.entitlements` with `aps-environment` = `development`
-   (or `production`), plus `CODE_SIGN_ENTITLEMENTS = App/App.entitlements;` in **both** build
-   configs in `project.pbxproj`.
-3. `UIBackgroundModes` → `remote-notification` in `Info.plist`.
+## Apple setup (one-time)
 
-(These three were removed so the app builds/signs with **no** Apple push setup. The entitlement
-in particular requires the App ID to have the Push Notifications capability.)
+1. Apple **Keys** (not Certificates) → create an **APNs Auth Key** (`.p8`) → Key ID + Team ID;
+   enable **Push Notifications** on App ID `com.openchamber.app`.
+2. In the **openchamber-website** repo → Actions secrets: `APNS_P8` (PEM), `APNS_KEY_ID`,
+   `APNS_TEAM_ID`, `PUSH_RELAY_TOKEN`. Push to `main` → relay deploys + secrets sync.
+3. Xcode: confirm the Push Notifications capability; Clean Build Folder; run on device.
 
-## Reinstatement checklist
+## Security posture (v1)
 
-1. Re‑add the three items above; `bun run mobile:sync`.
-2. Apple Developer: enable **Push Notifications** for App ID `com.openchamber.app`; create an
-   **APNs Auth Key** (`.p8`) → note **Key ID** + **Team ID**.
-3. Xcode: confirm Signing & Capabilities shows Push Notifications + Background Modes (Remote
-   notifications); Clean Build Folder; run on device.
-4. Configure the **sender** (the relay, or your own server) — env first, then `settings.apnsConfig`:
-   - `OPENCHAMBER_APNS_KEY_ID`, `OPENCHAMBER_APNS_TEAM_ID`
-   - `OPENCHAMBER_APNS_P8` (PEM contents; literal `\n` accepted) **or** `OPENCHAMBER_APNS_P8_PATH`
-   - `OPENCHAMBER_APNS_BUNDLE_ID` (default `com.openchamber.app`)
-   - `OPENCHAMBER_APNS_ENVIRONMENT` (`sandbox` default for dev/side‑load builds; `production` for
-     TestFlight/App Store — must match the `aps-environment` entitlement)
+The real capability is *possessing a device token* (secret, per-install, bundle-scoped) — an
+attacker can't obtain others' tokens. `PUSH_RELAY_TOKEN` + Cloudflare rate limiting are soft
+defense-in-depth. Per-server signed identity is deferred to the future full encrypted relay,
+which this design feeds into.
 
 ## Android (FCM) note
 
-The Android remote‑push equivalent is **FCM** (Firebase). It is **not** implemented; the same
-relay would forward to FCM with a server key, and the client would register an FCM token (same
-shape as the APNs token store/routes). Local notifications already cover Android with no extra
-work.
-
-## Relay reuse plan (future)
-
-Device registers its push token with its server/the relay (route already exists). On a
-notification trigger, instead of each user server holding Apple/Google keys, the server forwards
-the event to the encrypted relay; the relay holds the **single** APNs/FCM credentials and sends.
-`sendApnsToAllUiSessions` becomes the relay's send step (or the server posts to the relay and the
-relay calls this). Zero config for end users.
+The Android equivalent is **FCM** (not implemented): the same relay would forward to FCM with a
+server key, and the client would register an FCM token (same store/routes). Local notifications
+already cover Android.

@@ -15,14 +15,38 @@ export const createNotificationTriggerRuntime = (deps) => {
     getOpenCodeAuthHeaders,
   } = deps;
 
-  // Fan a push payload out to every delivery channel: browser web-push and native
-  // iOS APNs. Both share the same payload, dedup tag, and `requireNoSse` focus gate;
-  // failures in one channel must not block the other.
+  // Generic, content-free notification text for native push (per the mobile design: no
+  // session content crosses the relay). Keyed by trigger type; the model name comes from
+  // the payload's `data.model`.
+  const APNS_GENERIC_BODY_BY_TYPE = {
+    ready: 'finished task',
+    error: 'hit an error',
+    question: 'needs your input',
+    permission: 'needs your input',
+  };
+
+  const toApnsGenericPayload = (payload) => {
+    const data = payload?.data && typeof payload.data === 'object' ? payload.data : {};
+    const model = typeof data.model === 'string' && data.model.trim().length > 0
+      ? data.model.trim()
+      : 'OpenChamber';
+    return {
+      title: model,
+      body: APNS_GENERIC_BODY_BY_TYPE[data.type] || 'has an update',
+      tag: payload?.tag,
+      // sessionId is forwarded so a tapped push can deep-link; it is an opaque id, not content.
+      data: typeof data.sessionId === 'string' ? { sessionId: data.sessionId } : undefined,
+    };
+  };
+
+  // Fan a notification out to every delivery channel: browser web-push (full templated
+  // payload) and native iOS APNs (generic model-based text). Both share the dedup tag and
+  // `requireNoSse` focus gate; a failure in one channel must not block the other.
   const fanoutPush = (payload, options) => Promise.all([
     Promise.resolve(sendPushToAllUiSessions?.(payload, options)).catch((error) => {
       console.warn('[Push] web-push fanout failed:', error?.message ?? error);
     }),
-    Promise.resolve(sendApnsToAllUiSessions?.(payload, options)).catch((error) => {
+    Promise.resolve(sendApnsToAllUiSessions?.(toApnsGenericPayload(payload), options)).catch((error) => {
       console.warn('[APNs] fanout failed:', error?.message ?? error);
     }),
   ]);
@@ -304,6 +328,7 @@ export const createNotificationTriggerRuntime = (deps) => {
             data: {
               url: buildSessionDeepLinkUrl(sessionId),
               sessionId,
+              model: variables.model_name,
               type: 'ready',
             },
           },
@@ -366,6 +391,7 @@ export const createNotificationTriggerRuntime = (deps) => {
             data: {
               url: buildSessionDeepLinkUrl(sessionId),
               sessionId,
+              model: variables.model_name,
               type: 'error',
             },
           },
@@ -442,6 +468,7 @@ export const createNotificationTriggerRuntime = (deps) => {
             data: {
               url: buildSessionDeepLinkUrl(sessionId),
               sessionId,
+              model: variables.model_name,
               type: 'question',
             },
           },
@@ -560,6 +587,7 @@ export const createNotificationTriggerRuntime = (deps) => {
             data: {
               url: buildSessionDeepLinkUrl(sessionId),
               sessionId,
+              model: variables.model_name,
               type: 'permission',
             },
           },

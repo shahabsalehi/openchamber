@@ -5,14 +5,10 @@ import { useUIStore } from '@/stores/useUIStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 
 /**
- * FROZEN / NOT WIRED. APNs remote push is implemented end-to-end but intentionally
- * dormant — see `packages/web/server/lib/notifications/APNS.md`. It will be reused once
- * OpenChamber ships its own encrypted relay (so users don't each configure APNs). To
- * reinstate, call this hook from MobileApp and restore the iOS entitlement / background
- * mode per that doc.
- *
  * Registers the native iOS APNs device token with the connected server so the app can
- * receive remote push even when suspended/closed.
+ * receive remote push even when suspended/closed. Delivery goes through the central relay
+ * (server posts generic text → relay signs+sends) — see
+ * `packages/web/server/lib/notifications/APNS.md`.
  *
  * Lazy-imports `@capacitor/push-notifications` (only present in the Capacitor shell),
  * mirroring the other `@capacitor/*` integrations in MobileApp. On `registration` the
