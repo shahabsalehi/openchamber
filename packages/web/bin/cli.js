@@ -335,6 +335,16 @@ async function main() {
 const isCliExecution = isModuleCliExecution(process.argv[1], import.meta.url, fs.realpathSync, 'openchamber');
 
 if (isCliExecution) {
+  // Exit cleanly when a downstream consumer closes the pipe (e.g. `| head`).
+  // Without this, writes to a closed stdout throw EPIPE and surface as an
+  // uncaught exception with a stack trace.
+  process.stdout.on('error', (error) => {
+    if (error && error.code === 'EPIPE') {
+      process.exit(0);
+    }
+  });
+  process.stderr.on('error', () => {});
+
   let isHandlingSigint = false;
   process.on('SIGINT', () => {
     if (isHandlingSigint) {
