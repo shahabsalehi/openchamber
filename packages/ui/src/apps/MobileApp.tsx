@@ -63,7 +63,7 @@ import { isQrScanSupported, parseConnectionPayload, scanConnectionQr } from './m
 import { resetAppForRuntimeEndpointChange } from './runtimeEndpointReset';
 import { useAppFontEffects } from './useAppFontEffects';
 import { useFontsReady } from './useFontsReady';
-import { useNativePushDeepLink } from './useNativePushDeepLink';
+import { useDeepLinkHandlers, useDeepLinkSource } from './deepLinkNavigation';
 import { useNativePushRegistration } from './useNativePushRegistration';
 
 const MOBILE_SETTINGS_PAGES = [
@@ -1524,6 +1524,32 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
     setPendingChangesDiff(null);
   }, []);
 
+  // Expose the shell's panel-opening actions to the deep-link layer so openchamber:// URLs
+  // (and notification taps / widgets) can navigate to these surfaces. Session and
+  // new-session intents resolve directly against the store, so they aren't wired here.
+  const deepLinkHandlers = React.useMemo(
+    () => ({
+      openSessions: () => setSessionsSheetOpen(true),
+      openView: (target: 'files' | 'mcp' | 'instances' | 'update') => {
+        if (target === 'files') setFilesOpen(true);
+        else if (target === 'mcp') setMcpOpen(true);
+        else if (target === 'instances') setInstancesOpen(true);
+        else if (target === 'update') setUpdateOpen(true);
+      },
+      openChanges: ({ path, staged }: { path?: string; staged?: boolean } = {}) => {
+        setPendingChangesDiff(path ? { path, staged: staged === true } : null);
+        setChangesOpen(true);
+      },
+      openSettings: (section?: string) => {
+        if (section) setSettingsPage(section as Parameters<typeof setSettingsPage>[0]);
+        setSettingsInitialMobileStage(section ? 'page-content' : 'nav');
+        setSettingsOpen(true);
+      },
+    }),
+    [setSettingsPage],
+  );
+  useDeepLinkHandlers(deepLinkHandlers);
+
   const handleNativeBack = React.useCallback(() => {
     if (overflowOpen) {
       setOverflowOpen(false);
@@ -2022,10 +2048,11 @@ export function MobileApp({ apis }: MobileAppProps) {
   // (document.hasFocus() is unreliable) and leaked while the app was open; the in-app SSE
   // notification dispatch is no-op'd for native in renderMobileApp.
   useNativePushRegistration({ enabled: isNativeMobileApp && isConnected });
-  // Capture notification-tap deep-links even before we're connected (cold launch),
-  // then open the session once the app is ready. Registered unconditionally so a
-  // cold-launch tap isn't lost on the connect/splash screen.
-  useNativePushDeepLink({ ready: isNativeMobileApp && isConnected && isInitialized });
+  // Single native deep-link entry point: notification taps AND the openchamber:// URL
+  // scheme (widgets, Live Activities, external links). Registered unconditionally so a
+  // cold-launch tap/open isn't lost on the connect/splash screen; intents stash until
+  // the app is ready (connected + initialized) and shell handlers are registered.
+  useDeepLinkSource({ ready: isNativeMobileApp && isConnected && isInitialized });
   const fontsReady = useFontsReady();
 
   // `isConnected` is a LIVE flag that flips false on every transient SSE/WS drop and

@@ -51,8 +51,9 @@ export const useNativePushRegistration = (options: { enabled: boolean }): void =
           console.warn('[Push] APNs registration error:', error);
         });
 
-        // Note: notification-tap handling lives in `useNativePushDeepLink` (registered
-        // unconditionally) so cold-launch taps aren't lost while disconnected.
+        // Note: notification-tap handling lives in the deep-link layer (`useDeepLinkSource`
+        // in deepLinkNavigation), registered unconditionally so cold-launch taps aren't lost
+        // while disconnected.
 
         await PushNotifications.register().catch(() => undefined);
 

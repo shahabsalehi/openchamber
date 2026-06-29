@@ -9,7 +9,7 @@
     "add:ios": "cap add ios",
     "add:android": "cap add android",
     "build:android:debug": "node scripts/with-mobile-env.mjs \"bun run sync && ./android/gradlew -p android assembleDebug\"",
-    "build:ios:simulator": "node scripts/with-mobile-env.mjs \"bun run sync && xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build\"",
+    "build:ios:simulator": "node scripts/with-mobile-env.mjs \"node scripts/ios-sim-build.mjs\"",
     "sim:boot": "node scripts/with-mobile-env.mjs \"node scripts/ios-sim.mjs boot\"",
     "sim:install": "node scripts/with-mobile-env.mjs \"node scripts/ios-sim.mjs install\"",
     "sim:launch": "node scripts/with-mobile-env.mjs \"node scripts/ios-sim.mjs launch\"",
