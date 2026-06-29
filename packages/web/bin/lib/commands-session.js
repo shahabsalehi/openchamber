@@ -13,7 +13,7 @@ import {
   logStatus,
 } from '../cli-output.js';
 import { EXIT_CODE, TunnelCliError } from './cli-errors.js';
-import { apiRequest, resolveTargetPort, resolveScopeDirectory } from './cli-api-client.js';
+import { apiRequest, resolveTargetPort, resolveScopeDirectory, resolveModel } from './cli-api-client.js';
 import { truncate, formatRelativeTime, formatModel } from './cli-format.js';
 
 const SESSION_ACTIONS = ['list', 'show', 'create', 'rename', 'archive', 'unarchive', 'share', 'unshare', 'delete', 'prompt'];
@@ -318,39 +318,6 @@ async function handleDelete(port, directory, options, args) {
   clackOutro('done');
 }
 
-async function resolveDefaultModel(port, options) {
-  if (typeof options.model === 'string' && options.model.includes('/')) {
-    const [providerID, ...rest] = options.model.split('/');
-    return { providerID: providerID.trim(), modelID: rest.join('/').trim() };
-  }
-  if (typeof options.provider === 'string' && typeof options.model === 'string'
-    && options.provider.trim() && options.model.trim()) {
-    return { providerID: options.provider.trim(), modelID: options.model.trim() };
-  }
-
-  const config = await apiRequest(port, 'GET', '/api/config/providers', { options });
-  const defaults = config && typeof config.default === 'object' ? config.default : {};
-  const providers = Array.isArray(config?.providers) ? config.providers : [];
-
-  const preferredProvider = typeof options.provider === 'string' && options.provider.trim()
-    ? options.provider.trim()
-    : Object.keys(defaults)[0] || providers[0]?.id;
-
-  if (!preferredProvider) {
-    throw new TunnelCliError('No model available. Configure a provider, or pass --model <provider/model>.', EXIT_CODE.USAGE_ERROR);
-  }
-
-  const modelID = (typeof options.model === 'string' && options.model.trim())
-    ? options.model.trim()
-    : defaults[preferredProvider];
-
-  if (!modelID) {
-    throw new TunnelCliError(`No default model for provider "${preferredProvider}". Pass --model <provider/model>.`, EXIT_CODE.USAGE_ERROR);
-  }
-
-  return { providerID: preferredProvider, modelID };
-}
-
 async function handlePrompt(port, directory, options, args) {
   const id = requireSessionId(args, options);
   let message = args.slice(1).join(' ').trim();
@@ -367,7 +334,7 @@ async function handlePrompt(port, directory, options, args) {
     throw new TunnelCliError('A prompt message is required. Usage: openchamber session prompt <id> <message> (or --message).', EXIT_CODE.USAGE_ERROR);
   }
 
-  const model = await resolveDefaultModel(port, options);
+  const model = await resolveModel(port, options);
   const agent = typeof options.agent === 'string' && options.agent.trim() ? options.agent.trim() : 'build';
   const messageID = generateMessageId();
 

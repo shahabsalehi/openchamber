@@ -28,6 +28,53 @@ function formatRelativeTime(epochMs, now = Date.now()) {
   return `${years}y ago`;
 }
 
+const WEEKDAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/**
+ * Format an epoch (ms) as `YYYY-MM-DD HH:mm` in the given IANA timezone (or
+ * local time when none is provided). Returns null for non-positive values.
+ */
+function formatInstant(epochMs, timezone) {
+  if (!Number.isFinite(epochMs) || epochMs <= 0) return null;
+  try {
+    const date = new Date(epochMs);
+    const zoneOpts = timezone ? { timeZone: timezone } : {};
+    const datePart = date.toLocaleDateString('en-CA', zoneOpts);
+    const timePart = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, ...zoneOpts });
+    return `${datePart} ${timePart}`;
+  } catch {
+    return new Date(epochMs).toISOString().slice(0, 16).replace('T', ' ');
+  }
+}
+
+/**
+ * Human-readable one-line summary of a scheduled task's schedule object.
+ */
+function formatSchedule(schedule) {
+  if (!schedule || typeof schedule !== 'object') return 'unknown schedule';
+  const tz = typeof schedule.timezone === 'string' && schedule.timezone.trim() ? ` (${schedule.timezone.trim()})` : '';
+  const times = Array.isArray(schedule.times) && schedule.times.length > 0
+    ? schedule.times.join(', ')
+    : (typeof schedule.time === 'string' ? schedule.time : '');
+
+  switch (schedule.kind) {
+    case 'daily':
+      return `daily at ${times || '??:??'}${tz}`;
+    case 'weekly': {
+      const days = Array.isArray(schedule.weekdays) && schedule.weekdays.length > 0
+        ? schedule.weekdays.slice().sort((a, b) => a - b).map((d) => WEEKDAY_NAMES[d] || d).join(', ')
+        : '??';
+      return `weekly on ${days} at ${times || '??:??'}${tz}`;
+    }
+    case 'once':
+      return `once on ${schedule.date || '????-??-??'} ${schedule.time || '??:??'}${tz}`;
+    case 'cron':
+      return `cron "${schedule.cron || ''}"${tz}`;
+    default:
+      return `${schedule.kind || 'unknown'}${tz}`;
+  }
+}
+
 function formatModel(model) {
   if (!model || typeof model !== 'object') return '';
   const provider = typeof model.providerID === 'string' ? model.providerID : '';
@@ -40,4 +87,6 @@ export {
   truncate,
   formatRelativeTime,
   formatModel,
+  formatInstant,
+  formatSchedule,
 };
