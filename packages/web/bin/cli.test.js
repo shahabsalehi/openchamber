@@ -11,7 +11,10 @@ import { isModuleCliExecution, normalizeCliEntryPath } from './cli-entry.js';
 import { requestJson } from './lib/cli-http.js';
 import { inspectTunnelAttachability } from './lib/cli-lifecycle.js';
 import { buildTaskPayload } from './lib/commands-schedule.js';
-import { buildSessionCreatePayload } from './lib/commands-session.js';
+import { buildSessionCreatePayload, buildSessionListEndpoint, filterVisibleSessions, formatSessionLine } from './lib/commands-session.js';
+import { formatModelsOutput } from './lib/commands-models.js';
+import { formatProjectLine } from './lib/commands-projects.js';
+import { normalizeProjects } from './lib/cli-projects.js';
 import { resolveTargetPort } from './lib/cli-api-target.js';
 import { DEFAULT_TUNNEL_PROVIDER_CAPABILITIES } from './lib/cli-tunnel-capabilities.js';
 import {
@@ -20,6 +23,7 @@ import {
 } from '../server/lib/tunnels/types.js';
 import {
   assertAuthenticatedNetworkExposure,
+  assertDesktopShimCommandAllowed,
   commands,
   discoverOpenChamberInstanceOnPort,
   discoverLifecycleInstances,
@@ -30,9 +34,38 @@ import {
   getPidFilePath,
   isOpenchamberCmdline,
   isOpenchamberProcessRunning,
+  main,
   parseArgs,
   resolveServeHost,
 } from './cli.js';
+
+function withEnv(name, value, fn) {
+  const previous = process.env[name];
+  if (typeof value === 'string') {
+    process.env[name] = value;
+  } else {
+    delete process.env[name];
+  }
+  try {
+    return fn();
+  } finally {
+    if (typeof previous === 'string') {
+      process.env[name] = previous;
+    } else {
+      delete process.env[name];
+    }
+  }
+}
+
+async function withArgv(argv, fn) {
+  const previous = process.argv;
+  process.argv = ['node', 'openchamber', ...argv];
+  try {
+    return await fn();
+  } finally {
+    process.argv = previous;
+  }
+}
 
 async function withTempOpenChamberDataDir(fn) {
   const previous = process.env.OPENCHAMBER_DATA_DIR;
@@ -72,6 +105,20 @@ async function captureStdout(fn) {
   } finally {
     process.stdout.write = originalWrite;
   }
+}
+
+async function captureConsoleLog(fn) {
+  const originalLog = console.log;
+  let output = '';
+  console.log = (...args) => {
+    output += `${args.join(' ')}\n`;
+  };
+  try {
+    await fn();
+  } finally {
+    console.log = originalLog;
+  }
+  return output;
 }
 
 async function startMockOpenChamberServer(options = {}) {
@@ -235,7 +282,7 @@ describe('cli args', () => {
       '--prompt',
       'Review the repo',
       '--model',
-      'anthropic/claude-sonnet-4',
+      'openai/gpt-5.5',
       '--daily',
       '09:30',
       '--timezone',
@@ -247,7 +294,7 @@ describe('cli args', () => {
     expect(parsed.options.project).toBe('proj_1');
     expect(parsed.options.name).toBe('Daily review');
     expect(parsed.options.prompt).toBe('Review the repo');
-    expect(parsed.options.model).toBe('anthropic/claude-sonnet-4');
+    expect(parsed.options.model).toBe('openai/gpt-5.5');
     expect(parsed.options.daily).toBe('09:30');
     expect(parsed.options.timezone).toBe('Europe/Kyiv');
   });
@@ -256,7 +303,7 @@ describe('cli args', () => {
     const payload = buildTaskPayload({
       name: 'Daily review',
       prompt: 'Review the repo',
-      model: 'anthropic/claude-sonnet-4',
+      model: 'openai/gpt-5.5',
       daily: '09:30',
       timezone: 'Europe/Kyiv',
       agent: 'build',
@@ -272,8 +319,8 @@ describe('cli args', () => {
       },
       execution: {
         prompt: 'Review the repo',
-        providerID: 'anthropic',
-        modelID: 'claude-sonnet-4',
+        providerID: 'openai',
+        modelID: 'gpt-5.5',
         agent: 'build',
       },
     });
@@ -283,7 +330,7 @@ describe('cli args', () => {
     expect(() => buildTaskPayload({
       name: 'Bad schedule',
       prompt: 'Run',
-      model: 'anthropic/claude-sonnet-4',
+      model: 'openai/gpt-5.5',
       daily: '09:30',
       cron: '* * * * *',
     })).toThrow('Provide exactly one of --daily, --weekly, --once, or --cron.');
@@ -300,7 +347,7 @@ describe('cli args', () => {
       '--prompt',
       'Investigate cache invalidation',
       '--model',
-      'anthropic/claude-sonnet-4',
+      'openai/gpt-5.5',
       '--worktree',
       'side-task',
       '--branch',
@@ -315,11 +362,17 @@ describe('cli args', () => {
     expect(parsed.options.directory).toBe('.');
     expect(parsed.options.name).toBe('Side task');
     expect(parsed.options.prompt).toBe('Investigate cache invalidation');
-    expect(parsed.options.model).toBe('anthropic/claude-sonnet-4');
+    expect(parsed.options.model).toBe('openai/gpt-5.5');
     expect(parsed.options.worktree).toBe('side-task');
     expect(parsed.options.branch).toBe('openchamber/side-task');
     expect(parsed.options.startRef).toBe('main');
     expect(parsed.options.setUpstream).toBe(false);
+  });
+
+  it('parses control help command', () => {
+    const parsed = parseArgs(['control', 'help']);
+    expect(parsed.command).toBe('control');
+    expect(parsed.controlAction).toBe('help');
   });
 
   it('builds session create payloads from CLI options', () => {
@@ -327,7 +380,7 @@ describe('cli args', () => {
       directory: '.',
       name: 'Side task',
       prompt: 'Investigate cache invalidation',
-      model: 'anthropic/claude-sonnet-4',
+      model: 'openai/gpt-5.5',
       agent: 'build',
       worktree: 'side-task',
       branch: 'openchamber/side-task',
@@ -342,17 +395,93 @@ describe('cli args', () => {
         startRef: 'main',
       },
       prompt: 'Investigate cache invalidation',
-      model: 'anthropic/claude-sonnet-4',
+      model: 'openai/gpt-5.5',
       agent: 'build',
       setUpstream: true,
     });
   });
 
-  it('requires a model when session create sends a prompt', () => {
-    expect(() => buildSessionCreatePayload({
+  it('allows session create prompts without an explicit model', () => {
+    expect(buildSessionCreatePayload({
       directory: '.',
       prompt: 'Investigate cache invalidation',
-    })).toThrow('--model is required when --prompt is provided.');
+    })).toEqual({
+      directory: '.',
+      prompt: 'Investigate cache invalidation',
+    });
+  });
+
+  it('parses session list filters', () => {
+    const parsed = parseArgs(['session', 'list', '--dir', '/repo', '--limit', '5']);
+
+    expect(parsed.command).toBe('session');
+    expect(parsed.sessionAction).toBe('list');
+    expect(parsed.options.directory).toBe('/repo');
+    expect(parsed.options.limit).toBe(5);
+    expect(buildSessionListEndpoint(parsed.options)).toBe('/api/session?directory=%2Frepo');
+  });
+
+  it('parses models command', () => {
+    const parsed = parseArgs(['models', '--json']);
+
+    expect(parsed.command).toBe('models');
+    expect(parsed.options.json).toBe(true);
+  });
+
+  it('parses projects command', () => {
+    const parsed = parseArgs(['projects', '--json']);
+
+    expect(parsed.command).toBe('projects');
+    expect(parsed.options.json).toBe(true);
+  });
+
+  it('formats projects compactly', () => {
+    expect(formatProjectLine({
+      id: 'path_repo',
+      label: 'Openchamber',
+      path: '/repo/openchamber',
+    })).toBe('- `Openchamber` — `path_repo` — `/repo/openchamber`');
+  });
+
+  it('normalizes projects from settings', () => {
+    expect(normalizeProjects({ projects: [
+      { id: 'path_repo', label: 'Openchamber', path: '/repo/openchamber' },
+      { id: '', path: '/missing/id' },
+    ] })).toEqual([{ id: 'path_repo', label: 'Openchamber', path: '/repo/openchamber' }]);
+  });
+
+  it('formats model defaults and favorites compactly', () => {
+    expect(formatModelsOutput({
+      defaultModel: 'opencode-go/deepseek-v4-flash',
+      defaultAgent: 'build',
+      favoriteModels: [
+        { providerID: 'openai', modelID: 'gpt-5.5' },
+        { providerID: 'opencode-go', modelID: 'deepseek-v4-pro' },
+      ],
+      recentModels: [
+        { providerID: 'zai-coding-plan', modelID: 'glm-5.2' },
+      ],
+    })).toBe('Default: `opencode-go/deepseek-v4-flash` / `build`\n\nFavorites:\n- `openai/gpt-5.5`\n- `opencode-go/deepseek-v4-pro`\n\nRecent:\n- `zai-coding-plan/glm-5.2`\n');
+  });
+
+  it('formats compact session list lines', () => {
+    expect(formatSessionLine({
+      title: 'CLI shim changed default smoke',
+      agent: 'build',
+      directory: '/repo',
+      model: { providerID: 'opencode-go', id: 'deepseek-v4-flash', variant: 'default' },
+    })).toBe('- `CLI shim changed default smoke` — `opencode-go/deepseek-v4-flash`, `build` — `/repo`');
+  });
+
+  it('excludes archived sessions by default', () => {
+    const sessions = [
+      { id: 'active', time: {} },
+      { id: 'archived', time: { archived: 123 } },
+      { id: 'missing-time' },
+    ];
+
+    expect(filterVisibleSessions(sessions).map((session) => session.id)).toEqual(['active', 'missing-time']);
+    expect(filterVisibleSessions(sessions, { all: true }).map((session) => session.id)).toEqual(['active', 'archived', 'missing-time']);
   });
 
   it('parses tunnel auto-start server options', () => {
@@ -384,6 +513,53 @@ describe('cli args', () => {
 
     expect(parsed.options.hostname).toBe('app.example.com');
     expect(parsed.options.host).toBeUndefined();
+  });
+});
+
+describe('desktop CLI shim guard', () => {
+  it('blocks standalone server commands from the desktop-installed shim', () => {
+    withEnv('OPENCHAMBER_DESKTOP_CLI_SHIM', '1', () => {
+      expect(() => assertDesktopShimCommandAllowed('serve')).toThrow('desktop-installed CLI controls the running OpenChamber Desktop app');
+      expect(() => assertDesktopShimCommandAllowed('session')).not.toThrow();
+      expect(() => assertDesktopShimCommandAllowed('schedule')).not.toThrow();
+      expect(() => assertDesktopShimCommandAllowed('models')).not.toThrow();
+      expect(() => assertDesktopShimCommandAllowed('projects')).not.toThrow();
+      expect(() => assertDesktopShimCommandAllowed('status')).not.toThrow();
+    });
+  });
+
+  it('shows command-specific help from the desktop-installed shim', async () => {
+    const previous = process.env.OPENCHAMBER_DESKTOP_CLI_SHIM;
+    process.env.OPENCHAMBER_DESKTOP_CLI_SHIM = '1';
+    try {
+      const output = await withArgv(['session', '--help'], () => captureStdout(() => main()));
+
+      expect(output).toContain('OpenChamber Session Commands');
+      expect(output).not.toContain('OpenChamber Control Commands');
+    } finally {
+      if (typeof previous === 'string') {
+        process.env.OPENCHAMBER_DESKTOP_CLI_SHIM = previous;
+      } else {
+        delete process.env.OPENCHAMBER_DESKTOP_CLI_SHIM;
+      }
+    }
+  });
+
+  it('keeps connect-url out of desktop control help', async () => {
+    const previous = process.env.OPENCHAMBER_DESKTOP_CLI_SHIM;
+    process.env.OPENCHAMBER_DESKTOP_CLI_SHIM = '1';
+    try {
+      const output = await withArgv(['--help'], () => captureConsoleLog(() => main()));
+
+      expect(output).toContain('OpenChamber Control Commands');
+      expect(output).not.toContain('connect-url');
+    } finally {
+      if (typeof previous === 'string') {
+        process.env.OPENCHAMBER_DESKTOP_CLI_SHIM = previous;
+      } else {
+        delete process.env.OPENCHAMBER_DESKTOP_CLI_SHIM;
+      }
+    }
   });
 });
 
@@ -577,6 +753,74 @@ describe('CLI HTTP helpers', () => {
           '/auth/session',
           '/api/openchamber/tunnel/start',
         ]);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  });
+
+  it('prefers the stored instance password over a non-explicit env password', async () => {
+    await withTempOpenChamberDataDir(async () => {
+      const port = 45679;
+      fs.writeFileSync(await getInstanceFilePath(port), JSON.stringify({ port, uiPassword: 'stored-secret' }, null, 2));
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, options = {}) => {
+        if (String(url).endsWith('/auth/session')) {
+          expect(JSON.parse(options.body)).toEqual({ password: 'stored-secret' });
+          return {
+            ok: true,
+            headers: { getSetCookie: () => ['oc_ui_session=session-token; Path=/; HttpOnly'] },
+            json: async () => ({ authenticated: true }),
+          };
+        }
+        if (options.headers?.Cookie === 'oc_ui_session=session-token') {
+          return createMockJsonResponse({ ok: true });
+        }
+        return {
+          ok: false,
+          status: 401,
+          json: async () => ({ error: 'UI authentication required', locked: true }),
+        };
+      };
+
+      try {
+        const { response, body } = await requestJson(port, '/api/openchamber/scheduled-tasks/status', {
+          uiPassword: 'stale-env-secret',
+          explicitUiPassword: false,
+        });
+
+        expect(response.ok).toBe(true);
+        expect(body).toEqual({ ok: true });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  });
+
+  it('authenticates desktop-local API requests with the stored client token', async () => {
+    await withTempOpenChamberDataDir(async (dir) => {
+      const port = 57123;
+      fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({
+        desktopLocalPort: port,
+        desktopLocalClientToken: 'oc_client_test',
+      }, null, 2));
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (_url, options = {}) => {
+        if (options.headers?.Authorization === 'Bearer oc_client_test') {
+          return createMockJsonResponse({ ok: true });
+        }
+        return {
+          ok: false,
+          status: 401,
+          json: async () => ({ error: 'Client authentication required', locked: true }),
+        };
+      };
+
+      try {
+        const { response, body } = await requestJson(port, '/api/openchamber/scheduled-tasks/status');
+
+        expect(response.ok).toBe(true);
+        expect(body).toEqual({ ok: true });
       } finally {
         globalThis.fetch = originalFetch;
       }

@@ -39,6 +39,13 @@ async function resolveTargetPort(options = {}, deps = {}) {
     return desktopInstance.port;
   }
 
+  const lifecycleDesktop = Array.isArray(lifecycleInstances)
+    ? lifecycleInstances.find((entry) => entry?.runtime === 'desktop' && Number.isFinite(entry.port) && entry.port > 0)
+    : null;
+  if (lifecycleDesktop?.port) {
+    return lifecycleDesktop.port;
+  }
+
   const ports = uniquePorts(Array.isArray(lifecycleInstances) ? lifecycleInstances : []);
   if (ports.length === 1) {
     return ports[0];

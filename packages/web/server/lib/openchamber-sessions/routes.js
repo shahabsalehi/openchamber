@@ -1,3 +1,4 @@
+import express from 'express';
 import { createOpencodeClient } from '@opencode-ai/sdk/v2';
 import { createWorktree } from '../git/index.js';
 import { expandSnippets } from '../opencode/snippets.js';
@@ -20,6 +21,125 @@ const splitModel = (value) => {
   };
 };
 
+const FALLBACK_PROVIDER_ID = 'opencode';
+const FALLBACK_MODEL_ID = 'big-pickle';
+
+const isPrimaryAgentMode = (mode) => !mode || mode === 'primary' || mode === 'all';
+
+const providerModels = (provider) => {
+  if (Array.isArray(provider?.models)) return provider.models;
+  if (provider?.models && typeof provider.models === 'object') return Object.values(provider.models);
+  return [];
+};
+
+const hasProviderModel = (providers, providerID, modelID) => {
+  return providers.some((provider) => provider?.id === providerID
+    && providerModels(provider).some((model) => model?.id === modelID));
+};
+
+const resolveVariant = (providers, providerID, modelID, variant) => {
+  const normalized = asNonEmptyString(variant);
+  if (!normalized) return undefined;
+  const provider = providers.find((entry) => entry?.id === providerID);
+  const model = providerModels(provider).find((entry) => entry?.id === modelID);
+  return model?.variants && Object.prototype.hasOwnProperty.call(model.variants, normalized)
+    ? normalized
+    : undefined;
+};
+
+const parseConfigModel = (value) => splitModel(value);
+
+const buildDirectoryHeaders = (directory) => ({
+  ...(directory ? { 'x-opencode-directory': directory } : {}),
+});
+
+const fetchJson = async (url, authHeaders, fallback, directory) => {
+  const response = await fetch(url.toString(), {
+    headers: { ...authHeaders, ...buildDirectoryHeaders(directory), accept: 'application/json' },
+  });
+  if (!response.ok) return fallback;
+  return response.json().catch(() => fallback);
+};
+
+const fetchSelectionInputs = async ({ buildOpenCodeUrl, authHeaders, directory, readSettingsFromDiskMigrated }) => {
+  const settings = await readSettingsFromDiskMigrated();
+  const providersUrl = new URL(buildOpenCodeUrl('/config/providers', ''));
+  providersUrl.searchParams.set('directory', directory);
+  const agentsUrl = new URL(buildOpenCodeUrl('/agent', ''));
+  agentsUrl.searchParams.set('directory', directory);
+  const configUrl = new URL(buildOpenCodeUrl('/config', ''));
+  configUrl.searchParams.set('directory', directory);
+
+  const [providersBody, agentsBody, configBody] = await Promise.all([
+    fetchJson(providersUrl, authHeaders, { providers: [] }, directory),
+    fetchJson(agentsUrl, authHeaders, [], directory),
+    fetchJson(configUrl, authHeaders, {}, directory),
+  ]);
+
+  return {
+    settings,
+    providers: Array.isArray(providersBody?.providers) ? providersBody.providers : [],
+    agents: Array.isArray(agentsBody) ? agentsBody : [],
+    opencodeDefaultAgent: asNonEmptyString(configBody?.default_agent) || asNonEmptyString(configBody?.defaultAgent),
+    opencodeDefaultModel: asNonEmptyString(configBody?.model),
+  };
+};
+
+const resolveDefaultSelection = ({ agents, providers, settings, opencodeDefaultAgent, opencodeDefaultModel }) => {
+  const primaryAgents = agents.filter((agent) => isPrimaryAgentMode(agent?.mode) && agent?.hidden !== true);
+  let resolvedAgent = null;
+  const settingsDefaultAgent = asNonEmptyString(settings?.defaultAgent);
+  if (settingsDefaultAgent) {
+    resolvedAgent = agents.find((agent) => agent?.name === settingsDefaultAgent) || null;
+  }
+  if (!resolvedAgent && opencodeDefaultAgent) {
+    const candidate = agents.find((agent) => agent?.name === opencodeDefaultAgent) || null;
+    if (candidate && isPrimaryAgentMode(candidate.mode) && candidate.hidden !== true) {
+      resolvedAgent = candidate;
+    }
+  }
+  if (!resolvedAgent) {
+    resolvedAgent = primaryAgents.find((agent) => agent?.name === 'build') || primaryAgents[0] || agents[0] || null;
+  }
+
+  let model = null;
+  let variant;
+  const settingsDefaultModel = parseConfigModel(settings?.defaultModel);
+  if (settingsDefaultModel && hasProviderModel(providers, settingsDefaultModel.providerID, settingsDefaultModel.modelID)) {
+    model = settingsDefaultModel;
+    variant = resolveVariant(providers, model.providerID, model.modelID, settings?.defaultVariant);
+  }
+
+  if (!model && resolvedAgent?.model?.providerID && resolvedAgent?.model?.modelID
+    && hasProviderModel(providers, resolvedAgent.model.providerID, resolvedAgent.model.modelID)) {
+    model = { providerID: resolvedAgent.model.providerID, modelID: resolvedAgent.model.modelID };
+    variant = resolveVariant(providers, model.providerID, model.modelID, resolvedAgent.variant);
+  }
+
+  const opencodeModel = parseConfigModel(opencodeDefaultModel);
+  if (!model && opencodeModel && hasProviderModel(providers, opencodeModel.providerID, opencodeModel.modelID)) {
+    model = opencodeModel;
+  }
+
+  if (!model && hasProviderModel(providers, FALLBACK_PROVIDER_ID, FALLBACK_MODEL_ID)) {
+    model = { providerID: FALLBACK_PROVIDER_ID, modelID: FALLBACK_MODEL_ID };
+  }
+
+  if (!model) {
+    const provider = providers[0];
+    const firstModel = providerModels(provider)[0];
+    if (provider?.id && firstModel?.id) {
+      model = { providerID: provider.id, modelID: firstModel.id };
+    }
+  }
+
+  return {
+    agent: resolvedAgent?.name,
+    model,
+    variant,
+  };
+};
+
 const runPromptAsync = async ({ baseUrl, authHeaders, sessionID, directory, payload }) => {
   const promptUrl = new URL(`${baseUrl}/session/${encodeURIComponent(sessionID)}/prompt_async`);
   promptUrl.searchParams.set('directory', directory);
@@ -27,6 +147,7 @@ const runPromptAsync = async ({ baseUrl, authHeaders, sessionID, directory, payl
     method: 'POST',
     headers: {
       ...authHeaders,
+      ...buildDirectoryHeaders(directory),
       'content-type': 'application/json',
       accept: 'application/json',
     },
@@ -37,6 +158,33 @@ const runPromptAsync = async ({ baseUrl, authHeaders, sessionID, directory, payl
     const body = await response.text().catch(() => '');
     throw new Error(`prompt_async failed (${response.status})${body ? `: ${body}` : ''}`);
   }
+};
+
+const createSession = async ({ baseUrl, authHeaders, directory, title }) => {
+  const sessionUrl = new URL(`${baseUrl}/session`);
+  sessionUrl.searchParams.set('directory', directory);
+  const response = await fetch(sessionUrl.toString(), {
+    method: 'POST',
+    headers: {
+      ...authHeaders,
+      ...buildDirectoryHeaders(directory),
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify({ directory, ...(title ? { title } : {}) }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`session create failed (${response.status})${body ? `: ${body}` : ''}`);
+  }
+
+  const body = await response.json().catch(() => null);
+  const sessionID = body?.id || body?.data?.id;
+  if (!sessionID) {
+    throw new Error('failed to create session');
+  }
+  return sessionID;
 };
 
 const resolveRequestedDirectory = async ({ payload, readSettingsFromDiskMigrated, sanitizeProjects, validateDirectoryPath }) => {
@@ -85,20 +233,16 @@ export const registerOpenChamberSessionRoutes = (app, dependencies) => {
     emitSessionCreatedEvent,
   } = dependencies;
 
-  app.post('/api/openchamber/sessions', async (req, res) => {
+  app.post('/api/openchamber/sessions', express.json({ limit: '1mb' }), async (req, res) => {
     const payload = req.body && typeof req.body === 'object' ? req.body : {};
     const title = asNonEmptyString(payload.title);
     const prompt = asNonEmptyString(payload.prompt);
-    const model = splitModel(payload.model)
+    let model = splitModel(payload.model)
       || (asNonEmptyString(payload.providerID) && asNonEmptyString(payload.modelID)
         ? { providerID: asNonEmptyString(payload.providerID), modelID: asNonEmptyString(payload.modelID) }
         : null);
-    const agent = asNonEmptyString(payload.agent);
-    const variant = asNonEmptyString(payload.variant);
-
-    if (prompt && !model) {
-      return res.status(400).json({ error: 'model is required when prompt is provided' });
-    }
+    let agent = asNonEmptyString(payload.agent);
+    let variant = asNonEmptyString(payload.variant);
 
     try {
       const resolvedDirectory = await resolveRequestedDirectory({
@@ -129,18 +273,33 @@ export const registerOpenChamberSessionRoutes = (app, dependencies) => {
       const baseUrl = buildOpenCodeUrl('/', '').replace(/\/$/, '');
       const authHeaders = getOpenCodeAuthHeaders();
       const client = createOpencodeClient({ baseUrl, headers: authHeaders });
-      const sessionResponse = await client.session.create({
+      const sessionID = await createSession({
+        client,
+        baseUrl,
+        authHeaders,
         directory: sessionDirectory,
         ...(title ? { title } : {}),
       });
-      const sessionID = sessionResponse?.data?.id;
-      if (!sessionID) {
-        throw new Error('failed to create session');
-      }
 
       let promptDispatched = false;
       let dispatchedAsCommand = false;
-      if (prompt && model) {
+      if (prompt) {
+        if (!model || !agent || !variant) {
+          const inputs = await fetchSelectionInputs({
+            buildOpenCodeUrl,
+            authHeaders,
+            directory: sessionDirectory,
+            readSettingsFromDiskMigrated,
+          });
+          const defaults = resolveDefaultSelection(inputs);
+          model = model || defaults.model;
+          agent = agent || defaults.agent;
+          variant = variant || defaults.variant;
+        }
+        if (!model) {
+          return res.status(400).json({ error: 'No model is configured or available for the requested directory' });
+        }
+
         const parsedCommand = parseScheduledCommandPrompt(prompt);
         if (parsedCommand) {
           try {
@@ -186,6 +345,9 @@ export const registerOpenChamberSessionRoutes = (app, dependencies) => {
         ...(resolvedDirectory.projectId ? { projectId: resolvedDirectory.projectId } : {}),
         ...(title ? { title } : {}),
         ...(worktree ? { worktree } : {}),
+        ...(prompt && model ? { model } : {}),
+        ...(prompt && agent ? { agent } : {}),
+        ...(prompt && variant ? { variant } : {}),
         promptDispatched,
         dispatchedAsCommand,
       };
@@ -197,6 +359,9 @@ export const registerOpenChamberSessionRoutes = (app, dependencies) => {
           ...(resolvedDirectory.projectId ? { projectID: resolvedDirectory.projectId } : {}),
           ...(title ? { title } : {}),
           ...(worktree ? { worktree } : {}),
+          ...(prompt && model ? { model } : {}),
+          ...(prompt && agent ? { agent } : {}),
+          ...(prompt && variant ? { variant } : {}),
           promptDispatched,
           dispatchedAsCommand,
           createdAt: Date.now(),

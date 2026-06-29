@@ -27,6 +27,7 @@ const PACKAGED_APP_USER_MODEL_ID = 'dev.openchamber.desktop';
 const DEV_APP_USER_MODEL_ID = 'dev.openchamber.desktop.dev';
 const APP_USER_MODEL_ID = app.isPackaged ? PACKAGED_APP_USER_MODEL_ID : DEV_APP_USER_MODEL_ID;
 const BACKGROUND_START_ARG = '--background';
+const CLI_SHIM_MARKER = 'OpenChamber desktop CLI shim';
 
 const readLoginItemSettings = () => {
   if (process.platform !== 'darwin') return null;
@@ -43,6 +44,194 @@ const shouldStartInBackground = (loginItemSettings = readLoginItemSettings()) =>
     loginItemSettings?.wasOpenedAtLogin === true ||
     loginItemSettings?.wasOpenedAsHidden === true
   );
+};
+
+const resolveEffectiveCliPath = () => {
+  const shellPath = typeof loadShellEnv()?.PATH === 'string' ? loadShellEnv().PATH : '';
+  return mergePathValues(shellPath, process.env.PATH || '', path.delimiter);
+};
+
+const splitPathEntries = (pathValue = resolveEffectiveCliPath()) => String(pathValue || '')
+  .split(path.delimiter)
+  .map((entry) => entry.trim())
+  .filter(Boolean);
+
+const commandCandidatesForEntry = (entry, command = 'openchamber') => {
+  if (process.platform === 'win32') {
+    const extensions = String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD')
+      .split(';')
+      .map((extension) => extension.trim().toLowerCase())
+      .filter(Boolean);
+    return [path.join(entry, command), ...extensions.map((extension) => path.join(entry, `${command}${extension}`))];
+  }
+  return [path.join(entry, command)];
+};
+
+const isExecutableFile = async (filePath) => {
+  try {
+    await fsp.access(filePath, process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
+    const stat = await fsp.stat(filePath);
+    return stat.isFile();
+  } catch {
+    return false;
+  }
+};
+
+const isExecutableFileSync = (filePath) => {
+  try {
+    fs.accessSync(filePath, process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+};
+
+const resolvePathCommand = async (command = 'openchamber', pathValue = resolveEffectiveCliPath()) => {
+  for (const entry of splitPathEntries(pathValue)) {
+    for (const candidate of commandCandidatesForEntry(entry, command)) {
+      if (await isExecutableFile(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+};
+
+const resolvePathCommandSync = (command = 'openchamber', pathValue = resolveEffectiveCliPath()) => {
+  for (const entry of splitPathEntries(pathValue)) {
+    for (const candidate of commandCandidatesForEntry(entry, command)) {
+      if (isExecutableFileSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+};
+
+const isWritableDirectory = async (directory) => {
+  try {
+    const stat = await fsp.stat(directory);
+    if (!stat.isDirectory()) return false;
+    await fsp.access(directory, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const resolveCliInstallDirectory = async () => {
+  for (const entry of splitPathEntries()) {
+    if (await isWritableDirectory(entry)) {
+      return entry;
+    }
+  }
+  return null;
+};
+
+const getCliShimPath = (directory) => path.join(directory, process.platform === 'win32' ? 'openchamber.cmd' : 'openchamber');
+
+const resolveBundledCliEntryPath = () => {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'app.asar', 'node_modules', '@openchamber', 'web', 'bin', 'cli.js');
+  }
+  return path.resolve(__dirname, '..', 'web', 'bin', 'cli.js');
+};
+
+const buildCliShimContent = () => {
+  const executable = process.execPath;
+  const cliEntry = resolveBundledCliEntryPath();
+  if (process.platform === 'win32') {
+    return `@echo off\r\nrem ${CLI_SHIM_MARKER}\r\nset ELECTRON_RUN_AS_NODE=1\r\nset OPENCHAMBER_DESKTOP_CLI_SHIM=1\r\n"${executable}" "${cliEntry}" %*\r\n`;
+  }
+  return `#!/bin/sh\n# ${CLI_SHIM_MARKER}\nELECTRON_RUN_AS_NODE=1 OPENCHAMBER_DESKTOP_CLI_SHIM=1 exec ${JSON.stringify(executable)} ${JSON.stringify(cliEntry)} "$@"\n`;
+};
+
+const writeCliShim = async (filePath) => {
+  await fsp.writeFile(filePath, buildCliShimContent(), { flag: 'wx', mode: 0o755 });
+  if (process.platform !== 'win32') {
+    await fsp.chmod(filePath, 0o755);
+  }
+};
+
+const getDesktopCliStatus = async () => {
+  const commandPath = await resolvePathCommand('openchamber');
+  return {
+    installed: Boolean(commandPath),
+    commandPath,
+    managed: commandPath ? isManagedCliShim(commandPath) : false,
+  };
+};
+
+const isManagedCliShim = (filePath) => {
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    return content.includes(CLI_SHIM_MARKER);
+  } catch {
+    return false;
+  }
+};
+
+const installDesktopCliShim = async () => {
+  const existing = await getDesktopCliStatus();
+  if (existing.installed) {
+    return existing;
+  }
+
+  const installDirectory = await resolveCliInstallDirectory();
+  if (!installDirectory) {
+    throw new Error('No writable PATH directory found.');
+  }
+
+  const shimPath = getCliShimPath(installDirectory);
+  await writeCliShim(shimPath);
+  const installed = await getDesktopCliStatus();
+  if (!installed.installed) {
+    throw new Error('CLI shim was installed but is not visible in PATH.');
+  }
+  return installed;
+};
+
+const removeDesktopCliShim = async () => {
+  const commandPath = await resolvePathCommand('openchamber');
+  if (!commandPath) {
+    return { installed: false, commandPath: null, managed: false };
+  }
+  if (!isManagedCliShim(commandPath)) {
+    throw new Error('The installed openchamber command was not created by OpenChamber Desktop.');
+  }
+  await fsp.unlink(commandPath);
+  return getDesktopCliStatus();
+};
+
+const buildCliMenuItem = () => {
+  const commandPath = resolvePathCommandSync('openchamber');
+  if (!commandPath) {
+    return {
+      label: 'Install CLI',
+      click: async () => {
+        try {
+          await installDesktopCliShim();
+          Menu.setApplicationMenu(process.platform === 'darwin' ? buildMacMenu() : buildAutoHiddenMenu());
+        } catch (error) {
+          dialog.showErrorBox('Install CLI Failed', error instanceof Error ? error.message : String(error));
+        }
+      },
+    };
+  }
+  if (!isManagedCliShim(commandPath)) {
+    return { label: 'CLI is installed!', enabled: false };
+  }
+  return {
+    label: 'Remove CLI',
+    click: async () => {
+      try {
+        await removeDesktopCliShim();
+        Menu.setApplicationMenu(process.platform === 'darwin' ? buildMacMenu() : buildAutoHiddenMenu());
+      } catch (error) {
+        dialog.showErrorBox('Remove CLI Failed', error instanceof Error ? error.message : String(error));
+      }
+    },
+  };
 };
 
 // Set the product name early so electron-log derives its log directory as
@@ -3114,6 +3303,12 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     case 'desktop_get_app_version':
       return APP_VERSION;
 
+    case 'desktop_cli_status':
+      return getDesktopCliStatus();
+
+    case 'desktop_cli_install':
+      return installDesktopCliShim();
+
     case 'desktop_get_launch_at_login': {
       if (process.platform !== 'darwin') return { supported: false, enabled: false };
       const settings = app.getLoginItemSettings();
@@ -3838,6 +4033,7 @@ const buildMacMenu = () => {
         { label: 'Reload Webview', click: () => reloadMenuTargetWindow() },
         { label: 'Restart', click: () => relaunchFromMenu() },
         { label: 'Command Palette', accelerator: 'Cmd+P', click: () => dispatchAction('command-palette') },
+        buildCliMenuItem(),
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -3943,6 +4139,7 @@ const buildAutoHiddenMenu = () => {
         { label: 'Reload Webview', click: () => reloadMenuTargetWindow() },
         { label: 'Restart', click: () => relaunchFromMenu() },
         { label: 'Command Palette', accelerator: 'Ctrl+P', click: () => dispatchAction('command-palette') },
+        buildCliMenuItem(),
         { type: 'separator' },
         { role: 'quit' },
       ],

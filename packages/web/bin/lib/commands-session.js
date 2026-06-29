@@ -35,6 +35,45 @@ const validateModel = (model) => {
   return normalized;
 };
 
+const normalizeLimit = (value, fallback = 10) => {
+  if (value === undefined || value === null) return fallback;
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new TunnelCliError('Invalid limit value. Provide a positive integer.', EXIT_CODE.USAGE_ERROR);
+  }
+  return parsed;
+};
+
+const formatSessionModel = (session) => {
+  const model = session?.model;
+  const providerID = asNonEmptyString(model?.providerID) || asNonEmptyString(model?.providerId);
+  const modelID = asNonEmptyString(model?.id) || asNonEmptyString(model?.modelID) || asNonEmptyString(model?.modelId);
+  return providerID && modelID ? `${providerID}/${modelID}` : null;
+};
+
+const formatSessionLine = (session) => {
+  const title = asNonEmptyString(session?.title) || asNonEmptyString(session?.slug) || asNonEmptyString(session?.id) || 'untitled';
+  const model = formatSessionModel(session) || 'unknown-model';
+  const agent = asNonEmptyString(session?.agent) || 'unknown-agent';
+  const variant = asNonEmptyString(session?.model?.variant);
+  const directory = asNonEmptyString(session?.directory) || 'unknown-directory';
+  const selections = [`\`${model}\``, `\`${agent}\``];
+  if (variant && variant !== 'default') selections.push(`\`${variant}\``);
+  return `- \`${title}\` — ${selections.join(', ')} — \`${directory}\``;
+};
+
+const buildSessionListEndpoint = (options = {}) => {
+  const params = new URLSearchParams();
+  const directory = asNonEmptyString(options.directory);
+  if (directory) params.set('directory', directory);
+  return `/api/session${params.toString() ? `?${params.toString()}` : ''}`;
+};
+
+const filterVisibleSessions = (sessions, options = {}) => {
+  const list = Array.isArray(sessions) ? sessions : [];
+  return options.all ? list : list.filter((session) => !session?.time?.archived);
+};
+
 const buildSessionCreatePayload = (options = {}) => {
   const directory = asNonEmptyString(options.directory);
   const projectId = asNonEmptyString(options.project);
@@ -47,9 +86,6 @@ const buildSessionCreatePayload = (options = {}) => {
 
   const prompt = asNonEmptyString(options.prompt);
   const model = validateModel(options.model);
-  if (prompt && !model) {
-    throw new TunnelCliError('--model is required when --prompt is provided.', EXIT_CODE.USAGE_ERROR);
-  }
 
   const title = asNonEmptyString(options.title) || asNonEmptyString(options.name);
   const agent = asNonEmptyString(options.agent);
@@ -73,7 +109,23 @@ const buildSessionCreatePayload = (options = {}) => {
 
 async function sessionCommand(options = {}, action = 'help') {
   if (action === 'help') {
-    process.stdout.write(`OpenChamber Session Commands\n\nUSAGE:\n  openchamber session create --dir <path> [--title <title>] [OPTIONS]\n  openchamber session create --project <projectId> [--title <title>] [OPTIONS]\n\nCREATE OPTIONS:\n  --worktree <name>       Create a git worktree before creating the session\n  --branch <name>         Branch name for --worktree\n  --start-ref, --base <ref>  Start ref for --worktree\n  --upstream              Set upstream for the worktree branch\n  --no-upstream           Do not set upstream for the worktree branch\n  --prompt <text>         Send an initial prompt after session creation\n  --model <provider/model>  Model for the initial prompt\n  --agent <id>            Agent for the initial prompt\n  --variant <id>          Model variant for the initial prompt\n  --name <title>          Alias for --title\n\nOUTPUT OPTIONS:\n  -p, --port <port>       OpenChamber server port\n  --json                  Output machine-readable JSON\n  -q, --quiet             Print only the session id\n`);
+    process.stdout.write(`OpenChamber Session Commands\n\nUSAGE:\n  openchamber session list [--dir <path>] [--limit <count>] [OPTIONS]\n  openchamber session create --dir <path> [--title <title>] [OPTIONS]\n  openchamber session create --project <projectId> [--title <title>] [OPTIONS]\n\nLIST OPTIONS:\n  --dir <path>            Filter sessions by directory\n  --limit <count>         Maximum sessions to show (default: 10)\n  --all                   Include archived sessions\n\nCREATE OPTIONS:\n  --worktree <name>       Create a git worktree before creating the session\n  --branch <name>         Branch name for --worktree\n  --start-ref, --base <ref>  Start ref for --worktree\n  --upstream              Set upstream for the worktree branch\n  --no-upstream           Do not set upstream for the worktree branch\n  --prompt <text>         Send an initial prompt after session creation\n  --model <provider/model>  Model for the initial prompt (defaults to configured selection)\n  --agent <id>            Agent for the initial prompt (defaults to configured selection)\n  --variant <id>          Model variant for the initial prompt\n  --name <title>          Alias for --title\n\nOUTPUT OPTIONS:\n  -p, --port <port>       OpenChamber server port\n  --json                  Output machine-readable JSON\n  -q, --quiet             Print compact output\n`);
+    return;
+  }
+
+  if (action === 'list') {
+    const limit = normalizeLimit(options.limit);
+    const port = await resolveTargetPort(options);
+    const { response, body } = await requestJson(port, buildSessionListEndpoint(options), options);
+    assertOk(response, body, 'Failed to load sessions');
+    const sessions = filterVisibleSessions(body, options).slice(0, limit);
+    if (isJsonMode(options)) {
+      printJson({ sessions, limit, directory: asNonEmptyString(options.directory), archived: options.all ? 'included' : 'excluded' });
+      return;
+    }
+    process.stdout.write(sessions.length > 0
+      ? `${sessions.map(formatSessionLine).join('\n')}\n`
+      : 'No sessions found.\n');
     return;
   }
 
@@ -110,4 +162,4 @@ async function sessionCommand(options = {}, action = 'help') {
   clackOutro('created');
 }
 
-export { sessionCommand, buildSessionCreatePayload };
+export { sessionCommand, buildSessionCreatePayload, formatSessionLine, buildSessionListEndpoint, filterVisibleSessions };

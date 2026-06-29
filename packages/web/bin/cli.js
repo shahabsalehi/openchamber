@@ -22,6 +22,7 @@ import {
 import {
   parseArgs,
   showHelp,
+  showControlHelp,
   showStartupHelp,
   showConnectUrlHelp,
   showTunnelHelp,
@@ -35,6 +36,8 @@ import { logsCommand } from './lib/commands-logs.js';
 import { statusCommand } from './lib/commands-status.js';
 import { scheduleCommand } from './lib/commands-schedule.js';
 import { sessionCommand } from './lib/commands-session.js';
+import { modelsCommand } from './lib/commands-models.js';
+import { projectsCommand } from './lib/commands-projects.js';
 import { createUpdateCommand } from './lib/commands-update.js';
 import { createConnectUrlCommand } from './lib/commands-connect-url.js';
 import { createLifecycleCommands } from './lib/commands-lifecycle.js';
@@ -72,6 +75,21 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PACKAGE_JSON = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+const isDesktopShimRuntime = () => {
+  if (process.env.OPENCHAMBER_DESKTOP_CLI_SHIM === '1') return true;
+  if (process.env.ELECTRON_RUN_AS_NODE !== '1') return false;
+  return /OpenChamber(?:\.app)?/i.test(process.execPath || '');
+};
+
+const assertDesktopShimCommandAllowed = (command) => {
+  if (!isDesktopShimRuntime()) return;
+  if (command === 'serve' || command === 'restart' || command === 'startup' || command === 'update') {
+    throw new TunnelCliError(
+      'This desktop-installed CLI controls the running OpenChamber Desktop app and cannot start or manage a standalone web server. Install the standalone OpenChamber CLI to use this command.',
+      EXIT_CODE.USAGE_ERROR,
+    );
+  }
+};
 
 let onCancelCleanup = null;
 let activeCommandOptions = null;
@@ -182,6 +200,10 @@ const commands = {
 
   session: sessionCommand,
 
+  models: modelsCommand,
+
+  projects: projectsCommand,
+
 
   logs: logsCommand,
 
@@ -225,7 +247,7 @@ commands.update = createUpdateCommand({
 
 async function main() {
   const parsed = parseArgs();
-  const { command, subcommand, tunnelAction, startupAction, scheduleAction, sessionAction, options, removedFlagErrors, helpRequested, versionRequested } = parsed;
+  const { command, subcommand, tunnelAction, startupAction, scheduleAction, sessionAction, controlAction, options, removedFlagErrors, helpRequested, versionRequested } = parsed;
   activeCommandOptions = options;
 
   if (versionRequested) {
@@ -265,11 +287,21 @@ async function main() {
       await commands.schedule(options, 'help');
     } else if (command === 'session') {
       await commands.session(options, 'help');
+    } else if (command === 'models') {
+      await commands.models(options, 'help');
+    } else if (command === 'projects') {
+      await commands.projects(options, 'help');
+    } else if (command === 'control') {
+      showControlHelp();
+    } else if (isDesktopShimRuntime()) {
+      showControlHelp();
     } else {
       showHelp();
     }
     return;
   }
+
+  assertDesktopShimCommandAllowed(command);
 
   if (command === 'tunnel') {
     await commands.tunnel(options, subcommand, tunnelAction);
@@ -291,8 +323,26 @@ async function main() {
     return;
   }
 
+  if (command === 'models') {
+    await commands.models(options, 'show');
+    return;
+  }
+
+  if (command === 'projects') {
+    await commands.projects(options, 'list');
+    return;
+  }
+
+  if (command === 'control') {
+    if (controlAction !== 'help') {
+      throw new TunnelCliError(`Unknown control command '${controlAction}'.`, EXIT_CODE.USAGE_ERROR);
+    }
+    showControlHelp();
+    return;
+  }
+
   if (!commands[command]) {
-    const knownCommands = ['serve', 'stop', 'restart', 'status', 'schedule', 'session', 'tunnel', 'startup', 'logs', 'update'];
+    const knownCommands = ['serve', 'stop', 'restart', 'status', 'schedule', 'session', 'models', 'projects', 'control', 'tunnel', 'startup', 'logs', 'update'];
     const suggestion = findClosestMatch(command, knownCommands);
     const hint = suggestion ? ` Did you mean '${suggestion}'?` : '';
     if (isJsonMode(options)) {
@@ -392,7 +442,10 @@ if (isCliExecution) {
 }
 
 export {
+  main,
   commands,
+  assertDesktopShimCommandAllowed,
+  isDesktopShimRuntime,
   parseArgs,
   assertAuthenticatedNetworkExposure,
   resolveServeHost,

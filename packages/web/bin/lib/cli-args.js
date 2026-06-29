@@ -63,6 +63,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     all: false,
     follow: true,
     lines: DEFAULT_TAIL_LINES,
+    limit: undefined,
     provider: undefined,
     mode: undefined,
     profile: undefined,
@@ -392,6 +393,16 @@ function parseArgs(argv = process.argv.slice(2)) {
         }
         break;
       }
+      case 'limit': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        const parsed = parseInt(value ?? '', 10);
+        if (!Number.isFinite(parsed) || parsed < 1) {
+          throw new TunnelCliError('Invalid limit value. Provide a positive integer.', EXIT_CODE.USAGE_ERROR);
+        }
+        options.limit = parsed;
+        break;
+      }
       case 'qr':
         options.qr = true;
         options.explicitQr = true;
@@ -469,6 +480,7 @@ function parseArgs(argv = process.argv.slice(2)) {
   const startupAction = command === 'startup' ? (positional[1] || 'status') : null;
   const scheduleAction = command === 'schedule' ? (positional[1] || 'help') : null;
   const sessionAction = command === 'session' ? (positional[1] || 'help') : null;
+  const controlAction = command === 'control' ? (positional[1] || 'help') : null;
 
   if (options.lan && typeof options.host !== 'string') {
     options.host = '0.0.0.0';
@@ -485,6 +497,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     startupAction,
     scheduleAction,
     sessionAction,
+    controlAction,
     options,
     removedFlagErrors,
     helpRequested,
@@ -506,6 +519,9 @@ COMMANDS:
   status         Show server status
   schedule       Manage scheduled tasks
   session        Create OpenChamber sessions
+  models         Show default and favorite models
+  projects       Show configured projects and IDs
+  control        Show OpenChamber control-plane commands
   tunnel         Tunnel lifecycle commands
   startup        Manage launch at system startup
   logs           Tail OpenChamber logs
@@ -542,12 +558,49 @@ EXAMPLES:
   openchamber serve --foreground # Start in foreground (for systemd Type=simple)
   openchamber connect-url --port 3000 --qr
   openchamber connect-url --server https://openchamber.example.com
-  openchamber schedule status --json
-  openchamber session create --dir . --prompt "Investigate flaky tests" --model anthropic/claude-sonnet-4
-  openchamber schedule list --project my-project
+  openchamber control           # Show control-plane commands for agents/scripts
   openchamber startup enable     # Start OpenChamber at user login
   openchamber tunnel help        # Show tunnel lifecycle help
   openchamber logs               # Follow logs for latest running instance
+`);
+}
+
+function showControlHelp() {
+  console.log(`
+ OpenChamber Control Commands
+
+USAGE:
+  openchamber <COMMAND> [OPTIONS]
+
+COMMANDS:
+  status                         Show running OpenChamber runtimes
+  session                        Create sessions and worktree-backed sessions
+  models                         Show default and favorite models
+  projects                       Show configured projects and IDs
+  schedule                       Manage scheduled tasks
+  tunnel                         Inspect tunnel status/readiness
+  logs                           Tail logs for CLI-managed runtimes
+
+DETAILED HELP:
+  openchamber session --help     Show session creation options and examples
+  openchamber models --help      Show model defaults and favorites help
+  openchamber projects --help    Show project list help
+  openchamber schedule --help    Show scheduled task actions and schedule options
+  openchamber tunnel help        Show tunnel lifecycle/status commands
+  openchamber status --help      Show runtime status options
+
+COMMON OPTIONS:
+  --json                         Output machine-readable JSON
+  -q, --quiet                    Print minimal output
+  -p, --port <port>              Target a specific OpenChamber runtime
+  --ui-password <password>       Authenticate to a password-protected runtime
+
+EXAMPLES:
+  openchamber status
+  openchamber models
+  openchamber projects
+  openchamber session --help
+  openchamber schedule --help
 `);
 }
 
@@ -706,7 +759,7 @@ _openchamber_tunnel() {
   cur="\${COMP_WORDS[COMP_CWORD]}"
   prev="\${COMP_WORDS[COMP_CWORD-1]}"
 
-    commands="serve stop restart status schedule session tunnel logs update"
+    commands="serve stop restart status schedule session models projects tunnel logs update"
   tunnel_commands="help providers ready doctor status start stop profile completion"
   profile_commands="list show add remove"
   common_flags="--port --foreground --no-daemon --json --all --help --version --plain --quiet"
@@ -760,6 +813,8 @@ _openchamber() {
     'status:Show server status'
     'schedule:Manage scheduled tasks'
     'session:Create sessions'
+    'models:Show default and favorite models'
+    'projects:Show configured projects and IDs'
     'tunnel:Tunnel lifecycle commands'
     'logs:Tail OpenChamber logs'
     'update:Check for and install updates'
@@ -857,6 +912,7 @@ export {
   DEFAULT_PORT,
   parseArgs,
   showHelp,
+  showControlHelp,
   showStartupHelp,
   showConnectUrlHelp,
   showTunnelHelp,

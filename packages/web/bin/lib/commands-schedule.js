@@ -1,6 +1,7 @@
 import { TunnelCliError, EXIT_CODE } from './cli-errors.js';
 import { requestJson } from './cli-http.js';
 import { resolveTargetPort } from './cli-api-target.js';
+import { resolveProjectIdForDirectory } from './cli-projects.js';
 import {
   intro as clackIntro,
   outro as clackOutro,
@@ -31,6 +32,17 @@ const assertOk = (response, body, fallback) => {
     ? EXIT_CODE.USAGE_ERROR
     : EXIT_CODE.GENERAL_ERROR;
   throw new TunnelCliError(message, exitCode);
+};
+
+const resolveProjectID = async (port, options) => {
+  const projectID = asNonEmptyString(options.project);
+  const directory = asNonEmptyString(options.directory);
+  if (projectID && directory) {
+    throw new TunnelCliError('Provide only one of --project or --dir.', EXIT_CODE.USAGE_ERROR);
+  }
+  if (projectID) return projectID;
+  if (directory) return resolveProjectIdForDirectory(port, directory, options);
+  throw new TunnelCliError('Missing required --project or --dir.', EXIT_CODE.USAGE_ERROR);
 };
 
 const parseModel = (value) => {
@@ -169,7 +181,7 @@ const updateTaskEnabled = async (port, options, projectID, taskID, enabled) => {
 
 async function scheduleCommand(options = {}, action = 'help') {
   if (action === 'help') {
-    process.stdout.write(`OpenChamber Schedule Commands\n\nUSAGE:\n  openchamber schedule status [OPTIONS]\n  openchamber schedule list --project <projectId> [OPTIONS]\n  openchamber schedule create --project <projectId> --name <name> --prompt <prompt> --model <provider/model> (--daily <HH:mm> | --weekly <0,1,2> --time <HH:mm> | --once <YYYY-MM-DD> --time <HH:mm> | --cron <expr>) [OPTIONS]\n  openchamber schedule run --project <projectId> --task <taskId> [OPTIONS]\n  openchamber schedule delete --project <projectId> --task <taskId> [OPTIONS]\n  openchamber schedule enable --project <projectId> --task <taskId> [OPTIONS]\n  openchamber schedule disable --project <projectId> --task <taskId> [OPTIONS]\n\nOPTIONS:\n  -p, --port <port>       OpenChamber server port\n  --timezone <zone>       IANA timezone for created tasks\n  --agent <id>            Agent to use when running task\n  --variant <id>          Model variant to use when running task\n  --disabled              Create task disabled\n  --json                  Output machine-readable JSON\n  -q, --quiet             Print concise output\n`);
+    process.stdout.write(`OpenChamber Schedule Commands\n\nUSAGE:\n  openchamber schedule status [OPTIONS]\n  openchamber schedule list (--project <projectId> | --dir <path>) [OPTIONS]\n  openchamber schedule create (--project <projectId> | --dir <path>) --name <name> --prompt <prompt> --model <provider/model> (--daily <HH:mm> | --weekly <0,1,2> --time <HH:mm> | --once <YYYY-MM-DD> --time <HH:mm> | --cron <expr>) [OPTIONS]\n  openchamber schedule run (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n  openchamber schedule delete (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n  openchamber schedule enable (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n  openchamber schedule disable (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n\nOPTIONS:\n  --project <projectId>   Project id from openchamber projects\n  --dir <path>            Resolve project by directory\n  -p, --port <port>       OpenChamber server port\n  --timezone <zone>       IANA timezone for created tasks\n  --agent <id>            Agent to use when running task\n  --variant <id>          Model variant to use when running task\n  --disabled              Create task disabled\n  --json                  Output machine-readable JSON\n  -q, --quiet             Print concise output\n`);
     return;
   }
 
@@ -194,7 +206,7 @@ async function scheduleCommand(options = {}, action = 'help') {
   }
 
   if (action === 'list') {
-    const projectID = assertRequired(options.project, '--project');
+    const projectID = await resolveProjectID(port, options);
     const { response, body } = await requestJson(port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks`, options);
     assertOk(response, body, 'Failed to load scheduled tasks');
     outputTasks(options, body?.tasks);
@@ -202,7 +214,7 @@ async function scheduleCommand(options = {}, action = 'help') {
   }
 
   if (action === 'create') {
-    const projectID = assertRequired(options.project, '--project');
+    const projectID = await resolveProjectID(port, options);
     const task = buildTaskPayload(options);
     const { response, body } = await requestJson(port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks`, {
       ...options,
@@ -225,7 +237,7 @@ async function scheduleCommand(options = {}, action = 'help') {
   }
 
   if (action === 'run') {
-    const projectID = assertRequired(options.project, '--project');
+    const projectID = await resolveProjectID(port, options);
     const taskID = assertRequired(options.task, '--task');
     const { response, body } = await requestJson(port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks/${encodeURIComponent(taskID)}/run`, {
       ...options,
@@ -247,7 +259,7 @@ async function scheduleCommand(options = {}, action = 'help') {
   }
 
   if (action === 'delete') {
-    const projectID = assertRequired(options.project, '--project');
+    const projectID = await resolveProjectID(port, options);
     const taskID = assertRequired(options.task, '--task');
     const { response, body } = await requestJson(port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks/${encodeURIComponent(taskID)}`, {
       ...options,
@@ -269,7 +281,7 @@ async function scheduleCommand(options = {}, action = 'help') {
   }
 
   if (action === 'enable' || action === 'disable') {
-    const projectID = assertRequired(options.project, '--project');
+    const projectID = await resolveProjectID(port, options);
     const taskID = assertRequired(options.task, '--task');
     const enabled = action === 'enable';
     const task = await updateTaskEnabled(port, options, projectID, taskID, enabled);
@@ -290,4 +302,4 @@ async function scheduleCommand(options = {}, action = 'help') {
   throw new TunnelCliError(`Unknown schedule command '${action}'.`, EXIT_CODE.USAGE_ERROR);
 }
 
-export { scheduleCommand, buildTaskPayload, buildSchedule };
+export { scheduleCommand, buildTaskPayload, buildSchedule, resolveProjectID };
