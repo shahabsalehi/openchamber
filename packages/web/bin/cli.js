@@ -40,6 +40,7 @@ import {
   projectCommand,
   configCommand,
 } from './lib/commands-resources.js';
+import { scheduleCommand } from './lib/commands-schedule.js';
 import { readDesktopLocalPortFromSettings } from './lib/cli-paths.js';
 import { resolveExplicitBinary, searchPathFor } from './lib/cli-executables.js';
 import { startupCommand } from './lib/commands-startup.js';
@@ -241,6 +242,7 @@ const RESOURCE_COMMANDS = {
   snippet: snippetCommand,
   provider: providerCommand,
   project: projectCommand,
+  schedule: scheduleCommand,
   config: configCommand,
 };
 
@@ -310,7 +312,7 @@ async function main() {
   if (!commands[command]) {
     const knownCommands = [
       'serve', 'stop', 'restart', 'status', 'tunnel', 'startup', 'logs', 'update',
-      'session', 'agent', 'command', 'skill', 'mcp', 'snippet', 'provider', 'project', 'config',
+      'session', 'agent', 'command', 'skill', 'mcp', 'snippet', 'provider', 'project', 'schedule', 'config',
     ];
     const suggestion = findClosestMatch(command, knownCommands);
     const hint = suggestion ? ` Did you mean '${suggestion}'?` : '';

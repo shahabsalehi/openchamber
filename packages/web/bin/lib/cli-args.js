@@ -101,6 +101,17 @@ function parseArgs(argv = process.argv.slice(2)) {
     prompt: undefined,
     url: undefined,
     commandStr: undefined,
+    // Scheduled task inputs
+    projectId: undefined,
+    kind: undefined,
+    at: undefined,
+    on: undefined,
+    cron: undefined,
+    date: undefined,
+    time: undefined,
+    timezone: undefined,
+    variant: undefined,
+    disabled: false,
   };
 
   const removedFlagErrors = [];
@@ -330,6 +341,64 @@ function parseArgs(argv = process.argv.slice(2)) {
         options.commandStr = typeof value === 'string' ? value : options.commandStr;
         break;
       }
+      case 'project': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.projectId = typeof value === 'string' ? value : options.projectId;
+        break;
+      }
+      case 'kind': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.kind = typeof value === 'string' ? value : options.kind;
+        break;
+      }
+      case 'at': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.at = typeof value === 'string' ? value : options.at;
+        break;
+      }
+      case 'on': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.on = typeof value === 'string' ? value : options.on;
+        break;
+      }
+      case 'cron': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.cron = typeof value === 'string' ? value : options.cron;
+        break;
+      }
+      case 'date': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.date = typeof value === 'string' ? value : options.date;
+        break;
+      }
+      case 'time': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.time = typeof value === 'string' ? value : options.time;
+        break;
+      }
+      case 'timezone':
+      case 'tz': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.timezone = typeof value === 'string' ? value : options.timezone;
+        break;
+      }
+      case 'variant': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.variant = typeof value === 'string' ? value : options.variant;
+        break;
+      }
+      case 'disabled':
+        options.disabled = true;
+        break;
       case 'yes':
       case 'y':
         options.force = true;
@@ -479,6 +548,7 @@ RESOURCE COMMANDS (talk to a running server):
   snippet        Manage snippets (list/show/create/delete)
   provider       Inspect providers and models (list/models)
   project        List configured projects (list)
+  schedule       Manage scheduled tasks (list/show/create/run/enable/disable/delete/status)
   config         Show OpenChamber settings (get)
 
   Run 'openchamber <command> --help' for resource command details.
@@ -789,6 +859,47 @@ USAGE:
 ACTIONS:
   list                         List configured projects
 `,
+  schedule: `
+ OpenChamber Scheduled Task Commands
+
+USAGE:
+  openchamber schedule <ACTION> [ARGS] [OPTIONS]
+
+ACTIONS:
+  list                         List scheduled tasks for the project
+  show <id|name>               Show a scheduled task
+  create <name>                Create/update a task (see CREATE OPTIONS)
+  run <id|name>                Run a task now
+  enable <id|name>             Enable a task
+  disable <id|name>            Disable a task
+  delete <id|name>             Delete a task (--force to skip confirm)
+  status                       Show global scheduled-task counts
+
+PROJECT SELECTION:
+  --project <id|path>          Target project (default: project for cwd / active)
+  --directory <path>           Match a project by directory
+
+CREATE OPTIONS:
+  --prompt <text>              Prompt to run ("/command args" runs a slash command)
+  --kind <daily|weekly|once|cron>   Schedule kind (inferred from flags below)
+  --at "09:00,17:30"           Run time(s) for daily/weekly
+  --on "mon,wed,fri"           Weekdays for weekly (names or 0..6, 0=Sun)
+  --date YYYY-MM-DD --time HH:mm    One-time run date/time
+  --cron "<expr>"              Cron expression
+  --timezone, --tz <IANA>      Timezone (default: server local)
+  --model <provider/model>     Model (or --provider + --model)
+  --agent <name>               Agent
+  --variant <name>             Thinking variant
+  --disabled                   Create the task disabled
+
+EXAMPLES:
+  openchamber schedule list
+  openchamber schedule create "Daily standup" --prompt "/summarize" --kind daily --at 09:00
+  openchamber schedule create nightly --prompt "Review open PRs" --cron "0 2 * * *" --model anthropic/claude
+  openchamber schedule run "Daily standup"
+  openchamber schedule disable nightly --json
+  openchamber schedule status
+`,
   config: `
  OpenChamber Config Commands
 
@@ -821,7 +932,7 @@ _openchamber_tunnel() {
   cur="\${COMP_WORDS[COMP_CWORD]}"
   prev="\${COMP_WORDS[COMP_CWORD-1]}"
 
-  commands="serve stop restart status tunnel startup logs connect-url update session agent command skill mcp snippet provider project config"
+  commands="serve stop restart status tunnel startup logs connect-url update session agent command skill mcp snippet provider project schedule config"
   tunnel_commands="help providers ready doctor status start stop profile completion"
   profile_commands="list show add remove"
   common_flags="--port --foreground --no-daemon --json --all --help --version --plain --quiet"
@@ -884,6 +995,7 @@ _openchamber() {
     'snippet:Manage snippets'
     'provider:Inspect providers and models'
     'project:List projects'
+    'schedule:Manage scheduled tasks'
     'config:Show settings'
   )
 
@@ -955,6 +1067,7 @@ complete -c openchamber -n '__fish_use_subcommand' -a 'mcp' -d 'Manage MCP serve
 complete -c openchamber -n '__fish_use_subcommand' -a 'snippet' -d 'Manage snippets'
 complete -c openchamber -n '__fish_use_subcommand' -a 'provider' -d 'Inspect providers and models'
 complete -c openchamber -n '__fish_use_subcommand' -a 'project' -d 'List projects'
+complete -c openchamber -n '__fish_use_subcommand' -a 'schedule' -d 'Manage scheduled tasks'
 complete -c openchamber -n '__fish_use_subcommand' -a 'config' -d 'Show settings'
 
 complete -c openchamber -n '__fish_seen_subcommand_from tunnel; and not __fish_seen_subcommand_from help providers ready doctor status start stop profile completion' -a 'help' -d 'Show tunnel help'
