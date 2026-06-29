@@ -1,7 +1,16 @@
 import express from 'express';
 import request from 'supertest';
-import { describe, expect, it, vi } from 'vitest';
-import { registerOpenChamberSessionRoutes } from './routes.js';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const createWorktreeMock = vi.fn(async () => ({
+  head: 'abc123',
+  name: 'side-task',
+  branch: 'openchamber/side-task',
+  path: '/repo/worktrees/side-task',
+}));
+globalThis.__openchamberCreateWorktreeMock = createWorktreeMock;
+
+let registerOpenChamberSessionRoutes;
 
 vi.mock('@opencode-ai/sdk/v2', () => ({
   createOpencodeClient: () => ({
@@ -13,6 +22,10 @@ vi.mock('@opencode-ai/sdk/v2', () => ({
       list: vi.fn(async () => ({ data: [] })),
     },
   }),
+}));
+
+vi.mock('../git/index.js', () => ({
+  createWorktree: (...args) => globalThis.__openchamberCreateWorktreeMock(...args),
 }));
 
 const createApp = (overrides = {}) => {
@@ -32,6 +45,14 @@ const createApp = (overrides = {}) => {
 };
 
 describe('openchamber session routes', () => {
+  beforeAll(async () => {
+    ({ registerOpenChamberSessionRoutes } = await import('./routes.js'));
+  });
+
+  beforeEach(() => {
+    createWorktreeMock.mockClear();
+  });
+
   it('creates a session for a directory', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
@@ -99,6 +120,40 @@ describe('openchamber session routes', () => {
       expect(response.body.promptDispatched).toBe(true);
       expect(fetchMock).toHaveBeenCalledWith(
         'http://opencode.test/session/ses_123/prompt_async?directory=%2Frepo%2Fapp',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('creates a worktree before creating a session', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => ({ ok: true, text: async () => '' }));
+    try {
+      const { app } = createApp();
+      const response = await request(app)
+        .post('/api/openchamber/sessions')
+        .send({
+          directory: '/repo/app',
+          worktree: { name: 'side-task', branchName: 'openchamber/side-task', startRef: 'main' },
+          setUpstream: false,
+          prompt: 'Run this',
+          model: 'anthropic/claude-sonnet-4',
+        })
+        .expect(200);
+
+      expect(createWorktreeMock).toHaveBeenCalledWith('/repo/app', {
+        mode: 'new',
+        name: 'side-task',
+        branchName: 'openchamber/side-task',
+        startRef: 'main',
+        setUpstream: false,
+      });
+      expect(response.body.directory).toBe('/repo/worktrees/side-task');
+      expect(response.body.worktree.path).toBe('/repo/worktrees/side-task');
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        'http://opencode.test/session/ses_123/prompt_async?directory=%2Frepo%2Fworktrees%2Fside-task',
         expect.objectContaining({ method: 'POST' }),
       );
     } finally {

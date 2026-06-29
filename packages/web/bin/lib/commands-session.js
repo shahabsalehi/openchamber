@@ -1,5 +1,6 @@
 import { TunnelCliError, EXIT_CODE } from './cli-errors.js';
 import { requestJson } from './cli-http.js';
+import { resolveTargetPort } from './cli-api-target.js';
 import {
   intro as clackIntro,
   outro as clackOutro,
@@ -53,21 +54,26 @@ const buildSessionCreatePayload = (options = {}) => {
   const title = asNonEmptyString(options.title) || asNonEmptyString(options.name);
   const agent = asNonEmptyString(options.agent);
   const variant = asNonEmptyString(options.variant);
+  const worktree = asNonEmptyString(options.worktree);
+  const branch = asNonEmptyString(options.branch);
+  const startRef = asNonEmptyString(options.startRef);
 
   return {
     ...(directory ? { directory } : {}),
     ...(projectId ? { projectId } : {}),
     ...(title ? { title } : {}),
+    ...(worktree ? { worktree: { name: worktree, ...(branch ? { branchName: branch } : {}), ...(startRef ? { startRef } : {}) } } : {}),
     ...(prompt ? { prompt } : {}),
     ...(model ? { model } : {}),
     ...(agent ? { agent } : {}),
     ...(variant ? { variant } : {}),
+    ...(typeof options.setUpstream === 'boolean' ? { setUpstream: options.setUpstream } : {}),
   };
 };
 
 async function sessionCommand(options = {}, action = 'help') {
   if (action === 'help') {
-    process.stdout.write(`OpenChamber Session Commands\n\nUSAGE:\n  openchamber session create --dir <path> [--title <title>] [OPTIONS]\n  openchamber session create --project <projectId> [--title <title>] [OPTIONS]\n\nCREATE OPTIONS:\n  --prompt <text>         Send an initial prompt after session creation\n  --model <provider/model>  Model for the initial prompt\n  --agent <id>            Agent for the initial prompt\n  --variant <id>          Model variant for the initial prompt\n  --name <title>          Alias for --title\n\nOUTPUT OPTIONS:\n  -p, --port <port>       OpenChamber server port\n  --json                  Output machine-readable JSON\n  -q, --quiet             Print only the session id\n`);
+    process.stdout.write(`OpenChamber Session Commands\n\nUSAGE:\n  openchamber session create --dir <path> [--title <title>] [OPTIONS]\n  openchamber session create --project <projectId> [--title <title>] [OPTIONS]\n\nCREATE OPTIONS:\n  --worktree <name>       Create a git worktree before creating the session\n  --branch <name>         Branch name for --worktree\n  --start-ref, --base <ref>  Start ref for --worktree\n  --upstream              Set upstream for the worktree branch\n  --no-upstream           Do not set upstream for the worktree branch\n  --prompt <text>         Send an initial prompt after session creation\n  --model <provider/model>  Model for the initial prompt\n  --agent <id>            Agent for the initial prompt\n  --variant <id>          Model variant for the initial prompt\n  --name <title>          Alias for --title\n\nOUTPUT OPTIONS:\n  -p, --port <port>       OpenChamber server port\n  --json                  Output machine-readable JSON\n  -q, --quiet             Print only the session id\n`);
     return;
   }
 
@@ -76,7 +82,8 @@ async function sessionCommand(options = {}, action = 'help') {
   }
 
   const payload = buildSessionCreatePayload(options);
-  const { response, body } = await requestJson(options.port, '/api/openchamber/sessions', {
+  const port = await resolveTargetPort(options);
+  const { response, body } = await requestJson(port, '/api/openchamber/sessions', {
     ...options,
     method: 'POST',
     body: JSON.stringify(payload),
@@ -94,6 +101,9 @@ async function sessionCommand(options = {}, action = 'help') {
 
   clackIntro('Session Created');
   logStatus('success', body?.sessionId || 'session created', `directory: ${body?.directory || 'unknown'}`);
+  if (body?.worktree?.path) {
+    logStatus('info', `worktree: ${body.worktree.branch || body.worktree.name || 'created'}`, body.worktree.path);
+  }
   if (body?.promptDispatched) {
     logStatus('info', body.dispatchedAsCommand ? 'initial command dispatched' : 'initial prompt dispatched');
   }

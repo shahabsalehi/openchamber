@@ -215,6 +215,31 @@ function parseArgs(argv = process.argv.slice(2)) {
         options.title = typeof value === 'string' ? value : options.title;
         break;
       }
+      case 'worktree': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.worktree = typeof value === 'string' ? value : options.worktree;
+        break;
+      }
+      case 'branch': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.branch = typeof value === 'string' ? value : options.branch;
+        break;
+      }
+      case 'start-ref':
+      case 'base': {
+        const { value, nextIndex } = consumeValue(i, inlineValue);
+        i = nextIndex;
+        options.startRef = typeof value === 'string' ? value : options.startRef;
+        break;
+      }
+      case 'upstream':
+        options.setUpstream = true;
+        break;
+      case 'no-upstream':
+        options.setUpstream = false;
+        break;
       case 'project': {
         const { value, nextIndex } = consumeValue(i, inlineValue);
         i = nextIndex;

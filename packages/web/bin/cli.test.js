@@ -12,6 +12,7 @@ import { requestJson } from './lib/cli-http.js';
 import { inspectTunnelAttachability } from './lib/cli-lifecycle.js';
 import { buildTaskPayload } from './lib/commands-schedule.js';
 import { buildSessionCreatePayload } from './lib/commands-session.js';
+import { resolveTargetPort } from './lib/cli-api-target.js';
 import { DEFAULT_TUNNEL_PROVIDER_CAPABILITIES } from './lib/cli-tunnel-capabilities.js';
 import {
   TUNNEL_PROVIDER_CLOUDFLARE,
@@ -300,6 +301,13 @@ describe('cli args', () => {
       'Investigate cache invalidation',
       '--model',
       'anthropic/claude-sonnet-4',
+      '--worktree',
+      'side-task',
+      '--branch',
+      'openchamber/side-task',
+      '--base',
+      'main',
+      '--no-upstream',
     ]);
 
     expect(parsed.command).toBe('session');
@@ -308,6 +316,10 @@ describe('cli args', () => {
     expect(parsed.options.name).toBe('Side task');
     expect(parsed.options.prompt).toBe('Investigate cache invalidation');
     expect(parsed.options.model).toBe('anthropic/claude-sonnet-4');
+    expect(parsed.options.worktree).toBe('side-task');
+    expect(parsed.options.branch).toBe('openchamber/side-task');
+    expect(parsed.options.startRef).toBe('main');
+    expect(parsed.options.setUpstream).toBe(false);
   });
 
   it('builds session create payloads from CLI options', () => {
@@ -317,12 +329,22 @@ describe('cli args', () => {
       prompt: 'Investigate cache invalidation',
       model: 'anthropic/claude-sonnet-4',
       agent: 'build',
+      worktree: 'side-task',
+      branch: 'openchamber/side-task',
+      startRef: 'main',
+      setUpstream: true,
     })).toEqual({
       directory: '.',
       title: 'Side task',
+      worktree: {
+        name: 'side-task',
+        branchName: 'openchamber/side-task',
+        startRef: 'main',
+      },
       prompt: 'Investigate cache invalidation',
       model: 'anthropic/claude-sonnet-4',
       agent: 'build',
+      setUpstream: true,
     });
   });
 
@@ -362,6 +384,50 @@ describe('cli args', () => {
 
     expect(parsed.options.hostname).toBe('app.example.com');
     expect(parsed.options.host).toBeUndefined();
+  });
+});
+
+describe('cli API target resolution', () => {
+  it('uses an explicit port without discovery', async () => {
+    await expect(resolveTargetPort(
+      { explicitPort: true, port: 4567 },
+      {
+        discoverDesktopInstance: async () => { throw new Error('should not discover desktop'); },
+        discoverLifecycleInstances: async () => { throw new Error('should not discover lifecycle'); },
+      },
+    )).resolves.toBe(4567);
+  });
+
+  it('prefers a desktop instance when no port is explicit', async () => {
+    await expect(resolveTargetPort({}, {
+      discoverDesktopInstance: async () => ({ port: 4500 }),
+      discoverLifecycleInstances: async () => [{ port: 3001 }],
+      isServerHealthReady: async () => false,
+    })).resolves.toBe(4500);
+  });
+
+  it('uses the only discovered lifecycle instance', async () => {
+    await expect(resolveTargetPort({}, {
+      discoverDesktopInstance: async () => null,
+      discoverLifecycleInstances: async () => [{ port: 3002 }],
+      isServerHealthReady: async () => false,
+    })).resolves.toBe(3002);
+  });
+
+  it('uses healthy default port when discovery finds no instances', async () => {
+    await expect(resolveTargetPort({}, {
+      discoverDesktopInstance: async () => null,
+      discoverLifecycleInstances: async () => [],
+      isServerHealthReady: async (port) => port === 3000,
+    })).resolves.toBe(3000);
+  });
+
+  it('fails when multiple non-default instances are running', async () => {
+    await expect(resolveTargetPort({}, {
+      discoverDesktopInstance: async () => null,
+      discoverLifecycleInstances: async () => [{ port: 3001 }, { port: 3002 }],
+      isServerHealthReady: async () => false,
+    })).rejects.toThrow('Multiple OpenChamber instances are running');
   });
 });
 

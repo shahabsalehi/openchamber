@@ -1,5 +1,6 @@
 import { TunnelCliError, EXIT_CODE } from './cli-errors.js';
 import { requestJson } from './cli-http.js';
+import { resolveTargetPort } from './cli-api-target.js';
 import {
   intro as clackIntro,
   outro as clackOutro,
@@ -148,8 +149,8 @@ const outputTasks = (options, tasks) => {
   clackOutro(`${normalizedTasks.length} task(s)`);
 };
 
-const updateTaskEnabled = async (options, projectID, taskID, enabled) => {
-  const listResult = await requestJson(options.port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks`, options);
+const updateTaskEnabled = async (port, options, projectID, taskID, enabled) => {
+  const listResult = await requestJson(port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks`, options);
   assertOk(listResult.response, listResult.body, 'Failed to load scheduled tasks');
   const tasks = Array.isArray(listResult.body?.tasks) ? listResult.body.tasks : [];
   const task = tasks.find((entry) => entry?.id === taskID);
@@ -157,7 +158,7 @@ const updateTaskEnabled = async (options, projectID, taskID, enabled) => {
     throw new TunnelCliError('Task not found', EXIT_CODE.USAGE_ERROR);
   }
 
-  const saveResult = await requestJson(options.port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks`, {
+  const saveResult = await requestJson(port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks`, {
     ...options,
     method: 'PUT',
     body: JSON.stringify({ task: { ...task, enabled } }),
@@ -172,8 +173,10 @@ async function scheduleCommand(options = {}, action = 'help') {
     return;
   }
 
+  const port = await resolveTargetPort(options);
+
   if (action === 'status') {
-    const { response, body } = await requestJson(options.port, '/api/openchamber/scheduled-tasks/status', options);
+    const { response, body } = await requestJson(port, '/api/openchamber/scheduled-tasks/status', options);
     assertOk(response, body, 'Failed to load scheduled task status');
     if (isJsonMode(options)) {
       printJson(body || {});
@@ -192,7 +195,7 @@ async function scheduleCommand(options = {}, action = 'help') {
 
   if (action === 'list') {
     const projectID = assertRequired(options.project, '--project');
-    const { response, body } = await requestJson(options.port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks`, options);
+    const { response, body } = await requestJson(port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks`, options);
     assertOk(response, body, 'Failed to load scheduled tasks');
     outputTasks(options, body?.tasks);
     return;
@@ -201,7 +204,7 @@ async function scheduleCommand(options = {}, action = 'help') {
   if (action === 'create') {
     const projectID = assertRequired(options.project, '--project');
     const task = buildTaskPayload(options);
-    const { response, body } = await requestJson(options.port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks`, {
+    const { response, body } = await requestJson(port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks`, {
       ...options,
       method: 'PUT',
       body: JSON.stringify({ task }),
@@ -224,7 +227,7 @@ async function scheduleCommand(options = {}, action = 'help') {
   if (action === 'run') {
     const projectID = assertRequired(options.project, '--project');
     const taskID = assertRequired(options.task, '--task');
-    const { response, body } = await requestJson(options.port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks/${encodeURIComponent(taskID)}/run`, {
+    const { response, body } = await requestJson(port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks/${encodeURIComponent(taskID)}/run`, {
       ...options,
       method: 'POST',
     });
@@ -246,7 +249,7 @@ async function scheduleCommand(options = {}, action = 'help') {
   if (action === 'delete') {
     const projectID = assertRequired(options.project, '--project');
     const taskID = assertRequired(options.task, '--task');
-    const { response, body } = await requestJson(options.port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks/${encodeURIComponent(taskID)}`, {
+    const { response, body } = await requestJson(port, `/api/projects/${encodeURIComponent(projectID)}/scheduled-tasks/${encodeURIComponent(taskID)}`, {
       ...options,
       method: 'DELETE',
     });
@@ -269,7 +272,7 @@ async function scheduleCommand(options = {}, action = 'help') {
     const projectID = assertRequired(options.project, '--project');
     const taskID = assertRequired(options.task, '--task');
     const enabled = action === 'enable';
-    const task = await updateTaskEnabled(options, projectID, taskID, enabled);
+    const task = await updateTaskEnabled(port, options, projectID, taskID, enabled);
     if (isJsonMode(options)) {
       printJson({ task, enabled });
       return;

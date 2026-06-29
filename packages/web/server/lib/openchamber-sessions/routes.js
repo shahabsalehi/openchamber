@@ -1,4 +1,5 @@
 import { createOpencodeClient } from '@opencode-ai/sdk/v2';
+import { createWorktree } from '../git/index.js';
 import { expandSnippets } from '../opencode/snippets.js';
 import { parseScheduledCommandPrompt } from '../scheduled-tasks/runtime.js';
 
@@ -60,6 +61,19 @@ const resolveRequestedDirectory = async ({ payload, readSettingsFromDiskMigrated
     : { ok: false, status: 400, error: validated.error || 'Invalid directory' };
 };
 
+const resolveWorktreeInput = (payload) => {
+  if (!payload?.worktree || typeof payload.worktree !== 'object') return null;
+  const name = asNonEmptyString(payload.worktree.name);
+  if (!name) return null;
+  return {
+    mode: 'new',
+    name,
+    ...(asNonEmptyString(payload.worktree.branchName) ? { branchName: asNonEmptyString(payload.worktree.branchName) } : {}),
+    ...(asNonEmptyString(payload.worktree.startRef) ? { startRef: asNonEmptyString(payload.worktree.startRef) } : {}),
+    ...(typeof payload.setUpstream === 'boolean' ? { setUpstream: payload.setUpstream } : {}),
+  };
+};
+
 export const registerOpenChamberSessionRoutes = (app, dependencies) => {
   const {
     readSettingsFromDiskMigrated,
@@ -97,6 +111,17 @@ export const registerOpenChamberSessionRoutes = (app, dependencies) => {
         return res.status(resolvedDirectory.status || 400).json({ error: resolvedDirectory.error });
       }
 
+      const worktreeInput = resolveWorktreeInput(payload);
+      let worktree = null;
+      let sessionDirectory = resolvedDirectory.directory;
+      if (payload?.worktree && !worktreeInput) {
+        return res.status(400).json({ error: 'worktree.name is required when worktree is provided' });
+      }
+      if (worktreeInput) {
+        worktree = await createWorktree(resolvedDirectory.directory, worktreeInput);
+        sessionDirectory = worktree.path;
+      }
+
       if (typeof waitForOpenCodeReady === 'function') {
         await waitForOpenCodeReady(10_000, 250);
       }
@@ -105,7 +130,7 @@ export const registerOpenChamberSessionRoutes = (app, dependencies) => {
       const authHeaders = getOpenCodeAuthHeaders();
       const client = createOpencodeClient({ baseUrl, headers: authHeaders });
       const sessionResponse = await client.session.create({
-        directory: resolvedDirectory.directory,
+        directory: sessionDirectory,
         ...(title ? { title } : {}),
       });
       const sessionID = sessionResponse?.data?.id;
@@ -119,12 +144,12 @@ export const registerOpenChamberSessionRoutes = (app, dependencies) => {
         const parsedCommand = parseScheduledCommandPrompt(prompt);
         if (parsedCommand) {
           try {
-            const response = await client.command.list({ directory: resolvedDirectory.directory });
+            const response = await client.command.list({ directory: sessionDirectory });
             const commands = Array.isArray(response?.data) ? response.data : [];
             if (commands.some((command) => command?.name === parsedCommand.command)) {
               await client.session.command({
                 sessionID,
-                directory: resolvedDirectory.directory,
+                directory: sessionDirectory,
                 command: parsedCommand.command,
                 arguments: parsedCommand.arguments,
                 ...(agent ? { agent } : {}),
@@ -143,12 +168,12 @@ export const registerOpenChamberSessionRoutes = (app, dependencies) => {
             baseUrl,
             authHeaders,
             sessionID,
-            directory: resolvedDirectory.directory,
+            directory: sessionDirectory,
             payload: {
               model,
               ...(agent ? { agent } : {}),
               ...(variant ? { variant } : {}),
-              parts: [{ type: 'text', text: expandSnippets(prompt, resolvedDirectory.directory) }],
+              parts: [{ type: 'text', text: expandSnippets(prompt, sessionDirectory) }],
             },
           });
           promptDispatched = true;
@@ -157,9 +182,10 @@ export const registerOpenChamberSessionRoutes = (app, dependencies) => {
 
       const result = {
         sessionId: sessionID,
-        directory: resolvedDirectory.directory,
+        directory: sessionDirectory,
         ...(resolvedDirectory.projectId ? { projectId: resolvedDirectory.projectId } : {}),
         ...(title ? { title } : {}),
+        ...(worktree ? { worktree } : {}),
         promptDispatched,
         dispatchedAsCommand,
       };
@@ -167,9 +193,10 @@ export const registerOpenChamberSessionRoutes = (app, dependencies) => {
       try {
         emitSessionCreatedEvent?.({
           sessionID,
-          directory: resolvedDirectory.directory,
+          directory: sessionDirectory,
           ...(resolvedDirectory.projectId ? { projectID: resolvedDirectory.projectId } : {}),
           ...(title ? { title } : {}),
+          ...(worktree ? { worktree } : {}),
           promptDispatched,
           dispatchedAsCommand,
           createdAt: Date.now(),
