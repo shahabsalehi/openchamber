@@ -1,6 +1,6 @@
 import React from 'react';
 import { isWebRuntime } from '@/lib/desktop';
-import { getClientPlatform } from '@/lib/platform';
+import { getClientPlatform, isCapacitorApp } from '@/lib/platform';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 
 const HEARTBEAT_MS = 20000;
@@ -11,7 +11,7 @@ const resolveVisibilityState = (): 'visible' | 'hidden' => {
 };
 
 const sendVisibility = (visible: boolean) => {
-  if (!isWebRuntime()) {
+  if (!isWebRuntime() && !isCapacitorApp()) {
     return;
   }
 
@@ -25,16 +25,10 @@ const sendVisibility = (visible: boolean) => {
   void apis.push.setVisibility({ visible, platform: getClientPlatform() });
 };
 
-const isCapacitorNative = (): boolean => {
-  if (typeof window === 'undefined') return false;
-  const capacitor = (window as typeof window & { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
-  return capacitor?.isNativePlatform?.() === true;
-};
-
 export const usePushVisibilityBeacon = (options?: { enabled?: boolean }) => {
   const enabled = options?.enabled ?? true;
   React.useEffect(() => {
-    if (!enabled || !isWebRuntime() || typeof window === 'undefined') {
+    if (!enabled || (!isWebRuntime() && !isCapacitorApp()) || typeof window === 'undefined') {
       return;
     }
 
@@ -44,7 +38,7 @@ export const usePushVisibilityBeacon = (options?: { enabled?: boolean }) => {
     // "hidden" while foregrounded and leaked push notifications. The server's focus gate
     // suppresses push whenever a UI client is visible, so getting this right is what
     // guarantees "no push while the app is active".
-    if (isCapacitorNative()) {
+    if (isCapacitorApp()) {
       let active = true;
       let disposed = false;
       let removeListener: (() => void) | null = null;

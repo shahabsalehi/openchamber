@@ -18,6 +18,7 @@ import { SecureStorage } from '@aparajita/capacitor-secure-storage';
 import React from 'react';
 
 import { useI18n } from '@/lib/i18n';
+import { isCapacitorApp } from '@/lib/platform';
 import { switchRuntimeEndpoint } from '@/lib/runtime-switch';
 
 const MOBILE_CONNECTIONS_STORAGE_KEY = 'openchamber.mobile.connections.v1';
@@ -96,14 +97,6 @@ const getConnectionStorageKey = (url: string): string => {
 export const isSameConnectionUrl = (left: string, right: string): boolean =>
   getConnectionStorageKey(left) === getConnectionStorageKey(right);
 
-const isCapacitorNative = (): boolean => {
-  if (typeof window === 'undefined') return false;
-  const maybeCapacitor = (window as typeof window & {
-    Capacitor?: { isNativePlatform?: () => boolean };
-  }).Capacitor;
-  return maybeCapacitor?.isNativePlatform?.() === true || window.location.protocol === 'capacitor:';
-};
-
 // ---------------------------------------------------------------------------
 // Request helpers (native CapacitorHttp first — needed to reach plain-http LAN
 // servers the secure webview cannot fetch — then a browser-fetch fallback).
@@ -136,7 +129,7 @@ const getJsonRequestData = (body: BodyInit | null | undefined): unknown => {
 };
 
 const nativeHttpRequest = async (url: string, init?: RequestInit): Promise<MobileFetchResponse | null> => {
-  if (!isCapacitorNative()) return null;
+  if (!isCapacitorApp()) return null;
   try {
     const { CapacitorHttp } = await import('@capacitor/core');
     const headers = Object.fromEntries(new Headers(init?.headers).entries());
@@ -226,7 +219,7 @@ const readConnections = (): MobileSavedConnection[] => {
     return [];
   }
   if (!Array.isArray(parsed)) return [];
-  const native = isCapacitorNative();
+  const native = isCapacitorApp();
   return parsed
     .flatMap((item): MobileSavedConnection[] => {
       if (!item || typeof item !== 'object') return [];
@@ -247,7 +240,7 @@ const readConnections = (): MobileSavedConnection[] => {
 
 const writeConnections = (connections: MobileSavedConnection[]): void => {
   if (typeof window === 'undefined') return;
-  const native = isCapacitorNative();
+  const native = isCapacitorApp();
   const serialized = connections.slice(0, MOBILE_CONNECTIONS_LIMIT).map((c) => (
     native
       ? { id: c.id, label: c.label, url: c.url, lastUsedAt: c.lastUsedAt, hasToken: Boolean(c.hasToken || c.clientToken) }
@@ -266,7 +259,7 @@ const upsertConnectionInList = (
 ): MobileSavedConnection[] => {
   const key = getConnectionStorageKey(draft.url);
   const existing = connections.find((item) => getConnectionStorageKey(item.url) === key);
-  const native = isCapacitorNative();
+  const native = isCapacitorApp();
   const next: MobileSavedConnection = {
     id: existing?.id || crypto.randomUUID(),
     label: draft.label,
@@ -319,7 +312,7 @@ const withTimeout = async <T,>(operation: Promise<T>, fallback: T): Promise<T> =
 
 // Bound a native Keychain call so a stalled/failed bridge can never hang the flow.
 const boundedSecure = async <T,>(label: string, run: () => Promise<T>, fallback: T): Promise<T> => {
-  if (!isCapacitorNative()) return fallback;
+  if (!isCapacitorApp()) return fallback;
   return withTimeout(
     run().catch((error) => {
       console.warn(`[mobile-storage] ${label} failed`, error);
@@ -370,7 +363,7 @@ const deleteSecureToken = async (url: string): Promise<void> => {
 // One-time migration: a legacy localStorage record on native might still carry an
 // inline `clientToken`. Move it into the secure store and strip the metadata.
 const migrateLegacyInlineTokens = async (): Promise<void> => {
-  if (typeof window === 'undefined' || !isCapacitorNative()) return;
+  if (typeof window === 'undefined' || !isCapacitorApp()) return;
   let parsed: unknown;
   try {
     parsed = JSON.parse(window.localStorage.getItem(MOBILE_CONNECTIONS_STORAGE_KEY) || '[]');
@@ -402,7 +395,7 @@ export const upsertMobileConnection = async (
 ): Promise<MobileSavedConnection[]> => {
   const next = upsertConnectionInList(readConnections(), connection);
   writeConnections(next);
-  if (isCapacitorNative() && connection.clientToken) {
+  if (isCapacitorApp() && connection.clientToken) {
     await writeSecureToken(connection.url, connection.clientToken);
   }
   return next;
@@ -413,7 +406,7 @@ export const deleteMobileConnection = async (id: string): Promise<MobileSavedCon
   const removed = connections.find((connection) => connection.id === id) ?? null;
   const next = connections.filter((connection) => connection.id !== id);
   writeConnections(next);
-  if (removed && isCapacitorNative()) await deleteSecureToken(removed.url);
+  if (removed && isCapacitorApp()) await deleteSecureToken(removed.url);
   return next;
 };
 
@@ -435,7 +428,7 @@ export const autoConnectLastInstance = async (): Promise<boolean> => {
   // The native runtime transport needs a bearer token; only auto-connect when one is
   // already saved. A missing/expired token must go through the login UI, not silently.
   let token: string | undefined;
-  if (isCapacitorNative()) {
+  if (isCapacitorApp()) {
     if (!candidate.hasToken) return false;
     token = await readSecureToken(url);
     if (!token) return false;
@@ -539,7 +532,7 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
       // the secure store (single bounded read — never blocks the flow).
       let token = input.clientToken?.trim() || undefined;
       const tokenIsNew = Boolean(token);
-      if (!token && isCapacitorNative()) {
+      if (!token && isCapacitorApp()) {
         const saved = connectionsRef.current.find((c) => isSameConnectionUrl(c.url, url));
         if (saved?.hasToken) token = await readSecureToken(url);
       }
@@ -562,7 +555,7 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
       // A cookie-only native session (authenticated, but not a `client` bearer
       // scope and not auth-disabled) is not enough — the runtime transport needs a
       // bearer token, so fall through to the password flow to mint one.
-      const cookieOnlyNeedsToken = isCapacitorNative()
+      const cookieOnlyNeedsToken = isCapacitorApp()
         && session?.ok === true
         && !token
         && status?.authenticated === true
@@ -582,7 +575,7 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
 
       // Connected. If the token came from the user (not the secure store), persist
       // it first so a cold restart won't re-prompt.
-      if (token && tokenIsNew && isCapacitorNative()) {
+      if (token && tokenIsNew && isCapacitorApp()) {
         await writeSecureToken(url, token);
       }
       persistMetadata({ label, url, clientToken: token });
@@ -621,13 +614,13 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
 
       // Native runtime transport needs a bearer token; a cookie-only success is
       // not acceptable for a saved protected instance.
-      if (isCapacitorNative() && !issuedToken) {
+      if (isCapacitorApp() && !issuedToken) {
         setError(t('mobile.connect.error.authRequired'));
         return;
       }
 
       // Guarantee the token is persisted BEFORE switching (no fire-and-forget).
-      if (isCapacitorNative() && issuedToken) {
+      if (isCapacitorApp() && issuedToken) {
         await writeSecureToken(url, issuedToken);
       }
       persistMetadata({ label, url, clientToken: issuedToken || undefined });
@@ -657,7 +650,7 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
     const clientToken = input.clientToken?.trim() || undefined;
     const label = input.label?.trim() || getConnectionLabel(url);
     // Awaited token write so "Save" truly persisted the secret before returning.
-    if (isCapacitorNative() && clientToken) {
+    if (isCapacitorApp() && clientToken) {
       await writeSecureToken(url, clientToken);
     }
     const next = persistMetadata({ label, url, clientToken });

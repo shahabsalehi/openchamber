@@ -1,5 +1,6 @@
 import React from 'react';
 
+import { isCapacitorApp } from '@/lib/platform';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useUIStore } from '@/stores/useUIStore';
 
@@ -110,12 +111,6 @@ const setReady = (value: boolean): void => {
   flush();
 };
 
-const isCapacitorNative = (): boolean => {
-  if (typeof window === 'undefined') return false;
-  const capacitor = (window as typeof window & { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
-  return capacitor?.isNativePlatform?.() === true;
-};
-
 /**
  * Register the surfaces that can satisfy shell-scoped intents (sessions/settings/views/changes).
  * Call from the component that owns those panels; the handlers are torn down on unmount.
@@ -148,7 +143,7 @@ export const useDeepLinkSource = (options: { ready: boolean }): void => {
   }, [isReady]);
 
   React.useEffect(() => {
-    if (!isCapacitorNative()) return;
+    if (!isCapacitorApp()) return;
     let disposed = false;
     const cleanup: Array<() => void> = [];
 
