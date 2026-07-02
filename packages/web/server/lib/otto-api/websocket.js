@@ -1,5 +1,5 @@
 import { WebSocketServer } from 'ws';
-import { parseRequestPathname } from '../terminal/index.js';
+import { parseRequestPathname } from '../terminal/terminal-ws-protocol.js';
 import { sendMessageStreamWsFrame } from '../event-stream/protocol.js';
 
 export const OTTO_EVENTS_WS_PATH = '/ws/otto/events';
