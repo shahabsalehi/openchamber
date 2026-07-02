@@ -14,10 +14,11 @@ import { Router } from 'express';
  *   - returns a ready-to-share Discord deep link for every resolved target.
  *
  * Endpoints (mounted under /api/otto/messenger/agent):
- *   GET  /agent/help      — compact, self-describing usage docs
- *   GET  /agent/targets   — list project channels + live session threads + URLs
- *   POST /agent/resolve   — resolve a single target → { channelId, url } (no post)
- *   POST /agent/post      — post a message to a target → { messageIds, url }
+ *   GET  /agent/help           — compact, self-describing usage docs
+ *   GET  /agent/targets        — list project channels + live session threads + URLs
+ *   POST /agent/resolve        — resolve a single target → { channelId, url } (no post)
+ *   POST /agent/post           — post a message to a target → { messageIds, url }
+ *   POST /agent/create-project — create/register a project + its Discord channel
  */
 
 const DISCORD_LIMIT = 2000;
@@ -86,6 +87,13 @@ export function createDiscordAgentRouter({
   bridge = null,
   broadcastEvent = null,
   getLocalApiBaseUrl = null,
+  // Async ({ action, url, path, label }) => { ok, project?, error? } — creates
+  // or registers a project in OpenChamber settings (see project-bootstrap.js).
+  bootstrapProject = null,
+  // Async (project) => surface results | null — find-or-create the project's
+  // Discord channel and persist the binding. Null means Discord is not
+  // configured. Wraps autoCreateMessengerSurfacesForProject in messenger-sync.
+  autoCreateProjectChannel = null,
 } = {}) {
   const router = Router();
   // The parent router already parses JSON, but keep this self-contained so the
@@ -336,12 +344,15 @@ export function createDiscordAgentRouter({
           'Resolve { project | session | channel } → { channelId, url } without posting.',
         'POST /agent/post':
           'Post { text, project | session | channel, silent? } → { messageIds, url }.',
+        'POST /agent/create-project':
+          "Create/register a project and its Discord channel: { action: 'new'|'clone'|'path', path?, url?, label? } → { project, discord: { channelId, url } }.",
       },
       examples: [
         `curl -s ${api}/targets`,
         `curl -s -X POST ${api}/post -H 'Content-Type: application/json' -d '{"project":"my-app","text":"Build is green ✅"}'`,
         `curl -s -X POST ${api}/post -H 'Content-Type: application/json' -d '{"session":"ses_123","text":"done"}'`,
         `curl -s -X POST ${api}/resolve -H 'Content-Type: application/json' -d '{"channel":"https://discord.com/channels/1/2"}'`,
+        `curl -s -X POST ${api}/create-project -H 'Content-Type: application/json' -d '{"action":"path","path":"/abs/path/to/project","label":"My Project"}'`,
       ],
     };
   }
@@ -378,6 +389,81 @@ export function createDiscordAgentRouter({
       ok: true,
       target: { ...target, url: buildDiscordUrl(target) },
     });
+  });
+
+  /**
+   * Create (or register) an OpenChamber project and mirror it into Discord.
+   *
+   * Body: {
+   *   action?: 'new' | 'clone' | 'path'   (default 'new')
+   *   path?:   string                     (absolute target/existing directory)
+   *   url?:    string                     (git url, required for 'clone')
+   *   label?:  string                     (human project label)
+   * }
+   *
+   * Returns: {
+   *   ok,
+   *   project: { id, path, label },
+   *   discord: { ok, channelId?, channelName?, created?, url?, error? },
+   * }
+   *
+   * Project registration and the Discord channel are two independent steps:
+   * a Discord failure (or Discord not being configured at all) never rolls
+   * back the created project — it is reported explicitly in `discord`.
+   */
+  router.post('/create-project', async (req, res) => {
+    if (typeof bootstrapProject !== 'function') {
+      return res
+        .status(503)
+        .json({ ok: false, error: 'project bootstrap is not wired in this server' });
+    }
+    const { action = 'new', url, path: targetPath, label } = req.body ?? {};
+    if (!['new', 'clone', 'path'].includes(action)) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "action must be one of 'new' | 'clone' | 'path'" });
+    }
+
+    let result;
+    try {
+      result = await bootstrapProject({ action, url, path: targetPath, label });
+    } catch (err) {
+      return res.json({ ok: false, error: err?.message ?? 'project bootstrap failed' });
+    }
+    if (!result?.ok || !result.project) {
+      return res.json({ ok: false, error: result?.error ?? 'project bootstrap failed' });
+    }
+
+    let discord = {
+      ok: false,
+      error: 'Discord is not configured (no bot token / server saved) — no channel was created.',
+    };
+    if (typeof autoCreateProjectChannel === 'function') {
+      try {
+        const surfaces = await autoCreateProjectChannel(result.project);
+        const entry = Array.isArray(surfaces)
+          ? surfaces.find((r) => r?.type === 'discord')
+          : null;
+        if (entry?.ok && entry.channelId) {
+          const cfg = await loadDiscordConfig();
+          const target = { channelId: String(entry.channelId), guildId: cfg?.guildId ?? null };
+          if (cfg?.token) await ensureGuildId(cfg.token, target);
+          discord = {
+            ok: true,
+            channelId: target.channelId,
+            channelName: entry.channelName ?? null,
+            created: Boolean(entry.created),
+            url: buildDiscordUrl(target),
+          };
+        } else if (entry) {
+          discord = { ok: false, error: entry.error ?? 'Discord channel creation failed' };
+        }
+      } catch (err) {
+        discord = { ok: false, error: err?.message ?? 'Discord channel creation failed' };
+      }
+    }
+
+    res.json({ ok: true, project: result.project, discord });
   });
 
   router.post('/post', async (req, res) => {

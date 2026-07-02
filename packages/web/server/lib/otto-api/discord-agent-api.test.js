@@ -35,7 +35,13 @@ function makeBridge(sessions = []) {
   };
 }
 
-function createApp({ readSettings, bridge = null, broadcastEvent = null } = {}) {
+function createApp({
+  readSettings,
+  bridge = null,
+  broadcastEvent = null,
+  bootstrapProject = null,
+  autoCreateProjectChannel = null,
+} = {}) {
   const app = express();
   app.use(express.json());
   app.use(
@@ -45,6 +51,8 @@ function createApp({ readSettings, bridge = null, broadcastEvent = null } = {}) 
       bridge,
       broadcastEvent,
       getLocalApiBaseUrl: () => 'http://127.0.0.1:3001',
+      bootstrapProject,
+      autoCreateProjectChannel,
     }),
   );
   return app;
@@ -282,5 +290,133 @@ describe('discord-agent-api — routes', () => {
     expect(res.body.url).toBe(
       `https://discord.com/channels/${GUILD}/${PROJECT_CHANNEL}/777`,
     );
+  });
+});
+
+describe('discord-agent-api — POST /create-project', () => {
+  const NEW_CHANNEL = '444444444444444444';
+  const NEW_PROJECT = { id: 'proj_1', path: '/home/me/new-app', label: 'New App' };
+
+  it('returns 503 when project bootstrap is not wired', async () => {
+    const app = createApp({ readSettings: async () => makeSettings() });
+    const res = await request(app)
+      .post('/api/otto/messenger/agent/create-project')
+      .send({ action: 'new', label: 'New App' });
+    expect(res.status).toBe(503);
+    expect(res.body.ok).toBe(false);
+  });
+
+  it('rejects unknown actions', async () => {
+    const app = createApp({
+      readSettings: async () => makeSettings(),
+      bootstrapProject: vi.fn(),
+    });
+    const res = await request(app)
+      .post('/api/otto/messenger/agent/create-project')
+      .send({ action: 'destroy' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("'new' | 'clone' | 'path'");
+  });
+
+  it('creates the project and the Discord channel, returning both', async () => {
+    const bootstrapProject = vi.fn(async () => ({ ok: true, project: NEW_PROJECT }));
+    const autoCreateProjectChannel = vi.fn(async () => [
+      { type: 'discord', ok: true, channelId: NEW_CHANNEL, channelName: 'new-app', created: true },
+    ]);
+    const app = createApp({
+      readSettings: async () => makeSettings(),
+      bootstrapProject,
+      autoCreateProjectChannel,
+    });
+
+    const res = await request(app)
+      .post('/api/otto/messenger/agent/create-project')
+      .send({ action: 'path', path: '/home/me/new-app', label: 'New App' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.project).toEqual(NEW_PROJECT);
+    expect(res.body.discord).toEqual({
+      ok: true,
+      channelId: NEW_CHANNEL,
+      channelName: 'new-app',
+      created: true,
+      url: `https://discord.com/channels/${GUILD}/${NEW_CHANNEL}`,
+    });
+    expect(bootstrapProject).toHaveBeenCalledWith({
+      action: 'path',
+      url: undefined,
+      path: '/home/me/new-app',
+      label: 'New App',
+    });
+    expect(autoCreateProjectChannel).toHaveBeenCalledWith(NEW_PROJECT);
+  });
+
+  it('reports project success with an explicit discord error when Discord is not configured', async () => {
+    const bootstrapProject = vi.fn(async () => ({ ok: true, project: NEW_PROJECT }));
+    // autoCreateProjectChannel returns null → Discord not configured
+    const app = createApp({
+      readSettings: async () => ({}),
+      bootstrapProject,
+      autoCreateProjectChannel: vi.fn(async () => null),
+    });
+
+    const res = await request(app)
+      .post('/api/otto/messenger/agent/create-project')
+      .send({ action: 'new', label: 'New App' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.project).toEqual(NEW_PROJECT);
+    expect(res.body.discord.ok).toBe(false);
+    expect(res.body.discord.error).toContain('not configured');
+  });
+
+  it('keeps the project when the Discord channel creation fails', async () => {
+    const bootstrapProject = vi.fn(async () => ({ ok: true, project: NEW_PROJECT }));
+    const autoCreateProjectChannel = vi.fn(async () => [
+      { type: 'discord', ok: false, error: 'Discord: 403 — Bot has no access' },
+    ]);
+    const app = createApp({
+      readSettings: async () => makeSettings(),
+      bootstrapProject,
+      autoCreateProjectChannel,
+    });
+
+    const res = await request(app)
+      .post('/api/otto/messenger/agent/create-project')
+      .send({ action: 'new', label: 'New App' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.project).toEqual(NEW_PROJECT);
+    expect(res.body.discord.ok).toBe(false);
+    expect(res.body.discord.error).toContain('403');
+  });
+
+  it('propagates bootstrap failure without touching Discord', async () => {
+    const bootstrapProject = vi.fn(async () => ({ ok: false, error: 'path already exists and is non-empty: /x' }));
+    const autoCreateProjectChannel = vi.fn();
+    const app = createApp({
+      readSettings: async () => makeSettings(),
+      bootstrapProject,
+      autoCreateProjectChannel,
+    });
+
+    const res = await request(app)
+      .post('/api/otto/messenger/agent/create-project')
+      .send({ action: 'path', path: '/x' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toContain('already exists');
+    expect(autoCreateProjectChannel).not.toHaveBeenCalled();
+  });
+
+  it('GET /help documents the create-project endpoint', async () => {
+    const app = createApp({ readSettings: async () => makeSettings() });
+    const res = await request(app).get('/api/otto/messenger/agent/help');
+    expect(res.status).toBe(200);
+    expect(res.body.endpoints).toHaveProperty('POST /agent/create-project');
   });
 });

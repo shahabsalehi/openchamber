@@ -83,6 +83,7 @@ import { createNotificationTemplateRuntime } from './lib/notifications/template-
 import { createGracefulShutdownRuntime } from './lib/opencode/shutdown-runtime.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createMessengerSyncRouter } from './lib/otto-api/messenger-sync.js';
+import { syncSystemSkills } from './lib/opencode/system-skills.js';
 import {
   createOttoEventsWebSocketRuntime,
   broadcast as ottoEventsBroadcast,
@@ -1357,6 +1358,25 @@ async function main(options = {}) {
     await scheduledTasksRuntime.start();
   } catch (error) {
     console.warn('[ScheduledTasks] Failed to start runtime:', error?.message || error);
+  }
+
+  // Install / refresh OpenChamber-managed system skills (e.g. create-project)
+  // in the user skill dir so OpenCode sessions can load them natively. Runs
+  // after the startup pipeline so the embedded API base URL uses the final
+  // bound port. Best-effort — a failure here must never block startup.
+  try {
+    const results = syncSystemSkills({
+      apiBaseUrl: `http://127.0.0.1:${tunnelRuntimeContext.getActivePort() || port}`,
+    });
+    const changed = results.filter((r) => r.action === 'installed' || r.action === 'updated');
+    if (changed.length > 0) {
+      console.log(
+        '[SystemSkills] Synced:',
+        changed.map((r) => `${r.name} (${r.action})`).join(', '),
+      );
+    }
+  } catch (error) {
+    console.warn('[SystemSkills] Failed to sync system skills:', error?.message || error);
   }
 
   // Auto-start Discord Gateway listener if a bot token is saved in settings.

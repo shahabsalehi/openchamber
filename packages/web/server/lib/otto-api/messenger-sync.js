@@ -402,12 +402,32 @@ export function createMessengerSyncRouter({
   const discordListener = createDiscordListenerRegistry({ broadcastEvent, bridge });
 
   // Agent-facing Discord API — a high-level surface (resolve a project/session
-  // to its Discord URL, post a message there) designed to be delegated to an
-  // AI agent. The bot token is resolved server-side from settings so the agent
-  // never handles the secret.
+  // to its Discord URL, post a message there, create a new project + channel)
+  // designed to be delegated to an AI agent. The bot token is resolved
+  // server-side from settings so the agent never handles the secret.
   router.use(
     '/agent',
-    createDiscordAgentRouter({ readSettings, bridge, broadcastEvent, getLocalApiBaseUrl }),
+    createDiscordAgentRouter({
+      readSettings,
+      bridge,
+      broadcastEvent,
+      getLocalApiBaseUrl,
+      bootstrapProject: projectBootstrap,
+      // Resolve the bot config server-side and reuse the exact same
+      // find-or-create channel flow the UI's project-add path uses, so an
+      // agent-created project lands in Discord identically to a UI-added one.
+      autoCreateProjectChannel: async (project) => {
+        const { discord } = await loadDiscordSettings();
+        if (!discord?.botToken || !discord?.guildId) return null;
+        return autoCreateMessengerSurfacesForProject(project, {
+          discord: {
+            token: discord.botToken,
+            guildId: discord.guildId,
+            parentCategoryId: discord.parentCategoryId ?? null,
+          },
+        });
+      },
+    }),
   );
 
   // Messenger configuration

@@ -33,6 +33,7 @@ This module provides OpenCode server integration utilities for the web server ru
 - `packages/web/server/lib/opencode/pwa-manifest-routes.js`: PWA manifest route registration with recent-session shortcut resolution and short-lived caching.
 - `packages/web/server/lib/opencode/project-icon-routes.js`: project icon upload/read/discovery route registration and icon storage orchestration.
 - `packages/web/server/lib/opencode/skill-routes.js`: route registration for skill config CRUD, supporting files, and skills catalog scan/install flows.
+- `packages/web/server/lib/opencode/system-skills.js`: OpenChamber-managed system skills (e.g. `create-project`) generated and installed into the user skill dir at server startup.
 - `packages/web/server/lib/opencode/settings-runtime.js`: Settings persistence runtime (disk IO, migrations, normalization, project validation, and persisted update serialization).
 - `packages/web/server/lib/opencode/settings-helpers.js`: Settings payload sanitization/format helpers runtime for response shaping and persisted merge prep.
 - `packages/web/server/lib/opencode/settings-normalization-runtime.js`: path/settings/tunnel normalization and sanitization helpers runtime used by settings/routes/config wiring.
@@ -329,6 +330,10 @@ This module provides OpenCode server integration utilities for the web server ru
   - Skills config CRUD and metadata under `/api/config/skills*`
   - Skills catalog listing/source pagination, scan, and install routes
   - Supporting skill file read/write/delete routes
+
+## Public exports (system-skills.js)
+- `buildSystemSkills({ apiBaseUrl })`: returns the OpenChamber system skill definitions (`{ name, frontmatter, body }`) with the local API base URL embedded. Currently ships `create-project` — bootstrap a new project, write its AGENTS.md, and link a Discord channel via `POST /api/otto/messenger/agent/create-project`.
+- `syncSystemSkills({ apiBaseUrl, skillRootDir? })`: installs/refreshes system skills in the user skill dir (`~/.config/opencode/skills`). Files carrying `managed-by: openchamber` frontmatter are rewritten when content changes (e.g. new port); files without the marker are user-owned and never touched. Called from `server/index.js` after the startup pipeline binds the final port.
 
 ## Public exports (proxy.js)
 - `registerOpenCodeProxy(app, dependencies)`: registers OpenCode proxy routes and middleware.
