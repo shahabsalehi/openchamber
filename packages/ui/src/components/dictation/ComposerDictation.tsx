@@ -18,6 +18,8 @@ import { useDictation } from '@/hooks/useDictation';
 import { isDictationCaptureSupported } from '@/lib/dictation/use-dictation-audio-source';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useUIStore } from '@/stores/useUIStore';
+import { formatShortcutForDisplay, getEffectiveShortcutCombo } from '@/lib/shortcuts';
 
 interface ComposerDictationProps {
     radius?: number | string;
@@ -116,6 +118,8 @@ export const ComposerDictation: React.FC<ComposerDictationProps> = ({
     const { t } = useI18n();
     const { currentTheme } = useThemeSystem();
     const dictationEnabled = useConfigStore((state) => state.dictationEnabled);
+    const shortcutOverrides = useUIStore((state) => state.shortcutOverrides);
+    const dictationShortcut = formatShortcutForDisplay(getEffectiveShortcutCombo('toggle_dictation', shortcutOverrides));
     // The dictation server (WebSocket + STT worker) lives in the OpenChamber
     // web server; the VS Code bridge has no server process for it.
     const [supported] = React.useState(() => !isVSCodeRuntime() && isDictationCaptureSupported());
@@ -157,6 +161,53 @@ export const ComposerDictation: React.FC<ComposerDictationProps> = ({
 
     const isModelDownloading = status === 'recording' && errorReason === 'model_download_in_progress';
     const downloadPercent = useModelDownloadProgress(isModelDownloading);
+
+    const statusRef = React.useRef(status);
+    React.useEffect(() => {
+        statusRef.current = status;
+    }, [status]);
+
+    // Keyboard shortcut (toggle_dictation): idle -> start recording,
+    // recording -> confirm and insert. Dispatched by useKeyboardShortcuts.
+    React.useEffect(() => {
+        const onToggle = () => {
+            if (statusRef.current === 'idle') {
+                void startDictation();
+            } else if (statusRef.current === 'recording') {
+                pendingActionRef.current = 'insert';
+                void confirmDictation();
+            }
+        };
+        window.addEventListener('openchamber:dictation-toggle', onToggle);
+        return () => window.removeEventListener('openchamber:dictation-toggle', onToggle);
+    }, [startDictation, confirmDictation]);
+
+    // While recording: Enter confirms (insert), Escape cancels. Capture-phase
+    // so the composer's own Enter-to-send never fires underneath the overlay.
+    React.useEffect(() => {
+        if (status !== 'recording') {
+            return;
+        }
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.isComposing) {
+                return;
+            }
+            if (event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+                event.preventDefault();
+                event.stopPropagation();
+                pendingActionRef.current = 'insert';
+                void confirmDictation();
+                return;
+            }
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                void cancelDictation();
+            }
+        };
+        window.addEventListener('keydown', onKeyDown, { capture: true });
+        return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
+    }, [status, confirmDictation, cancelDictation]);
 
     // Pixel-parity with the composer: the real footer row is taller than our
     // buttons (its height comes from the tallest control, e.g. the model
@@ -217,7 +268,7 @@ export const ComposerDictation: React.FC<ComposerDictationProps> = ({
                     void startDictation();
                 }}
                 disabled={disabled || isActive}
-                title={t('chat.dictation.start')}
+                title={dictationShortcut ? `${t('chat.dictation.start')} (${dictationShortcut})` : t('chat.dictation.start')}
                 aria-label={t('chat.dictation.start')}
             >
                 <Icon name="mic" className={cn(iconSizeClass, 'text-current')} />
