@@ -1,5 +1,5 @@
 /**
- * Small, non-React state machine for dictation streaming (ported from paseo).
+ * Small, non-React state machine for dictation streaming.
  *
  * Responsibilities:
  * - Maintain an ordered buffer of base64 PCM segments

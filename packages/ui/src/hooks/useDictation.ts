@@ -1,5 +1,5 @@
 /**
- * Streaming dictation state machine (ported from paseo's use-dictation).
+ * Streaming dictation state machine.
  *
  * Status flow: idle -> recording -> uploading -> idle | failed.
  * While recording, mic PCM chunks stream to the server, which sends back live

@@ -1,5 +1,5 @@
 /**
- * Microphone capture for dictation (ported from paseo's web audio source).
+ * Microphone capture for dictation.
  *
  * Captures mono audio via getUserMedia, taps it with a ScriptProcessorNode
  * (universally supported, including iOS WKWebView), resamples Float32 to

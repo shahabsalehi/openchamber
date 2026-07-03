@@ -1,9 +1,8 @@
 /**
  * DictationStreamManager
  *
- * Server-authoritative streaming dictation state machine (ported from the
- * paseo daemon design). One manager owns all dictation streams for a single
- * WebSocket connection.
+ * Server-authoritative streaming dictation state machine. One manager owns
+ * all dictation streams for a single WebSocket connection.
  *
  * Responsibilities:
  * - Reorders inbound chunks by `seq` and acks the highest contiguous seq.
@@ -31,7 +30,7 @@ export class DictationStreamManager {
    * @param {(msg: { type: string, payload: object }) => void} params.emit
    * @param {(startOptions: object) => Promise<{ session: object } | { error: string, retryable: boolean, reasonCode?: string }>} params.createSttSession
    *   Resolves a connected streaming transcription session for one dictation.
-   *   The session contract mirrors paseo's StreamingTranscriptionSession:
+   *   The streaming transcription session contract:
    *   { requiredSampleRate, appendPcm16(buf), commit(), clear(), close(), on(event, handler) }
    * @param {number} [params.finalTimeoutMs]
    * @param {number} [params.autoCommitSeconds]
