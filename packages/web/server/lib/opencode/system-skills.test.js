@@ -29,16 +29,21 @@ describe('system-skills', () => {
     expect(createProject.body).toContain('Discord');
   });
 
+  it('builds the read-session skill with transcript endpoints embedded', () => {
+    const skills = buildSystemSkills({ apiBaseUrl: API_BASE });
+    const readSession = skills.find((s) => s.name === 'read-session');
+    expect(readSession).toBeTruthy();
+    expect(readSession.frontmatter['managed-by']).toBe('openchamber');
+    expect(readSession.body).toContain(`${API_BASE}/api/otto/messenger/agent/read-session`);
+    expect(readSession.body).toContain(`${API_BASE}/api/otto/messenger/agent/resolve-reference`);
+  });
+
   it('installs a missing system skill', () => {
     const results = syncSystemSkills({ apiBaseUrl: API_BASE, skillRootDir });
-    expect(results).toEqual([
-      {
-        name: 'create-project',
-        path: path.join(skillRootDir, 'create-project', 'SKILL.md'),
-        action: 'installed',
-      },
-    ]);
-    const { frontmatter, body } = parseMdFile(results[0].path);
+    expect(results.map((entry) => entry.name).sort()).toEqual(['create-project', 'read-session']);
+    expect(results.every((entry) => entry.action === 'installed')).toBe(true);
+    const createProject = results.find((entry) => entry.name === 'create-project');
+    const { frontmatter, body } = parseMdFile(createProject.path);
     expect(frontmatter.name).toBe('create-project');
     expect(frontmatter['managed-by']).toBe('openchamber');
     expect(body).toContain(API_BASE);
@@ -47,14 +52,14 @@ describe('system-skills', () => {
   it('is a no-op when the managed skill is already current', () => {
     syncSystemSkills({ apiBaseUrl: API_BASE, skillRootDir });
     const results = syncSystemSkills({ apiBaseUrl: API_BASE, skillRootDir });
-    expect(results[0].action).toBe('unchanged');
+    expect(results.every((entry) => entry.action === 'unchanged')).toBe(true);
   });
 
   it('rewrites the managed skill when the API base URL changes', () => {
     syncSystemSkills({ apiBaseUrl: API_BASE, skillRootDir });
     const results = syncSystemSkills({ apiBaseUrl: 'http://127.0.0.1:4999', skillRootDir });
-    expect(results[0].action).toBe('updated');
-    const { body } = parseMdFile(results[0].path);
+    expect(results.find((entry) => entry.name === 'create-project')?.action).toBe('updated');
+    const { body } = parseMdFile(path.join(skillRootDir, 'create-project', 'SKILL.md'));
     expect(body).toContain('http://127.0.0.1:4999');
     expect(body).not.toContain(API_BASE);
   });

@@ -398,10 +398,18 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
   // iterates all child-stores via `findLiveSession`) into a single
   // Map lookup. With M visible rows, that changes an O(M × child-stores)
   // work to O(child-stores) once per Sidebar render.
-  const liveSessionById = React.useMemo(
-    () => new Map(liveSessions.map((session) => [session.id, session] as const)),
-    [liveSessions],
-  );
+  const liveSessionById = React.useMemo(() => {
+    const globalById = new Map(globalActiveSessions.map((session) => [session.id, session] as const));
+    return new Map(
+      liveSessions.map((liveSession) => {
+        const globalSession = globalById.get(liveSession.id);
+        const merged = globalSession
+          ? mergeLiveSessionWithGlobalSession(liveSession, globalSession)
+          : liveSession;
+        return [liveSession.id, merged] as const;
+      }),
+    );
+  }, [globalActiveSessions, liveSessions]);
 
   const projectWorktreeDiscoveryKey = React.useMemo(
     () => projects
@@ -659,6 +667,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     handleCancelEdit,
     handleShareSession,
     handleCopyShareUrl,
+    handleCopySessionReference,
     handleUnshareSession,
     handleDeleteSession,
     confirmDeleteSession,
@@ -771,6 +780,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
   const stableHandleCancelEdit = useStableRenderCallback(handleCancelEdit);
   const stableHandleShareSession = useStableRenderCallback(handleShareSession);
   const stableHandleCopyShareUrl = useStableRenderCallback(handleCopyShareUrl);
+  const stableHandleCopySessionReference = useStableRenderCallback(handleCopySessionReference);
   const stableHandleUnshareSession = useStableRenderCallback(handleUnshareSession);
   const stableHandleDeleteSession = useStableRenderCallback(handleDeleteSession);
   const stableCreateFolderAndStartRename = useStableRenderCallback(createFolderAndStartRename);
@@ -1321,6 +1331,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
         handleShareSession={stableHandleShareSession}
         copiedSessionId={copiedSessionId}
         handleCopyShareUrl={stableHandleCopyShareUrl}
+        handleCopySessionReference={stableHandleCopySessionReference}
         handleUnshareSession={stableHandleUnshareSession}
         openSidebarMenuKey={openSidebarMenuKey}
         setOpenSidebarMenuKey={setOpenSidebarMenuKey}

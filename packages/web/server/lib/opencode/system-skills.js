@@ -108,9 +108,78 @@ function buildCreateProjectSkill({ apiBaseUrl }) {
   };
 }
 
+function buildReadSessionSkill({ apiBaseUrl }) {
+  const api = `${apiBaseUrl}/api/otto/messenger/agent`;
+  const body = [
+    '# Read another OpenChamber session',
+    '',
+    'Use this skill when the user pastes a **session id**, a **Discord thread URL**, or asks you to read another conversation from a different project/thread.',
+    '',
+    'Users copy the reference from the OpenChamber session sidebar (right-click → Copy session reference). Discord-bound sessions copy the thread URL; web-only sessions copy the session id.',
+    '',
+    'This skill file is managed by OpenChamber and refreshed on server start. Remove the `managed-by` frontmatter field to take ownership of your edits.',
+    '',
+    '## Workflow',
+    '',
+    '### 1. Identify the reference',
+    '',
+    'Accept any of these:',
+    '',
+    '- an OpenCode/OpenChamber session id such as `ses_…`',
+    '- a Discord thread URL such as `https://discord.com/channels/<guild>/<thread>`',
+    '- a raw Discord snowflake when the user copied the thread id directly',
+    '',
+    'If the user only pasted a public OpenCode share URL and no session id is available, ask them for the session id or Discord thread URL instead.',
+    '',
+    '### 2. Resolve the target (optional but recommended)',
+    '',
+    '```bash',
+    `curl -s -X POST ${api}/resolve-reference -H 'Content-Type: application/json' \\`,
+    '  -d \'{"reference":"<session-id-or-discord-url>"}\'',
+    '```',
+    '',
+    'This returns `{ sessionId, directory, title, discordUrl, shareUrl, reference }` without downloading the full transcript.',
+    '',
+    '### 3. Read the transcript',
+    '',
+    '```bash',
+    `curl -s -X POST ${api}/read-session -H 'Content-Type: application/json' \\`,
+    '  -d \'{"reference":"<session-id-or-discord-url>","format":"markdown"}\'',
+    '```',
+    '',
+    'The response includes `transcript` (markdown), `messageCount`, `title`, `directory`, and `projectLabel`.',
+    '',
+    'Use `format:"json"` only when you need structured message records for tooling.',
+    '',
+    '### 4. Answer using the fetched context',
+    '',
+    '- Summarize or quote the other conversation accurately.',
+    '- Say which session/title/project you read when it helps the user orient.',
+    '- If the API returns 404, tell the user the reference is unknown or the session was deleted.',
+    '',
+    '## Rules',
+    '',
+    '- Never invent transcript content — fetch it through the API first.',
+    '- The API resolves sessions across registered OpenChamber projects; you do not need to switch projects manually.',
+    '- Do not ask for Discord bot tokens or OpenChamber auth secrets.',
+    '- If curl fails because the OpenChamber API is unreachable, report the error instead of guessing.',
+  ].join('\n');
+
+  return {
+    name: 'read-session',
+    frontmatter: {
+      name: 'read-session',
+      description:
+        'Use when the user pastes a session id or Discord thread URL and wants you to read another OpenChamber conversation from any project/thread. Resolves the reference server-side and returns the full transcript.',
+      [MANAGED_BY_KEY]: MANAGED_BY_VALUE,
+    },
+    body,
+  };
+}
+
 /** Build every OpenChamber system skill for the given local API base URL. */
 export function buildSystemSkills({ apiBaseUrl }) {
-  return [buildCreateProjectSkill({ apiBaseUrl })];
+  return [buildCreateProjectSkill({ apiBaseUrl }), buildReadSessionSkill({ apiBaseUrl })];
 }
 
 /**

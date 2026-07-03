@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { buildSessionReferenceForId, readSessionTranscript, resolveSessionReference } from './session-reference.js';
 
 /**
  * Agent-facing Discord API.
@@ -19,6 +20,8 @@ import { Router } from 'express';
  *   POST /agent/resolve        — resolve a single target → { channelId, url } (no post)
  *   POST /agent/post           — post a message to a target → { messageIds, url }
  *   POST /agent/create-project — create/register a project + its Discord channel
+ *   POST /agent/read-session    — resolve a session reference and return its transcript
+ *   POST /agent/resolve-reference — resolve a session reference without fetching messages
  */
 
 const DISCORD_LIMIT = 2000;
@@ -87,6 +90,8 @@ export function createDiscordAgentRouter({
   bridge = null,
   broadcastEvent = null,
   getLocalApiBaseUrl = null,
+  listProjects = null,
+  opencodeFetch = null,
   // Async ({ action, url, path, label }) => { ok, project?, error? } — creates
   // or registers a project in OpenChamber settings (see project-bootstrap.js).
   bootstrapProject = null,
@@ -346,6 +351,10 @@ export function createDiscordAgentRouter({
           'Post { text, project | session | channel, silent? } → { messageIds, url }.',
         'POST /agent/create-project':
           "Create/register a project and its Discord channel: { action: 'new'|'clone'|'path', path?, url?, label? } → { project, discord: { channelId, url } }.",
+        'POST /agent/read-session':
+          'Read another session transcript by { reference } (session id, Discord thread URL, or snowflake) → { transcript, messageCount, sessionId, directory }.',
+        'POST /agent/resolve-reference':
+          'Resolve { reference } to { sessionId, directory, discordUrl, shareUrl } without fetching messages.',
       },
       examples: [
         `curl -s ${api}/targets`,
@@ -353,7 +362,18 @@ export function createDiscordAgentRouter({
         `curl -s -X POST ${api}/post -H 'Content-Type: application/json' -d '{"session":"ses_123","text":"done"}'`,
         `curl -s -X POST ${api}/resolve -H 'Content-Type: application/json' -d '{"channel":"https://discord.com/channels/1/2"}'`,
         `curl -s -X POST ${api}/create-project -H 'Content-Type: application/json' -d '{"action":"path","path":"/abs/path/to/project","label":"My Project"}'`,
+        `curl -s -X POST ${api}/read-session -H 'Content-Type: application/json' -d '{"reference":"ses_123"}'`,
+        `curl -s -X POST ${api}/resolve-reference -H 'Content-Type: application/json' -d '{"reference":"https://discord.com/channels/1/2"}'`,
       ],
+    };
+  }
+
+  function sessionReferenceDeps() {
+    return {
+      store: bridge?.store ?? null,
+      readSettings,
+      listProjects,
+      opencodeFetch,
     };
   }
 
@@ -464,6 +484,50 @@ export function createDiscordAgentRouter({
     }
 
     res.json({ ok: true, project: result.project, discord });
+  });
+
+  router.post('/resolve-reference', async (req, res) => {
+    const { reference } = req.body ?? {};
+    if (typeof reference !== 'string' || reference.trim() === '') {
+      return res.status(400).json({ ok: false, error: 'reference is required' });
+    }
+    const result = await resolveSessionReference({
+      input: reference,
+      ...sessionReferenceDeps(),
+    });
+    if (!result.ok) return res.status(404).json(result);
+    res.json(result);
+  });
+
+  router.post('/read-session', async (req, res) => {
+    const { reference, format, maxMessages } = req.body ?? {};
+    if (typeof reference !== 'string' || reference.trim() === '') {
+      return res.status(400).json({ ok: false, error: 'reference is required' });
+    }
+    if (typeof opencodeFetch !== 'function') {
+      return res.status(503).json({ ok: false, error: 'OpenCode is not available.' });
+    }
+    const result = await readSessionTranscript({
+      input: reference,
+      format: format === 'json' ? 'json' : 'markdown',
+      maxMessages: typeof maxMessages === 'number' ? maxMessages : 500,
+      ...sessionReferenceDeps(),
+    });
+    if (!result.ok) return res.status(404).json(result);
+    res.json(result);
+  });
+
+  router.get('/session-reference/:sessionId', async (req, res) => {
+    const sessionId = String(req.params?.sessionId ?? '').trim();
+    if (!sessionId) {
+      return res.status(400).json({ ok: false, error: 'sessionId is required' });
+    }
+    const result = await buildSessionReferenceForId({
+      sessionId,
+      ...sessionReferenceDeps(),
+    });
+    if (!result.ok) return res.status(404).json(result);
+    res.json(result);
   });
 
   router.post('/post', async (req, res) => {

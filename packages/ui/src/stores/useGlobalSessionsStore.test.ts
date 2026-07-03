@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import type { Session } from '@opencode-ai/sdk/v2';
 
-import { resolveGlobalSessionDirectory, mergeLiveSessionWithGlobalSession, useGlobalSessionsStore } from './useGlobalSessionsStore';
+import { resolveGlobalSessionDirectory, mergeLiveSessionWithGlobalSession, getSessionShareUrl, isSessionShared, useGlobalSessionsStore } from './useGlobalSessionsStore';
 
 type SessionExtra = Partial<Session> & {
   directory?: string | null;
@@ -104,5 +104,18 @@ describe('mergeLiveSessionWithGlobalSession', () => {
 
     const merged = mergeLiveSessionWithGlobalSession(live, global);
     expect(resolveGlobalSessionDirectory(merged)).toBe('/repo/worktree');
+  });
+});
+
+describe('session share helpers', () => {
+  test('getSessionShareUrl returns null for missing or empty share urls', () => {
+    expect(getSessionShareUrl({ id: 'ses_1', time: { created: 1 } } as Session)).toBe(null);
+    expect(getSessionShareUrl({ id: 'ses_1', time: { created: 1 }, share: null } as unknown as Session)).toBe(null);
+    expect(getSessionShareUrl(buildSession('   '))).toBe(null);
+  });
+
+  test('isSessionShared reflects a valid share url', () => {
+    expect(isSessionShared(buildSession('https://share.example/a'))).toBe(true);
+    expect(isSessionShared({ id: 'ses_1', time: { created: 1 } } as Session)).toBe(false);
   });
 });

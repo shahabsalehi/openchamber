@@ -28,9 +28,29 @@ function makeSettings(overrides = {}) {
 }
 
 function makeBridge(sessions = []) {
+  const rows = sessions.map((session) => ({
+    type: 'discord',
+    targetKey: session.targetKey,
+    sessionId: session.sessionId,
+    projectPath: session.projectPath ?? null,
+    projectLabel: session.projectLabel ?? null,
+  }));
   return {
     store: {
-      list: vi.fn(() => sessions),
+      list: vi.fn(() => rows),
+      lookupBySessionId: vi.fn((sessionId) =>
+        rows.filter((row) => row.sessionId === sessionId).map((row) => ({
+          type: row.type,
+          targetKey: row.targetKey,
+          projectPath: row.projectPath,
+          projectLabel: row.projectLabel,
+        })),
+      ),
+      findByTargetKey: vi.fn(({ targetKey }) =>
+        rows
+          .filter((row) => row.targetKey === targetKey)
+          .map((row) => ({ sessionId: row.sessionId, projectPath: row.projectPath })),
+      ),
     },
   };
 }
@@ -41,6 +61,8 @@ function createApp({
   broadcastEvent = null,
   bootstrapProject = null,
   autoCreateProjectChannel = null,
+  listProjects = null,
+  opencodeFetch = null,
 } = {}) {
   const app = express();
   app.use(express.json());
@@ -53,6 +75,8 @@ function createApp({
       getLocalApiBaseUrl: () => 'http://127.0.0.1:3001',
       bootstrapProject,
       autoCreateProjectChannel,
+      listProjects,
+      opencodeFetch,
     }),
   );
   return app;
@@ -418,5 +442,80 @@ describe('discord-agent-api — POST /create-project', () => {
     const res = await request(app).get('/api/otto/messenger/agent/help');
     expect(res.status).toBe(200);
     expect(res.body.endpoints).toHaveProperty('POST /agent/create-project');
+    expect(res.body.endpoints).toHaveProperty('POST /agent/read-session');
+  });
+
+  it('POST /read-session returns a transcript for a resolved session', async () => {
+    const bridge = makeBridge([
+      {
+        sessionId: 'ses_a',
+        targetKey: SESSION_THREAD,
+        projectPath: '/home/me/my-app',
+        projectLabel: 'My App',
+      },
+    ]);
+    const opencodeFetch = vi.fn(async (path) => {
+      if (path.startsWith('/session/ses_a/message')) {
+        return {
+          ok: true,
+          json: async () => [
+            { info: { role: 'user', time: { created: 1 } }, parts: [{ type: 'text', text: 'Hello' }] },
+          ],
+        };
+      }
+      if (path.startsWith('/session/ses_a')) {
+        return {
+          ok: true,
+          json: async () => ({ id: 'ses_a', title: 'Alpha', directory: '/home/me/my-app' }),
+        };
+      }
+      return { ok: false, json: async () => null };
+    });
+    const app = createApp({
+      readSettings: async () => makeSettings(),
+      bridge,
+      listProjects: async () => [{ path: '/home/me/my-app' }],
+      opencodeFetch,
+    });
+
+    const res = await request(app)
+      .post('/api/otto/messenger/agent/read-session')
+      .send({ reference: 'ses_a' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.messageCount).toBe(1);
+    expect(res.body.transcript).toContain('Hello');
+  });
+
+  it('GET /session-reference/:sessionId returns a copyable reference', async () => {
+    const bridge = makeBridge([
+      {
+        sessionId: 'ses_a',
+        targetKey: SESSION_THREAD,
+        projectPath: '/home/me/my-app',
+        projectLabel: 'My App',
+      },
+    ]);
+    const opencodeFetch = vi.fn(async (path) => {
+      if (path.startsWith('/session/ses_a')) {
+        return {
+          ok: true,
+          json: async () => ({ id: 'ses_a', title: 'Alpha', directory: '/home/me/my-app' }),
+        };
+      }
+      return { ok: false, json: async () => null };
+    });
+    const app = createApp({
+      readSettings: async () => makeSettings(),
+      bridge,
+      listProjects: async () => [{ path: '/home/me/my-app' }],
+      opencodeFetch,
+    });
+
+    const res = await request(app).get('/api/otto/messenger/agent/session-reference/ses_a');
+    expect(res.status).toBe(200);
+    expect(res.body.reference).toContain(SESSION_THREAD);
+    expect(res.body.sessionId).toBe('ses_a');
   });
 });

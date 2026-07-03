@@ -302,6 +302,18 @@ export function createMessengerSyncRouter({
     };
   }
 
+  const opencodeFetch = buildOpenCodeUrl
+    ? async (path, init = {}) => {
+        const url = buildOpenCodeUrl(path, '');
+        const headers = {
+          Accept: 'application/json',
+          ...(getOpenCodeAuthHeaders?.() ?? {}),
+          ...(init.headers ?? {}),
+        };
+        return fetch(url, { ...init, headers });
+      }
+    : null;
+
   const bridge =
     globalEventHub && buildOpenCodeUrl
       ? createMessengerOpencodeBridge({
@@ -412,6 +424,8 @@ export function createMessengerSyncRouter({
       bridge,
       broadcastEvent,
       getLocalApiBaseUrl,
+      listProjects,
+      opencodeFetch,
       bootstrapProject: projectBootstrap,
       // Resolve the bot config server-side and reuse the exact same
       // find-or-create channel flow the UI's project-add path uses, so an
