@@ -1142,6 +1142,7 @@ export const settingsDict = {
   'settings.openchamber.worktrees.setup.addCommand': 'コマンドを追加',
   'settings.openchamber.worktrees.setup.waitForCommands': 'セットアップコマンドの完了を待ってからセッションを作成または送信する',
   'settings.openchamber.worktrees.setup.waitForCommandsAria': 'Worktree セットアップコマンドの完了を待ってからセッションを作成または送信する',
+  'settings.openchamber.worktrees.setup.toast.saveFailed': 'ワークツリー設定コマンドの保存に失敗しました',
   'settings.openchamber.worktrees.list.title': '既存の Worktree',
   'settings.openchamber.worktrees.list.tooltip': 'Worktree はリポジトリの外にあり（OpenCode 管理）、削除するとリンクされた Session も削除されます。',
   'settings.openchamber.worktrees.list.loading': 'Worktree を読み込み中...',

@@ -1092,6 +1092,7 @@ export const settingsDict = {
   'settings.openchamber.worktrees.setup.addCommand': 'Ajouter une commande',
   'settings.openchamber.worktrees.setup.waitForCommands': 'Attendre la fin des commandes de configuration avant de créer ou d\'envoyer une session',
   'settings.openchamber.worktrees.setup.waitForCommandsAria': 'Attendre les commandes de configuration Worktree avant de créer ou d\'envoyer une session',
+  'settings.openchamber.worktrees.setup.toast.saveFailed': 'Échec de l\'enregistrement des commandes de configuration Worktree',
   'settings.openchamber.worktrees.list.title': 'Worktrees existants',
   'settings.openchamber.worktrees.list.tooltip': 'Les worktrees vivent en dehors du dépôt (gérés par OpenCode). La suppression d\'un worktree supprime également les sessions liées.',
   'settings.openchamber.worktrees.list.loading': 'Chargement des worktrees...',

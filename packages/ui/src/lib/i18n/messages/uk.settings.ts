@@ -1109,6 +1109,7 @@ export const settingsDict = {
   "settings.openchamber.worktrees.setup.addCommand": "Додати команду",
   "settings.openchamber.worktrees.setup.waitForCommands": "Чекати завершення команд налаштування перед створенням або надсиланням сесії",
   "settings.openchamber.worktrees.setup.waitForCommandsAria": "Чекати завершення команд налаштування Worktree перед створенням або надсиланням сесії",
+  "settings.openchamber.worktrees.setup.toast.saveFailed": "Не вдалося зберегти команди налаштування Worktree",
   "settings.openchamber.worktrees.list.title": "Наявні worktree",
   "settings.openchamber.worktrees.list.tooltip": "Worktree розташовані поза репозиторієм і керуються OpenCode. Видалення worktree також видаляє пов’язані сесії.",
   "settings.openchamber.worktrees.list.loading": "Завантаження worktree...",

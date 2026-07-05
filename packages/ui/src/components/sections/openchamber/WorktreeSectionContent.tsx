@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { toast } from '@/components/ui';
 import { Icon } from "@/components/icon/Icon";
 import type { Session } from '@opencode-ai/sdk/v2';
 import { useProjectsStore } from '@/stores/useProjectsStore';
@@ -169,12 +170,24 @@ export const WorktreeSectionContent: React.FC<WorktreeSectionContentProps> = ({ 
     };
   }, [projectRef]);
 
-  const persistSetupCommands = React.useCallback(async (commands: string[]) => {
-    if (!projectRef) return;
+  const persistSetupCommands = React.useCallback(async (commands: string[]): Promise<boolean> => {
+    if (!projectRef) {
+      return false;
+    }
     const filtered = commands.filter((cmd) => cmd.trim().length > 0);
-    await saveWorktreeSetupCommands(projectRef, filtered);
-    setCommandsSnapshot(JSON.stringify(commands));
-  }, [projectRef]);
+    try {
+      const ok = await saveWorktreeSetupCommands(projectRef, filtered);
+      if (!ok) {
+        toast.error(t('settings.openchamber.worktrees.setup.toast.saveFailed'));
+        return false;
+      }
+      setCommandsSnapshot(JSON.stringify(commands));
+      return true;
+    } catch {
+      toast.error(t('settings.openchamber.worktrees.setup.toast.saveFailed'));
+      return false;
+    }
+  }, [projectRef, t]);
 
   const commandsHaveChanges = React.useMemo(() => {
     if (commandsSnapshot === null) {

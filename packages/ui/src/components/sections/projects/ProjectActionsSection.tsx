@@ -77,6 +77,7 @@ export const ProjectActionsSection: React.FC<ProjectActionsSectionProps> = ({ pr
   const [initialSnapshot, setInitialSnapshot] = React.useState<string | null>(null);
   const [expandedActions, setExpandedActions] = React.useState<Record<string, boolean>>({});
   const isSavingRef = React.useRef(false);
+  const validationToastShownRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
     if (!isDesktopShellApp) {
@@ -180,6 +181,27 @@ export const ProjectActionsSection: React.FC<ProjectActionsSectionProps> = ({ pr
       window.clearTimeout(timer);
     };
   }, [actions, hasChanges, isLoading, persistActions, validationError]);
+
+  React.useEffect(() => {
+    if (!hasChanges || !validationError || isLoading) {
+      if (!validationError) {
+        validationToastShownRef.current = null;
+      }
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      if (validationToastShownRef.current === validationError) {
+        return;
+      }
+      validationToastShownRef.current = validationError;
+      toast.error(validationError);
+    }, 1000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [hasChanges, isLoading, validationError]);
 
   const handleAddAction = React.useCallback(() => {
     const nextAction = createEmptyAction();

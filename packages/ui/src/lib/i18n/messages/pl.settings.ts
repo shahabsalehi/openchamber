@@ -1082,6 +1082,7 @@ export const settingsDict = {
   'settings.openchamber.worktrees.setup.title': 'Polecenia konfiguracji',
   'settings.openchamber.worktrees.setup.waitForCommands': 'Czekaj na zakończenie poleceń konfiguracji przed utworzeniem lub wysłaniem sesji',
   'settings.openchamber.worktrees.setup.waitForCommandsAria': 'Czekaj na polecenia konfiguracji Worktree przed utworzeniem lub wysłaniem sesji',
+  'settings.openchamber.worktrees.setup.toast.saveFailed': 'Nie udało się zapisać poleceń konfiguracji Worktree',
   'settings.openchamber.worktrees.setup.tooltipPrefix': 'Uruchamiaj automatycznie w nowym katalogu worktree po jego utworzeniu. Użyj',
   'settings.openchamber.worktrees.setup.tooltipSuffix': 'dla katalogu głównego projektu.',
   'settings.openchamber.worktrees.state.gitOnly': 'Ustawienia worktree są dostępne tylko dla repozytoriów Git.',
