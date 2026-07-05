@@ -613,7 +613,6 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
       return;
     }
     updateProjectMeta(editingProjectDialogId, data);
-    setEditingProjectDialogId(null);
   }, [editingProjectDialogId, updateProjectMeta]);
 
   const openNewWorktreeDialog = React.useCallback(() => {
