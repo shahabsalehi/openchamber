@@ -160,32 +160,67 @@ export function createMessengerWorktreeSync({
   persistSettings = null,
   broadcastEvent = null,
   resolveProjectChannel = null,
+  getEnsureProjectChannel = null,
 } = {}) {
   if (!store) {
     throw new Error('messenger worktree sync requires a bridge store');
   }
 
-  async function loadDiscordConfig() {
-    if (typeof readSettings !== 'function') return null;
-    try {
-      const settings = await readSettings();
-      const discord = settings?.discord ?? null;
-      if (!discord?.botToken) return null;
-      return {
-        token: discord.botToken,
-        guildId: discord.guildId ?? null,
-        defaultUserId: discord.defaultUserId ?? null,
-        syncWorktrees: discord.syncWorktrees !== false,
-        syncProjects: discord.syncProjects !== false,
-        projectBindings: Array.isArray(discord.projectBindings) ? discord.projectBindings : [],
-      };
-    } catch {
-      return null;
+  async function loadDiscordConfig(requestDiscord = null) {
+    let serverConfig = null;
+    if (typeof readSettings === 'function') {
+      try {
+        const settings = await readSettings();
+        const discord = settings?.discord ?? null;
+        if (discord?.botToken) {
+          serverConfig = {
+            token: discord.botToken,
+            guildId: discord.guildId ?? null,
+            parentCategoryId: discord.parentCategoryId ?? null,
+            defaultUserId: discord.defaultUserId ?? null,
+            defaultChannelId: discord.defaultChannelId ?? null,
+            syncWorktrees: discord.syncWorktrees !== false,
+            syncProjects: discord.syncProjects !== false,
+            projectBindings: Array.isArray(discord.projectBindings) ? discord.projectBindings : [],
+          };
+        }
+      } catch {
+        // ignore
+      }
     }
+
+    const request = requestDiscord && typeof requestDiscord === 'object' ? requestDiscord : null;
+    const requestToken = typeof request?.token === 'string' ? request.token.trim() : '';
+    if (!serverConfig && !requestToken) return null;
+
+    const requestBindings = Array.isArray(request?.projectBindings) ? request.projectBindings : null;
+    const merged = {
+      token: requestToken || serverConfig?.token || null,
+      guildId: request?.guildId ?? serverConfig?.guildId ?? null,
+      parentCategoryId: request?.parentCategoryId ?? serverConfig?.parentCategoryId ?? null,
+      defaultUserId: request?.defaultUserId ?? serverConfig?.defaultUserId ?? null,
+      defaultChannelId: request?.defaultChannelId ?? serverConfig?.defaultChannelId ?? null,
+      syncWorktrees:
+        request?.syncWorktrees !== undefined
+          ? request.syncWorktrees !== false
+          : serverConfig?.syncWorktrees !== false,
+      syncProjects:
+        request?.syncProjects !== undefined
+          ? request.syncProjects !== false
+          : serverConfig?.syncProjects !== false,
+      projectBindings: requestBindings ?? serverConfig?.projectBindings ?? [],
+    };
+
+    if (!merged.token) return null;
+    return merged;
+  }
+
+  function isWorktreeSyncEnabled(config) {
+    return Boolean(config?.token && config.syncWorktrees !== false);
   }
 
   function isSyncEnabled(config) {
-    return Boolean(config?.token && config.syncWorktrees !== false && config.syncProjects !== false);
+    return isWorktreeSyncEnabled(config) && config.syncProjects !== false;
   }
 
   async function resolveProjectRoot(directory) {
@@ -379,6 +414,7 @@ export function createMessengerWorktreeSync({
   }
 
   async function ensureWorktreeThread({
+    project,
     projectRoot,
     worktreePath,
     branch,
@@ -388,14 +424,51 @@ export function createMessengerWorktreeSync({
     config: configOverride = null,
   }) {
     const config = configOverride ?? (await loadDiscordConfig());
-    if (!isSyncEnabled(config)) return { ok: false, skipped: true, reason: 'sync-disabled' };
+    if (!isWorktreeSyncEnabled(config)) return { ok: false, skipped: true, reason: 'sync-disabled' };
 
-    const root = normalizePath(projectRoot ?? (await resolveProjectRoot(worktreePath)));
+    const root = normalizePath(projectRoot ?? project?.path ?? (await resolveProjectRoot(worktreePath)));
     const path = normalizePath(worktreePath);
     if (!root || !path) return { ok: false, error: 'invalid paths' };
 
-    const channel = resolveChannelForProject(config, root);
-    if (!channel?.channelId) return { ok: false, error: 'no project channel mapped' };
+    let channel = resolveChannelForProject(config, root);
+    if (!channel?.channelId) {
+      const ensureProjectChannel =
+        typeof getEnsureProjectChannel === 'function' ? getEnsureProjectChannel() : null;
+      if (ensureProjectChannel) {
+        const created = await ensureProjectChannel(
+          {
+            id: project?.id ?? root,
+            path: root,
+            label: projectLabel ?? project?.label ?? root.split('/').pop() ?? root,
+          },
+          {
+            token: config.token,
+            guildId: config.guildId,
+            parentCategoryId: config.parentCategoryId ?? null,
+          },
+        );
+        if (created?.channelId) {
+          channel = {
+            channelId: String(created.channelId),
+            projectLabel: created.projectLabel ?? projectLabel ?? null,
+          };
+          config.projectBindings = [
+            ...config.projectBindings.filter((row) => !pathsEqual(row?.projectPath, root)),
+            {
+              channelId: channel.channelId,
+              projectPath: root,
+              projectLabel: channel.projectLabel ?? undefined,
+            },
+          ];
+        }
+      }
+    }
+    if (!channel?.channelId && config.defaultChannelId) {
+      channel = { channelId: String(config.defaultChannelId), projectLabel: projectLabel ?? null };
+    }
+    if (!channel?.channelId) {
+      return { ok: false, error: 'no project channel mapped — sync the project to Discord first' };
+    }
 
     const hash = tokenHash(config.token);
     const existing = store.lookupWorktreeByPath?.({ botTokenHash: hash, worktreePath: path });
@@ -510,15 +583,20 @@ export function createMessengerWorktreeSync({
     project,
     worktree,
     sessionId = null,
+    discord = null,
   }) {
-    const config = await loadDiscordConfig();
-    if (!isSyncEnabled(config)) return { ok: true, skipped: true };
+    const config = await loadDiscordConfig(discord);
+    if (!config) {
+      return { ok: false, error: 'discord is not configured (bot token required)' };
+    }
+    if (!isWorktreeSyncEnabled(config)) return { ok: true, skipped: true, reason: 'sync-disabled' };
 
     const projectRoot = normalizePath(project?.path);
     const worktreePath = normalizePath(worktree?.path);
     if (!projectRoot || !worktreePath) return { ok: false, error: 'project and worktree paths required' };
 
     return ensureWorktreeThread({
+      project,
       projectRoot,
       worktreePath,
       branch: worktree?.branch ?? worktree?.label ?? null,
@@ -571,7 +649,7 @@ export function createMessengerWorktreeSync({
     title = null,
   }) {
     const config = await loadDiscordConfig();
-    if (!isSyncEnabled(config) || !sessionId || !directory) return { ok: true, skipped: true };
+    if (!isWorktreeSyncEnabled(config) || !sessionId || !directory) return { ok: true, skipped: true };
 
     const path = normalizePath(directory);
     const root = await resolveProjectRoot(path);
@@ -615,6 +693,7 @@ export function createMessengerWorktreeSync({
 
   return {
     isSyncEnabled,
+    isWorktreeSyncEnabled,
     loadDiscordConfig,
     resolveProjectRoot,
     isWorktreeDirectory,

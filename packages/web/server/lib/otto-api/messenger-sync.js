@@ -181,10 +181,13 @@ export function createMessengerSyncRouter({
    */
   function resolveProjectChannel({ discord, projectPath }) {
     if (!projectPath) return null;
+    const normalizedPath = String(projectPath).replace(/\\/g, '/').replace(/\/+$/, '') || '';
     const bindings = Array.isArray(discord?.projectBindings) ? discord.projectBindings : [];
-    const match = bindings.find(
-      (b) => b && b.channelId && b.projectPath && b.projectPath === projectPath,
-    );
+    const match = bindings.find((b) => {
+      if (!b?.channelId || !b?.projectPath) return false;
+      const bindingPath = String(b.projectPath).replace(/\\/g, '/').replace(/\/+$/, '') || '';
+      return bindingPath === normalizedPath;
+    });
     if (match?.channelId) {
       return { channelId: String(match.channelId), projectLabel: match.projectLabel ?? null };
     }
@@ -194,7 +197,13 @@ export function createMessengerSyncRouter({
       if (bridge?.store?.list) {
         const rows = bridge.store
           .list({ type: 'discord' })
-          .filter((r) => r.projectPath === projectPath && r.targetKey && r.sessionId === '');
+          .filter((r) => {
+            if (!r.targetKey || r.sessionId !== '') return false;
+            const rowPath = String(r.projectPath ?? r.projectRoot ?? '')
+              .replace(/\\/g, '/')
+              .replace(/\/+$/, '');
+            return rowPath === normalizedPath;
+          });
         if (rows[0]?.targetKey) {
           return { channelId: String(rows[0].targetKey), projectLabel: rows[0].projectLabel ?? null };
         }
@@ -246,9 +255,20 @@ export function createMessengerSyncRouter({
         ? discord.defaultUserId.trim()
         : null;
 
+    let channelLookupPath = projectPath ?? null;
+    if (projectPath) {
+      try {
+        const { resolvePrimaryWorktreeRoot } = await import('../git/service.js');
+        const resolved = await resolvePrimaryWorktreeRoot(projectPath);
+        channelLookupPath = resolved?.root ?? projectPath;
+      } catch {
+        channelLookupPath = projectPath;
+      }
+    }
+
     // Prefer the project's own channel so web conversations land in the right
     // place (and in a per-session thread) instead of dumping into #general.
-    const projectChannel = resolveProjectChannel({ discord, projectPath });
+    const projectChannel = resolveProjectChannel({ discord, projectPath: channelLookupPath });
     if (projectChannel?.channelId) {
       return {
         type: 'discord',
@@ -314,6 +334,9 @@ export function createMessengerSyncRouter({
       }
     : null;
 
+  /** Set after autoCreateMessengerSurfacesForProject is defined — read at call time. */
+  let ensureProjectChannelForWorktree = null;
+
   const bridge =
     globalEventHub && buildOpenCodeUrl
       ? createMessengerOpencodeBridge({
@@ -362,6 +385,7 @@ export function createMessengerSyncRouter({
           resolveProjectChannel: readSettings
             ? ({ discord, projectPath }) => resolveProjectChannel({ discord, projectPath })
             : null,
+          getEnsureProjectChannel: () => ensureProjectChannelForWorktree,
         })
       : null;
   if (bridge) {
@@ -1274,6 +1298,16 @@ export function createMessengerSyncRouter({
     return results;
   }
 
+  ensureProjectChannelForWorktree = async (project, discord) => {
+    const results = await autoCreateMessengerSurfacesForProject(project, { discord });
+    const created = results.find((r) => r.ok && r.channelId);
+    if (!created?.channelId) return null;
+    return {
+      channelId: created.channelId,
+      projectLabel: project.label ?? project.path.split('/').pop() ?? project.path,
+    };
+  };
+
   /**
    * Explicit endpoint — the UI calls this right after a project is added so
    * we don't tightly couple settings-runtime to messenger code.
@@ -1462,14 +1496,22 @@ export function createMessengerSyncRouter({
    * }
    */
   router.post('/bridge/worktree-added', async (req, res) => {
-    const { project, worktree, sessionId } = req.body ?? {};
+    const { project, worktree, sessionId, discord } = req.body ?? {};
     if (!project?.path || !worktree?.path) {
       return res.status(400).json({ ok: false, error: 'project.path and worktree.path required' });
     }
     if (!bridge?.worktreeSync) {
       return res.json({ ok: false, error: 'worktree sync is not available on this server' });
     }
-    const result = await bridge.worktreeSync.handleWorktreeAdded({ project, worktree, sessionId });
+    const result = await bridge.worktreeSync.handleWorktreeAdded({
+      project,
+      worktree,
+      sessionId,
+      discord,
+    });
+    if (!result.ok && !result.skipped) {
+      console.warn('[MESSENGER] worktree-added failed:', result.error ?? result);
+    }
     res.json(result);
   });
 

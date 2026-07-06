@@ -579,6 +579,12 @@ export function createMessengerOpencodeBridge({
    * Signature: ({ discord, projectPath }) => { channelId, projectLabel } | null
    */
   resolveProjectChannel = null,
+  /**
+   * Lazy accessor for auto-creating a project's Discord channel when a
+   * worktree thread is ensured but no project channel exists yet.
+   * Signature: () => (project, discordConfig) => Promise<{ channelId, projectLabel } | null>
+   */
+  getEnsureProjectChannel = null,
 }) {
   const bridgeStore = store ?? new MessengerBridgeStore();
   const worktreeSync = createMessengerWorktreeSync({
@@ -587,6 +593,7 @@ export function createMessengerOpencodeBridge({
     persistSettings,
     broadcastEvent,
     resolveProjectChannel,
+    getEnsureProjectChannel,
   });
 
   /**

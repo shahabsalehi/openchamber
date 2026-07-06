@@ -356,6 +356,53 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function postBridgeJson<T>(url: string, body: unknown): Promise<T> {
+  const res = await runtimeFetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return (await res.json()) as T;
+}
+
+function buildDiscordBridgePayload(
+  conn: MessengerConnection,
+  projectMappings: ProjectMessengerMapping[],
+): {
+  token: string;
+  guildId?: string;
+  parentCategoryId?: string;
+  defaultUserId?: string;
+  defaultChannelId?: string;
+  syncWorktrees: boolean;
+  syncProjects: boolean;
+  projectBindings: { channelId: string; projectPath: string; projectLabel?: string }[];
+} {
+  const projects = useProjectsStore.getState().projects;
+  const projectBindings = projectMappings.flatMap((m) => {
+    if (!m.discord?.channelId) return [];
+    const project = projects.find((p) => p.id === m.projectId);
+    if (!project) return [];
+    return [
+      {
+        channelId: m.discord.channelId,
+        projectPath: project.path,
+        projectLabel: project.label ?? project.path,
+      },
+    ];
+  });
+  return {
+    token: conn.botToken!,
+    guildId: conn.discordGuildId,
+    parentCategoryId: conn.discordParentCategoryId,
+    defaultUserId: conn.defaultUserId,
+    defaultChannelId: conn.defaultChannelId,
+    syncWorktrees: conn.syncWorktrees !== false,
+    syncProjects: conn.syncProjects !== false,
+    projectBindings,
+  };
+}
+
 export const useMessengerStore = create<MessengerState>()(
   persist(
     (set, get) => ({
@@ -1263,19 +1310,15 @@ export const useMessengerStore = create<MessengerState>()(
 
       notifyWorktreeAdded: async (project, worktree, sessionId = null) => {
         const conn = get().connections.find((c) => c.type === 'discord');
-        if (!conn?.botToken || !conn.discordGuildId || conn.syncProjects === false || conn.syncWorktrees === false) {
+        if (!conn?.botToken || conn.syncWorktrees === false) {
           return;
         }
         try {
-          await postJson('/api/otto/messenger/bridge/worktree-added', {
+          await postBridgeJson('/api/otto/messenger/bridge/worktree-added', {
             project: { id: project.id, path: project.path, label: project.label ?? project.path },
             worktree,
             sessionId,
-            discord: {
-              token: conn.botToken,
-              guildId: conn.discordGuildId,
-              parentCategoryId: conn.discordParentCategoryId,
-            },
+            discord: buildDiscordBridgePayload(conn, get().projectMappings),
           });
         } catch {
           // best-effort
@@ -1286,9 +1329,10 @@ export const useMessengerStore = create<MessengerState>()(
         const conn = get().connections.find((c) => c.type === 'discord');
         if (!conn?.botToken || conn.syncWorktrees === false) return;
         try {
-          await postJson('/api/otto/messenger/bridge/worktree-removed', {
+          await postBridgeJson('/api/otto/messenger/bridge/worktree-removed', {
             project: { id: project.id, path: project.path, label: project.label ?? project.path },
             worktree,
+            discord: buildDiscordBridgePayload(conn, get().projectMappings),
           });
         } catch {
           // best-effort
@@ -1299,10 +1343,11 @@ export const useMessengerStore = create<MessengerState>()(
         const conn = get().connections.find((c) => c.type === 'discord');
         if (!conn?.botToken || conn.syncWorktrees === false) return;
         try {
-          await postJson('/api/otto/messenger/bridge/worktree-merged', {
+          await postBridgeJson('/api/otto/messenger/bridge/worktree-merged', {
             project: { id: project.id, path: project.path, label: project.label ?? project.path },
             worktree,
             summary,
+            discord: buildDiscordBridgePayload(conn, get().projectMappings),
           });
         } catch {
           // best-effort
