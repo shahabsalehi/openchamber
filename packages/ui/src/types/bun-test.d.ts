@@ -17,6 +17,7 @@ declare module "bun:test" {
       toThrow(expected?: string | RegExp | (new (...args: never[]) => unknown)): Promise<void>;
     };
     toBeGreaterThan(expected: number): void;
+    toBeGreaterThanOrEqual(expected: number): void;
     toBeLessThan(expected: number): void;
     toHaveLength(expected: number): void;
     toBeInstanceOf(expected: unknown): void;
@@ -28,6 +29,7 @@ declare module "bun:test" {
     };
   };
   export function beforeEach(fn: () => void | Promise<void>): void;
+  export function afterEach(fn: () => void | Promise<void>): void;
   export function afterAll(fn: () => void | Promise<void>): void;
   export function mock<T extends (...args: never[]) => unknown>(fn?: T): T;
   export namespace mock {
