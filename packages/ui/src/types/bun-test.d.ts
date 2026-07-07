@@ -10,8 +10,12 @@ declare module "bun:test" {
     toBeTruthy(): void;
     toBeFalsy(): void;
     toBeNull(): void;
-    toThrow(expected?: string | RegExp): void;
+    toThrow(expected?: string | RegExp | (new (...args: never[]) => unknown)): void;
     toContain(expected: unknown): void;
+    toBeDefined(): void;
+    rejects: {
+      toThrow(expected?: string | RegExp | (new (...args: never[]) => unknown)): Promise<void>;
+    };
     toBeGreaterThan(expected: number): void;
     toBeLessThan(expected: number): void;
     toHaveLength(expected: number): void;
