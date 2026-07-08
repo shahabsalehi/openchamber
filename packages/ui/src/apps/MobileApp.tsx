@@ -1325,18 +1325,28 @@ const SessionMetadataOverlay: React.FC<{
   // the sidebar offset.
   React.useLayoutEffect(() => {
     if (!open || !isIPad || !shouldRender) return;
-    const anchorRect = anchorRef.current?.getBoundingClientRect();
-    const wrapperRect = wrapperRef.current?.getBoundingClientRect();
-    if (!anchorRect || !wrapperRect) {
-      setIpadAnchorLeft(null);
-      return;
-    }
-    const relativeLeft = anchorRect.left - wrapperRect.left;
-    const left = Math.min(
-      Math.max(relativeLeft, 8),
-      Math.max(8, wrapperRect.width - IPAD_METADATA_POPOVER_WIDTH - 8),
-    );
-    setIpadAnchorLeft(left);
+    const compute = () => {
+      const anchorRect = anchorRef.current?.getBoundingClientRect();
+      const wrapperRect = wrapperRef.current?.getBoundingClientRect();
+      if (!anchorRect || !wrapperRect) {
+        setIpadAnchorLeft(null);
+        return;
+      }
+      const relativeLeft = anchorRect.left - wrapperRect.left;
+      const left = Math.min(
+        Math.max(relativeLeft, 8),
+        Math.max(8, wrapperRect.width - IPAD_METADATA_POPOVER_WIDTH - 8),
+      );
+      setIpadAnchorLeft(left);
+    };
+    compute();
+    // Re-anchor if the chat column shifts while the popover is open (sidebar
+    // toggle/resize, orientation change) — the header buttons move with it.
+    const wrapper = wrapperRef.current;
+    if (typeof ResizeObserver === 'undefined' || !wrapper) return;
+    const observer = new ResizeObserver(compute);
+    observer.observe(wrapper);
+    return () => observer.disconnect();
   }, [anchorRef, isIPad, open, shouldRender]);
 
   const ipadPopover = isIPad && ipadAnchorLeft !== null;
@@ -2005,13 +2015,12 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
   const [ipadRightPanel, setIpadRightPanel] = React.useState<'files' | 'changes' | null>(null);
 
   const toggleIpadSidebar = React.useCallback(() => {
-    setIpadSidebarOpen((open) => {
-      // Portrait doesn't fit both side panels next to a usable chat column:
-      // opening one closes the other (iPadOS behaves the same way).
-      if (!open && isPortrait) setIpadRightPanel(null);
-      return !open;
-    });
-  }, [isPortrait]);
+    const willOpen = !ipadSidebarOpen;
+    // Portrait doesn't fit both side panels next to a usable chat column:
+    // opening one closes the other (iPadOS behaves the same way).
+    if (willOpen && isPortrait) setIpadRightPanel(null);
+    setIpadSidebarOpen(willOpen);
+  }, [ipadSidebarOpen, isPortrait]);
 
   const openFilesSurface = React.useCallback(() => {
     if (isIPad) {
