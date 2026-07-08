@@ -1,6 +1,7 @@
 import type { I18nKey } from '@/lib/i18n/store';
 import type { SettingsPageSlug, SettingsRuntimeContext } from './metadata';
 import { getSettingsPageMeta } from './metadata';
+import { RELAY_UI_ENABLED } from '@/lib/relay/gate';
 
 interface SettingsSearchItem {
   id: string;
@@ -432,7 +433,8 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     titleKey: 'settings.remoteInstances.relay.title',
     descriptionKey: 'settings.remoteInstances.relay.description',
     keywords: ['relay', 'pairing', 'no ports', 'end-to-end encrypted', 'remote access', 'connect from anywhere'],
-    isAvailable: (ctx) => !ctx.isVSCode,
+    // Gated by openchamber_relay_gate until the relay UI ships publicly.
+    isAvailable: (ctx) => !ctx.isVSCode && RELAY_UI_ENABLED,
   },
   {
     id: 'remote-instances.direct-hosts',

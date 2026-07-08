@@ -22,6 +22,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
 import { RelaySection } from '@/components/sections/remote-instances/RelaySection';
+import { RELAY_UI_ENABLED } from '@/lib/relay/gate';
 import { useDesktopSshStore } from '@/stores/useDesktopSshStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { toast } from '@/components/ui';
@@ -1116,7 +1117,7 @@ export const RemoteInstancesPage: React.FC = () => {
           </div>
         ) : null}
 
-        {clientAuth ? <RelaySection /> : null}
+        {clientAuth && RELAY_UI_ENABLED ? <RelaySection /> : null}
 
         {showInstanceManagement ? <div data-settings-item="remote-instances.direct-hosts" className="mb-8 border-t border-[var(--surface-subtle)] pt-8">
           <div className="mb-1 px-1 space-y-0.5">
