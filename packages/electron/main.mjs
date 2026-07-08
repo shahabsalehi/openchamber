@@ -1783,20 +1783,22 @@ const parseConnectPairingDeepLinkPayload = (raw) => {
 
 const importConnectDeepLink = async (payload) => {
   if (!payload?.serverUrl || !payload?.token) return null;
+  const serverUrl = normalizeHostUrl(payload.serverUrl);
+  if (!serverUrl) return null;
   const config = readDesktopHostsConfig();
   const existing = config.hosts.find((host) => {
     const hostUrl = normalizeHostUrl(host?.url || '');
     const apiUrl = normalizeHostUrl(host?.apiUrl || host?.url || '');
-    return payload.serverUrl === hostUrl || payload.serverUrl === apiUrl;
+    return serverUrl === hostUrl || serverUrl === apiUrl;
   });
 
   const id = existing?.id || `host-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const importedHost = {
     ...(existing || {}),
     id,
-    label: payload.label || existing?.label || payload.serverUrl,
-    url: payload.serverUrl,
-    apiUrl: payload.serverUrl,
+    label: payload.label || existing?.label || serverUrl,
+    url: serverUrl,
+    apiUrl: serverUrl,
     clientToken: payload.token,
   };
   const hosts = existing
