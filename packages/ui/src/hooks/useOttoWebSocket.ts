@@ -16,17 +16,13 @@ const MAX_BACKOFF_MS = 30_000;
 function buildWsUrl(lastEventId: string | null) {
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const pathname = OTTO_UI_EVENTS_WS_PATH;
-  const base = `${protocol}://${window.location.host}${pathname}`;
+  const url = new URL(`${protocol}://${window.location.host}${pathname}`);
 
-  if (!lastEventId) {
-    return base;
+  if (lastEventId) {
+    url.searchParams.set('lastEventId', lastEventId);
   }
 
-  const url = new URL(base, window.location.origin);
-
-  url.searchParams.set('lastEventId', lastEventId);
-
-  return `${pathname}${url.search}`;
+  return url.toString();
 }
 
 function safeParseMessage(raw: string): unknown | null {

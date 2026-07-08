@@ -769,13 +769,6 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
-    id: 'integrations.discord.checklist',
-    page: 'integrations',
-    titleKey: 'settings.integrations.discord.checklist.title',
-    keywords: ['discord', 'checklist', 'verify', 'listener', 'bridge'],
-    isAvailable: (ctx) => !ctx.isVSCode,
-  },
-  {
     id: 'integrations.discord.commands',
     page: 'integrations',
     titleKey: 'settings.integrations.discord.commands.title',

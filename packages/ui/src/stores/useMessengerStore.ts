@@ -511,40 +511,14 @@ export const useMessengerStore = create<MessengerState>()(
           return false;
         }
 
-        get().updateConnection('discord', {
-          lastSyncStatus: 'sending',
-          lastSyncMessage:
-            projects.length > 0
-              ? `Syncing ${projects.length} project${projects.length === 1 ? '' : 's'} to ${conn.guildName ?? 'server'}…`
-              : 'Sending sync summary…',
-        });
-
-        try {
-          const data = await postJson<{
+        const applySyncResponse = (
+          data: {
             ok: boolean;
             error?: string;
             channels?: NonNullable<MessengerConnection['lastSyncChannels']>;
-          }>('/api/otto/messenger/discord/sync-projects', {
-            token: conn.botToken,
-            guildId: conn.discordGuildId,
-            parentCategoryId: conn.discordParentCategoryId,
-            createThreads: conn.discordCreateThreads !== false,
-            summary,
-            projects,
-            mappings: get().projectMappings,
-          });
-
-          if (data.error && (!data.channels || data.channels.length === 0)) {
-            get().updateConnection('discord', {
-              lastSyncStatus: 'error',
-              lastSyncMessage: data.error,
-            });
-            return false;
-          }
-
+          },
+        ) => {
           const results = data.channels ?? [];
-          // Persist channel / thread ids back into project mappings so the next
-          // sync re-uses them instead of creating duplicates.
           for (const r of results) {
             if (!r.channelId) continue;
             get().setProjectMapping({
@@ -572,11 +546,10 @@ export const useMessengerStore = create<MessengerState>()(
           if (postedMsgs > 0)
             parts.push(`${postedMsgs} message${postedMsgs === 1 ? '' : 's'} posted`);
           if (createdTh > 0) parts.push(`${createdTh} thread${createdTh === 1 ? '' : 's'} opened`);
-          // Be honest when threads were *requested* but didn't open — the
-          // previous version silently swallowed this case which read as
-          // "sync complete" but produced zero threads.
           if (threadRequested > 0 && threadFailed.length > 0) {
-            parts.push(`${threadFailed.length}/${threadRequested} thread${threadRequested === 1 ? '' : 's'} failed`);
+            parts.push(
+              `${threadFailed.length}/${threadRequested} thread${threadRequested === 1 ? '' : 's'} failed`,
+            );
           }
           if (errored.length > 0)
             parts.push(`${errored.length} error${errored.length === 1 ? '' : 's'}`);
@@ -593,7 +566,63 @@ export const useMessengerStore = create<MessengerState>()(
               : summaryMsg,
             lastSyncChannels: results,
           });
-          return !hasAnyError;
+
+          return {
+            results,
+            hasAnyError,
+            rateLimited: [...errored, ...threadFailed].some((r) =>
+              String(r.error ?? r.threadError ?? '').includes('429'),
+            ),
+          };
+        };
+
+        get().updateConnection('discord', {
+          lastSyncStatus: 'sending',
+          lastSyncMessage:
+            projects.length > 0
+              ? `Syncing ${projects.length} project${projects.length === 1 ? '' : 's'} to ${conn.guildName ?? 'server'}…`
+              : 'Sending sync summary…',
+        });
+
+        const runSync = async () =>
+          postJson<{
+            ok: boolean;
+            error?: string;
+            channels?: NonNullable<MessengerConnection['lastSyncChannels']>;
+          }>('/api/otto/messenger/discord/sync-projects', {
+            token: conn.botToken,
+            guildId: conn.discordGuildId,
+            parentCategoryId: conn.discordParentCategoryId,
+            createThreads: conn.discordCreateThreads !== false,
+            summary,
+            projects,
+            mappings: get().projectMappings,
+          });
+
+        try {
+          let data = await runSync();
+
+          if (data.error && (!data.channels || data.channels.length === 0)) {
+            get().updateConnection('discord', {
+              lastSyncStatus: 'error',
+              lastSyncMessage: data.error,
+            });
+            return false;
+          }
+
+          let outcome = applySyncResponse(data);
+
+          if (outcome.rateLimited && outcome.hasAnyError) {
+            get().updateConnection('discord', {
+              lastSyncStatus: 'sending',
+              lastSyncMessage: 'Discord rate limit hit — retrying failed items in a few seconds…',
+            });
+            await new Promise((resolve) => setTimeout(resolve, 5_000));
+            data = await runSync();
+            outcome = applySyncResponse(data);
+          }
+
+          return !outcome.hasAnyError;
         } catch (e) {
           get().updateConnection('discord', {
             lastSyncStatus: 'error',
@@ -887,9 +916,24 @@ export const useMessengerStore = create<MessengerState>()(
             discordListenerError: data.lastError ?? null,
             discordListenerAutoReply: data.autoReply ?? true,
           });
+          // Gateway IDENTIFY is async — poll until connected or timeout.
+          for (let attempt = 0; attempt < 24; attempt++) {
+            const latest = get().connections.find((c) => c.type === 'discord');
+            if (latest?.discordListenerConnected) break;
+            if (
+              latest?.discordListenerError &&
+              (latest.discordListenerError.includes('4014') ||
+                latest.discordListenerError.includes('Invalid'))
+            ) {
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            await get().refreshDiscordListenerStatus();
+          }
           // Persist config server-side so it auto-starts on server restart
           get().saveDiscordConfig();
-          return true;
+          const finalConn = get().connections.find((c) => c.type === 'discord');
+          return Boolean(finalConn?.discordListenerRunning);
         } catch (e) {
           get().updateConnection('discord', {
             discordListenerError: e instanceof Error ? e.message : 'start failed',

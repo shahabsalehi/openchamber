@@ -27,6 +27,32 @@ function friendlyDiscordError(status, rawText) {
   return trimmed || `HTTP ${status}`;
 }
 
+const SYNC_PROJECT_DELAY_MS = 2_000;
+const SYNC_THREAD_DELAY_MS = 2_500;
+const SYNC_RETRY_MAX = 5;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Discord REST fetch with automatic backoff on HTTP 429. */
+async function discordFetch(url, init, { maxRetries = SYNC_RETRY_MAX } = {}) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const resp = await fetch(url, init);
+    if (resp.status !== 429 || attempt >= maxRetries) {
+      return resp;
+    }
+    const retryAfterHeader =
+      resp.headers.get('retry-after') ?? resp.headers.get('x-ratelimit-reset-after');
+    const retryAfterSec = Number(retryAfterHeader);
+    const waitMs = Number.isFinite(retryAfterSec)
+      ? Math.max(1_500, Math.ceil(retryAfterSec * 1_000))
+      : 2_500 * (attempt + 1);
+    await sleep(waitMs);
+  }
+  throw new Error('discordFetch: exhausted retries');
+}
+
 /**
  * Slugify a project label into a Discord channel name. Discord lowercases and
  * hyphenates channel names anyway, so we normalise here for find-by-name and
@@ -837,7 +863,11 @@ export function createMessengerSyncRouter({
 
     const channelResults = [];
 
-    for (const project of projectList) {
+    for (let projectIndex = 0; projectIndex < projectList.length; projectIndex++) {
+      const project = projectList[projectIndex];
+      if (projectIndex > 0) {
+        await sleep(SYNC_PROJECT_DELAY_MS);
+      }
       const label = project.label || `Project ${project.id}`;
       const desiredSlug = slugify(label);
       let channel = null;
@@ -856,7 +886,7 @@ export function createMessengerSyncRouter({
       // 3) Otherwise create it
       if (!channel) {
         try {
-          const cResp = await fetch(
+          const cResp = await discordFetch(
             `https://discord.com/api/v10/guilds/${encodeURIComponent(guildId)}/channels`,
             {
               method: 'POST',
@@ -892,7 +922,7 @@ export function createMessengerSyncRouter({
       if (channel && !entryError) {
         // Post the per-project status message.
         try {
-          const mResp = await fetch(
+          const mResp = await discordFetch(
             `https://discord.com/api/v10/channels/${encodeURIComponent(channel.id)}/messages`,
             {
               method: 'POST',
@@ -919,8 +949,9 @@ export function createMessengerSyncRouter({
         // instead of dropping the whole project on the floor.
         if (!entryError && messageId && createThreads !== false) {
           threadName = `Otto sync — ${new Date().toISOString().slice(0, 10)}`;
+          await sleep(SYNC_THREAD_DELAY_MS);
           try {
-            const tResp = await fetch(
+            const tResp = await discordFetch(
               `https://discord.com/api/v10/channels/${encodeURIComponent(channel.id)}/messages/${messageId}/threads`,
               {
                 method: 'POST',
@@ -976,6 +1007,41 @@ export function createMessengerSyncRouter({
         error: entryError,
         threadError,
       });
+    }
+
+    // Second pass: retry thread creation for rows that only failed due to rate limits.
+    for (const row of channelResults) {
+      if (row.threadCreated || !row.threadError || !String(row.threadError).includes('429')) {
+        continue;
+      }
+      if (!row.channelId || !row.messageId || createThreads === false) {
+        continue;
+      }
+      const retryThreadName =
+        row.threadName ?? `Otto sync — ${new Date().toISOString().slice(0, 10)}`;
+      await sleep(SYNC_THREAD_DELAY_MS * 2);
+      try {
+        const tResp = await discordFetch(
+          `https://discord.com/api/v10/channels/${encodeURIComponent(row.channelId)}/messages/${row.messageId}/threads`,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              name: retryThreadName.slice(0, 100),
+              auto_archive_duration: 1440,
+            }),
+          },
+        );
+        if (tResp.ok) {
+          const tJson = await tResp.json();
+          row.threadId = tJson.id ?? null;
+          row.threadName = retryThreadName;
+          row.threadCreated = true;
+          row.threadError = null;
+        }
+      } catch (err) {
+        row.threadError = err?.message ?? row.threadError;
+      }
     }
 
     if (persistSettings) {

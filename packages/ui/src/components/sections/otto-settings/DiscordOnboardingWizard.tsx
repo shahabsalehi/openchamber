@@ -12,6 +12,8 @@ import { useProjectsStore } from '@/stores/useProjectsStore';
 
 const TOTAL_STEPS = 4;
 const DEVELOPER_PORTAL_URL = 'https://discord.com/developers/applications';
+const DISCORD_ID_GUIDE_URL =
+  'https://support.discord.com/hc/en-us/articles/206346498-Where-can-I-find-my-User-Server-Message-ID';
 
 type DiscordOnboardingWizardProps = {
   conn: MessengerConnection;
@@ -36,6 +38,7 @@ export function DiscordOnboardingWizard({
   const sendTestMessage = useMessengerStore((s) => s.sendTestMessage);
   const syncDiscordGuildProjects = useMessengerStore((s) => s.syncDiscordGuildProjects);
   const startDiscordListener = useMessengerStore((s) => s.startDiscordListener);
+  const refreshDiscordListenerStatus = useMessengerStore((s) => s.refreshDiscordListenerStatus);
   const refreshBridgeStatus = useMessengerStore((s) => s.refreshBridgeStatus);
   const bridgeStatus = useMessengerStore((s) => s.bridgeStatus);
   const projects = useProjectsStore((s) => s.projects);
@@ -44,18 +47,21 @@ export function DiscordOnboardingWizard({
   const [guildInput, setGuildInput] = useState('');
   const [channelInput, setChannelInput] = useState('');
   const [startingListener, setStartingListener] = useState(false);
+  const [listenerStatusText, setListenerStatusText] = useState<string | null>(null);
 
   const hasToken = Boolean(conn.botToken);
   const isConnected = conn.status === 'connected';
   const hasTarget = Boolean(conn.defaultChannelId) || Boolean(conn.discordGuildId);
   const bridgeOn = conn.bridgeEnabled !== false;
+  const listenerRunning = Boolean(conn.discordListenerRunning);
   const listenerLive = Boolean(conn.discordListenerRunning && conn.discordListenerConnected);
+  const listenerStuck = listenerRunning && !listenerLive && !startingListener;
 
   const canAdvance = (() => {
     if (step === 0) return hasToken && isConnected;
     if (step === 1) return isConnected;
     if (step === 2) return hasTarget;
-    if (step === 3) return bridgeOn && listenerLive;
+    if (step === 3) return bridgeOn && listenerRunning;
     return false;
   })();
 
@@ -109,8 +115,28 @@ export function DiscordOnboardingWizard({
 
   const handleStartListener = async () => {
     setStartingListener(true);
+    setListenerStatusText(t('settings.integrations.discord.wizard.step4.listenerStarting'));
     try {
-      await startDiscordListener();
+      if (listenerStuck) {
+        await useMessengerStore.getState().stopDiscordListener();
+      }
+      const ok = await startDiscordListener();
+      if (!ok) {
+        const err = useMessengerStore.getState().connections.find((c) => c.type === 'discord')
+          ?.discordListenerError;
+        setListenerStatusText(
+          t('settings.integrations.discord.wizard.step4.listenerError', {
+            error: err ?? 'start failed',
+          }),
+        );
+        return;
+      }
+      if (!useMessengerStore.getState().connections.find((c) => c.type === 'discord')
+        ?.discordListenerConnected) {
+        setListenerStatusText(t('settings.integrations.discord.wizard.step4.listenerConnecting'));
+        await refreshDiscordListenerStatus();
+      }
+      setListenerStatusText(null);
     } finally {
       setStartingListener(false);
     }
@@ -178,6 +204,13 @@ export function DiscordOnboardingWizard({
             <Icon name="external-link" className="size-3.5" />
             {t('settings.integrations.discord.wizard.step1.openPortal')}
           </Button>
+          <ol className="list-decimal space-y-1 pl-4 text-[11px] text-muted-foreground leading-snug">
+            <li>{t('settings.integrations.discord.wizard.step1.stepNewApp')}</li>
+            <li>{t('settings.integrations.discord.wizard.step1.stepNameBot')}</li>
+            <li>{t('settings.integrations.discord.wizard.step1.stepBotMenu')}</li>
+            <li>{t('settings.integrations.discord.wizard.step1.stepResetToken')}</li>
+            <li>{t('settings.integrations.discord.wizard.step1.stepIntent')}</li>
+          </ol>
           {!hasToken ? (
             <div className="flex gap-2">
               <input
@@ -278,6 +311,15 @@ export function DiscordOnboardingWizard({
             <p className="mt-1 text-[11px] text-muted-foreground leading-snug">
               {t('settings.integrations.discord.wizard.step3.description')}
             </p>
+            <a
+              href={DISCORD_ID_GUIDE_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1 inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+            >
+              {t('settings.integrations.discord.wizard.step3.idGuideLink')}
+              <Icon name="external-link" className="size-3" />
+            </a>
           </div>
           {!conn.discordGuildId ? (
             <div className="space-y-1">
@@ -432,7 +474,7 @@ export function DiscordOnboardingWizard({
               variant="outline"
               size="xs"
               className="!font-normal"
-              disabled={startingListener || listenerLive}
+              disabled={startingListener || (listenerRunning && listenerLive)}
               onClick={() => void handleStartListener()}
             >
               {startingListener ? (
@@ -440,19 +482,33 @@ export function DiscordOnboardingWizard({
               ) : (
                 <Icon name="play" className="size-3.5" />
               )}
-              {t('settings.integrations.discord.wizard.step4.startListener')}
+              {listenerStuck
+                ? t('settings.integrations.discord.wizard.step4.retryListener')
+                : t('settings.integrations.discord.wizard.step4.startListener')}
             </Button>
             <span
               className={cn(
                 'text-[10px]',
-                listenerLive ? 'text-[var(--status-success)]' : 'text-muted-foreground',
+                listenerLive
+                  ? 'text-[var(--status-success)]'
+                  : listenerRunning
+                    ? 'text-[var(--status-warning)]'
+                    : 'text-muted-foreground',
               )}
             >
               {listenerLive
                 ? t('settings.integrations.discord.wizard.step4.listenerLive')
-                : t('settings.integrations.discord.wizard.step4.listenerStopped')}
+                : listenerRunning
+                  ? t('settings.integrations.discord.wizard.step4.listenerConnecting')
+                  : t('settings.integrations.discord.wizard.step4.listenerStopped')}
             </span>
           </div>
+          {conn.discordListenerError && (
+            <p className="text-[11px] text-[var(--status-error)]">{conn.discordListenerError}</p>
+          )}
+          {listenerStatusText && (
+            <p className="text-[11px] text-muted-foreground">{listenerStatusText}</p>
+          )}
           {canAdvance && (
             <p className="text-[11px] text-[var(--status-success)]">
               {t('settings.integrations.discord.wizard.step4.complete')}
