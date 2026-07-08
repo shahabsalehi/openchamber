@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Reproduction of Issue #2094 - Chat message visual order reversed</title>
+<style>
+  /* Simulate Tailwind v4 utility classes matching the codebase */
+  .relative { position: relative; }
+  .sticky { position: sticky; }
+  .absolute { position: absolute; }
+  .w-full { width: 100%; }
+  .top-0 { top: 0; }
+  .z-20 { z-index: 20; }
+  .z-10 { z-index: 10; }
+  .z-0 { z-index: 0; }
+  .inset-x-0 { left: 0; right: 0; }
+  .top-full { top: 100%; }
+  .h-4 { height: 16px; }
+  .h-64 { height: 256px; }
+  .pointer-events-none { pointer-events: none; }
+  .bg-surface { background: #ffffff; }
+  .p-4 { padding: 16px; }
+  .mb-2 { margin-bottom: 8px; }
+
+  /* Scroll container matching ScrollShadow setup */
+  .scroll-container {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  .scroll-content {
+    position: relative;
+    z-index: 0;
+    min-height: 100%;
+  }
+
+  /* TurnItem structure */
+  .turn-item {
+    position: relative;
+    width: 100%;
+  }
+
+  /* THE BUG: user-header has BOTH sticky AND relative */
+  /* In TurnItem.tsx line 21: "sticky top-0 z-20 relative bg-[var(--surface-background)]" */
+  /* In compiled CSS: .sticky comes AFTER .relative, so sticky wins */
+  /* But inside transform:translateY(), sticky doesn't work per CSS spec */
+  .user-header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    position: relative; /* redundant with sticky, both set position */
+    background: #ffffff;
+    overflow-anchor: none;
+  }
+  .user-header-inner {
+    position: relative;
+    z-index: 10;
+  }
+  .gradient-fade {
+    pointer-events: none;
+    position: absolute;
+    left: 0; right: 0;
+    top: 100%;
+    z-index: 0;
+    height: 16px;
+    background: linear-gradient(to bottom, #ffffff, transparent);
+  }
+  .assistant-block {
+    position: relative;
+    z-index: 0;
+  }
+
+  /* Visual debugging */
+  .user-msg {
+    background: #dbeafe;  /* blue */
+    padding: 12px 16px;
+    border-radius: 12px;
+    border: 1px solid #93c5fd;
+    margin-bottom: 8px;
+  }
+  .assistant-msg {
+    background: #bbf7d0;  /* green */
+    padding: 12px 16px;
+    border-radius: 12px;
+    border: 1px solid #86efac;
+    margin-bottom: 8px;
+  }
+  .turn-border {
+    border: 2px solid #e5e7eb;
+    margin-bottom: 12px;
+    border-radius: 8px;
+  }
+  .label {
+    font-family: sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  /* Fix the class ordering test - same as compiled CSS */
+  /* In compiled Tailwind v4 CSS: .relative comes before .sticky */
+  /* So .sticky overrides .relative */
+
+  .test-sticky-relative {
+    padding: 12px;
+    background: #fef3c7;
+    border: 1px solid #f59e0b;
+    border-radius: 6px;
+    margin-top: 12px;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    margin: 20px;
+    background: #f3f4f6;
+  }
+  h2 { font-family: sans-serif; }
+  h3 { font-family: sans-serif; margin: 20px 0 8px 0; }
+  .test-wrap {
+    position: relative;
+    width: 100%;
+    max-width: 700px;
+    height: 350px;
+    border: 2px solid #374151;
+    margin-bottom: 24px;
+    background: #f9fafb;
+    overflow: hidden;
+  }
+  .summary {
+    background: #e0e7ff;
+    border: 1px solid #6366f1;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 20px;
+    font-size: 14px;
+    max-width: 700px;
+  }
+  .stacking-test {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin: 20px 0;
+  }
+  .stacking-test > div {
+    flex: 1;
+    min-width: 300px;
+  }
+  .stacking-box {
+    position: relative;
+    background: white;
+    border: 2px solid #6366f1;
+    padding: 8px;
+    height: 200px;
+    overflow-y: auto;
+  }
+  .box-inner {
+    position: relative;
+    width: 100%;
+  }
+  .box-transform {
+    transform: translateY(0);
+  }
+  .box-no-transform {
+    /* no transform */
+  }
+</style>
+</head>
+<body>
+
+<h1>Issue #2094: Chat message visual order reversed</h1>
+
+<div class="summary">
+  <strong>Root Cause:</strong> The user message header in <code>TurnItem.tsx</code> has class <code>"sticky top-0 z-20 relative"</code> 
+  (both <code>sticky</code> and <code>relative</code>). Inside the <code>transform: translateY()</code> container 
+  (from @tanstack/react-virtual), <code>position: sticky</code> does not work per CSS spec because 
+  <code>transform</code> creates a new containing block. The fallback behavior combined with 
+  <code>z-index</code> stacking contexts creates the visual reversal.
+</div>
+
+<!-- ================================================================== -->
+<h2>Test 1: Virtualized History (inside transform)</h2>
+<h3>This replicates what happens inside the @tanstack/react-virtual transform container</h3>
+<div class="test-wrap">
+  <div class="scroll-container">
+    <div class="scroll-content">
+      <div class="relative w-full">
+        <!-- transform: translateY() - simulates tanstack virtualizer -->
+        <div style="transform: translateY(5px);">
+          <!-- Turn 1 -->
+          <div class="turn-item turn-border">
+            <div class="user-header" style="position: sticky; top: 0; z-index: 20; position: relative; background: white;">
+              <div class="label" style="color: #2563eb;">USER (z-20 sticky inside transform)</div>
+              <div class="user-msg">What is the weather today?</div>
+            </div>
+            <div class="gradient-fade"></div>
+            <div class="assistant-block">
+              <div class="label" style="color: #16a34a;">ASSISTANT (z-0)</div>
+              <div class="assistant-msg">The weather is sunny with a high of 75°F.</div>
+            </div>
+          </div>
+          <!-- Turn 2 -->
+          <div class="turn-item turn-border">
+            <div class="user-header" style="position: sticky; top: 0; z-index: 20; position: relative; background: white;">
+              <div class="label" style="color: #2563eb;">USER (z-20 sticky inside transform)</div>
+              <div class="user-msg">What about tomorrow?</div>
+            </div>
+            <div class="gradient-fade"></div>
+            <div class="assistant-block">
+              <div class="label" style="color: #16a34a;">ASSISTANT (z-0)</div>
+              <div class="assistant-msg">Tomorrow will be rainy with thunderstorms likely.</div>
+            </div>
+          </div>
+          <!-- Turn 3 -->
+          <div class="turn-item turn-border">
+            <div class="user-header" style="position: sticky; top: 0; z-index: 20; position: relative; background: white;">
+              <div class="label" style="color: #2563eb;">USER (z-20 sticky inside transform)</div>
+              <div class="user-msg">Should I bring an umbrella?</div>
+            </div>
+            <div class="gradient-fade"></div>
+            <div class="assistant-block">
+              <div class="label" style="color: #16a34a;">ASSISTANT (z-0)</div>
+              <div class="assistant-msg">Yes, definitely bring an umbrella tomorrow!</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<p><strong>Expected:</strong> User (blue) should always be ABOVE Assistant (green) in the same turn.<br>
+<strong>Bug:</strong> When scrolling, the broken sticky behavior inside transform may cause visual reversal.</p>
+
+<!-- ================================================================== -->
+<h2>Test 2: Streaming Tail (outside transform - sticky should work)</h2>
+<h3>This replicates the streaming tail entry outside the virtualizer</h3>
+<div class="test-wrap">
+  <div class="scroll-container">
+    <div class="scroll-content">
+      <div class="relative w-full">
+        <!-- NO transform - same structure as StreamingTailContent -->
+        <div>
+          <!-- Turn 1 -->
+          <div class="turn-item turn-border">
+            <div class="user-header" style="position: sticky; top: 0; z-index: 20; position: relative; background: white;">
+              <div class="label" style="color: #2563eb;">USER (z-20 sticky, NO transform)</div>
+              <div class="user-msg">What is the weather today?</div>
+            </div>
+            <div class="gradient-fade"></div>
+            <div class="assistant-block">
+              <div class="label" style="color: #16a34a;">ASSISTANT (z-0)</div>
+              <div class="assistant-msg">The weather is sunny with a high of 75°F.</div>
+            </div>
+          </div>
+          <!-- Turn 2 -->
+          <div class="turn-item turn-border">
+            <div class="user-header" style="position: sticky; top: 0; z-index: 20; position: relative; background: white;">
+              <div class="label" style="color: #2563eb;">USER (z-20 sticky, NO transform)</div>
+              <div class="user-msg">What about tomorrow?</div>
+            </div>
+            <div class="gradient-fade"></div>
+            <div class="assistant-block">
+              <div class="label" style="color: #16a34a;">ASSISTANT (z-0)</div>
+              <div class="assistant-msg">Tomorrow will be rainy with thunderstorms likely.</div>
+            </div>
+          </div>
+          <!-- Turn 3 -->
+          <div class="turn-item turn-border">
+            <div class="user-header" style="position: sticky; top: 0; z-index: 20; position: relative; background: white;">
+              <div class="label" style="color: #2563eb;">USER (z-20 sticky, NO transform)</div>
+              <div class="user-msg">Should I bring an umbrella?</div>
+            </div>
+            <div class="gradient-fade"></div>
+            <div class="assistant-block">
+              <div class="label" style="color: #16a34a;">ASSISTANT (z-0)</div>
+              <div class="assistant-msg">Yes, definitely bring an umbrella tomorrow!</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<h2>Test 3: Stacking context overlap test</h2>
+<h3>Demonstrates how z-index inside transform creates unexpected layering between turns</h3>
+
+<div class="stacking-test">
+  <div>
+    <h3>Inside transform (virtualized history)</h3>
+    <div class="stacking-box">
+      <div class="box-inner box-transform">
+        <div style="position: sticky; top: 0; z-index: 20; background: #dbeafe; padding: 8px; border: 2px solid blue; margin-bottom: 4px;">
+          USER HEADER (z-20, sticky but broken inside transform)
+        </div>
+        <div style="position: relative; z-index: 0; background: #bbf7d0; padding: 8px; border: 2px solid green; min-height: 150px;">
+          ASSISTANT BLOCK (z-0)
+        </div>
+      </div>
+    </div>
+    <p><strong>Note:</strong> Sticky doesn't work here. Both user and assistant are in the transform stacking context. z-20 should paint on top, but since they don't overlap in normal flow, the problem is visual only during scroll transitions.</p>
+  </div>
+
+  <div>
+    <h3>No transform (streaming tail)</h3>
+    <div class="stacking-box">
+      <div class="box-inner box-no-transform">
+        <div style="position: sticky; top: 0; z-index: 20; background: #dbeafe; padding: 8px; border: 2px solid blue; margin-bottom: 4px;">
+          USER HEADER (z-20, sticky works)
+        </div>
+        <div style="position: relative; z-index: 0; background: #bbf7d0; padding: 8px; border: 2px solid green; min-height: 150px;">
+          ASSISTANT BLOCK (z-0)
+        </div>
+      </div>
+    </div>
+    <p><strong>Note:</strong> Sticky works here. User header stays at top when scrolling. When sticky activates, the user header at z-20 overlays the assistant at z-0. This is the correct behavior.</p>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<h2>Test 4: CSS Cascade - Does `relative` override `sticky`?</h2>
+<h3>Uses the exact same CSS class ordering as the compiled Tailwind v4 output</h3>
+
+<div>
+  <div class="sticky relative test-sticky-relative">
+    <strong>CSS Cascade Test:</strong> This element has class="sticky relative"<br>
+    Compiled CSS order from project: <code>.relative{position:relative}</code> THEN <code>.sticky{position:sticky}</code><br>
+    <span id="cascade-result">Testing...</span>
+  </div>
+</div>
+
+<script>
+  // Test CSS cascade - which position wins when both sticky and relative are applied
+  (function() {
+    const el = document.querySelector('.test-sticky-relative');
+    const style = window.getComputedStyle(el);
+    const resultEl = document.getElementById('cascade-result');
+    
+    if (style.position === 'sticky') {
+      resultEl.innerHTML = '✅ Computed position: <strong>sticky</strong> (sticky wins - correct in compiled CSS)';
+      resultEl.style.color = '#16a34a';
+    } else if (style.position === 'relative') {
+      resultEl.innerHTML = '❌ Computed position: <strong>relative</strong> (relative overrides sticky - BUG!)';
+      resultEl.style.color = '#dc2626';
+    } else {
+      resultEl.innerHTML = '⚠️ Computed position: <strong>' + style.position + '</strong> (unexpected)';
+      resultEl.style.color = '#d97706';
+    }
+  })();
+</script>
+
+<!-- ================================================================== -->
+<h2>How to verify the bug in the browser</h2>
+<ol>
+  <li><strong>Open a chat with multiple message exchanges</strong> (user question → assistant response → user question → assistant response)</li>
+  <li><strong>Scroll down</strong> in the chat viewport</li>
+  <li><strong>Observe</strong> the visual order: Does the assistant message appear <em>above</em> the user message that preceded it?</li>
+  <li><strong>Select text</strong>: Drag down from where a user message appears visually. If the selection highlights the assistant message above it instead, the bug is confirmed - the DOM order (correct) differs from the visual order (reversed).</li>
+  <li><strong>DevTools check</strong>:
+    <ol>
+      <li>Inspect the user message element in TurnItem</li>
+      <li>Check that it has both <code>sticky</code> and <code>relative</code> classes</li>
+      <li>Check the computed <code>position</code> - should be <code>sticky</code> but if it's <code>relative</code>, that confirms a CSS cascade issue</li>
+      <li>Check the stacking context: <code>transform: translateY(Xpx)</code> should create a stacking context on the tanstack virtualizer inner div</li>
+      <li>Note that <code>position: sticky</code> does NOT work inside a <code>transform</code> container per CSS spec</li>
+      <li>Check the <code>z-index</code>: user header is z-20, assistant block is z-0 - within the transform stacking context, z-20 paints on top</li>
+    </ol>
+  </li>
+</ol>
+
+<h2>Key files to inspect</h2>
+<ul>
+  <li><code>packages/ui/src/components/chat/components/TurnItem.tsx</code>: Line 21 - user header has both <code>sticky</code> and <code>relative</code></li>
+  <li><code>packages/ui/src/components/chat/components/TurnAssistantBlock.tsx</code>: Line 12 - <code>relative z-0</code></li>
+  <li><code>packages/ui/src/components/chat/MessageList.tsx</code>: Lines 1200-1201 - transform container wrapping virtualized items</li>
+  <li><code>packages/ui/src/components/chat/MessageList.tsx</code>: Lines 1846-1865 - StreamingTailContent outside the transform container</li>
+</ul>
+
+<h2>Root cause analysis</h2>
+<p>
+  <strong>Primary issue:</strong> <code>position: sticky</code> inside a <code>transform: translateY()</code> container does not work per CSS specification. 
+  The @tanstack/react-virtual virtualizer wraps history items in a <code>transform: translateY(startOffset)</code> container (line 1201 of MessageList.tsx).
+  This creates a new containing block, so the <code>position: sticky; top: 0</code> on the user header does not stick to the scroll viewport as intended.
+</p>
+<p>
+  <strong>Secondary issue:</strong> The user header in TurnItem.tsx simultaneously applies <code>sticky</code> AND <code>relative</code> classes. 
+  While the compiled Tailwind v4 CSS correctly gives precedence to <code>sticky</code> (it's defined after <code>relative</code>), having both classes is unnecessary 
+  and could cause confusion.
+</p>
+<p>
+  <strong>Visual reversal mechanism:</strong> Inside the transform stacking context, the user header (z-20) paints on top of the assistant block (z-0). 
+  However, because sticky doesn't work inside transform, the user header stays in normal flow. Both elements are children of the same stacking context 
+  (the transform), and z-20 correctly paints above z-0. The visual reversal occurs when:
+  <ol>
+    <li>In the streaming tail (no transform), sticky DOES work, so the user header behaves differently from the virtualized history</li>
+    <li>Between virtualized turns, the broken sticky behavior combined with the <code>bg-[var(--surface-background)]</code> on the user header creates 
+    unexpected overlapping when consecutive turns are in view</li>
+    <li>The <code>z-index: 20</code> on the user header vs <code>z-index: 0</code> on the assistant block means the user block from a PREVIOUS turn 
+    could paint on top of the assistant block from a LATER turn when scrolling</li>
+  </ol>
+</p>
+
+</body>
+</html>
