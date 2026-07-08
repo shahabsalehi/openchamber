@@ -185,6 +185,19 @@ describe('renderToolPart — ANSI stripping in tool results', () => {
     expect(line).not.toContain('[32m');
   });
 
+  it('normal: does not duplicate bash command when state.title mirrors input.command', () => {
+    const cmd =
+      "ssh -o ConnectTimeout=5 gamebox 'echo \"===HOST===\"; hostname; echo \"===WOLF===\"; systemctl is-active wolf-server'";
+    const line = renderToolPart(
+      toolPart({ state: { status: 'completed', title: cmd, input: { command: cmd }, output: 'ok' } }),
+      'normal',
+    );
+    expect(line).toContain('**bash**');
+    expect(line).toContain('`ssh -o ConnectTimeout=5');
+    expect(line).not.toContain(`_${cmd}_`);
+    expect((line.match(/ssh -o ConnectTimeout=5/g) ?? []).length).toBe(1);
+  });
+
   it('renderPermissionContext strips ANSI from the previewed command', () => {
     const out = renderPermissionContext({
       permission: 'bash',

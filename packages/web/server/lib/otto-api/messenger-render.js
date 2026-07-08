@@ -385,8 +385,16 @@ export function renderToolPart(part, verbosity = DEFAULT_VERBOSITY) {
   const input = part.state?.input ?? {};
 
   // Tool title — usually a one-word context (e.g. "build", "test").
+  // Bash/shell already embed the command in `summary`; OpenCode often sets
+  // state.title to the same command string, which would duplicate it in the
+  // Discord one-liner at `normal` verbosity.
   const title = typeof part.state?.title === 'string' ? part.state.title : '';
-  const titlePart = title ? ` _${escapeMd(title)}_` : '';
+  const titlePart =
+    tool === 'bash' || tool === 'shell'
+      ? ''
+      : title
+        ? ` _${escapeMd(title)}_`
+        : '';
 
   const summary = (() => {
     switch (tool) {
