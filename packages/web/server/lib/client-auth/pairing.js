@@ -162,12 +162,17 @@ export const createClientPairingRuntime = ({
   };
 
   const sweepExpiredSessionsFromStore = (store) => {
-    const cutoff = Date.now() - ttlMs;
+    const now = Date.now();
+    const cutoff = now - ttlMs;
     store.sessions = store.sessions.filter((session) => {
       const usedAt = Date.parse(session.usedAt || '');
       const cancelledAt = Date.parse(session.cancelledAt || '');
       const inactiveAt = Number.isFinite(usedAt) ? usedAt : cancelledAt;
-      return !Number.isFinite(inactiveAt) || inactiveAt >= cutoff;
+      if (Number.isFinite(inactiveAt)) return inactiveAt >= cutoff;
+      // Never used or cancelled: drop once the session itself has expired —
+      // it can no longer be redeemed and would otherwise sit in the store forever.
+      const expiresAt = Date.parse(session.expiresAt || '');
+      return !Number.isFinite(expiresAt) || expiresAt > now;
     });
   };
 

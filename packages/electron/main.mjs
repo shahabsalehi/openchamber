@@ -601,6 +601,9 @@ const sanitizeHostRelayForStorage = (value) => {
   const serverId = typeof value.serverId === 'string' ? value.serverId.trim() : '';
   const jwk = value.hostEncPubJwk;
   if (!relayUrl || !serverId || !jwk || typeof jwk !== 'object' || Array.isArray(jwk)) return null;
+  // Minimal EC public JWK shape check so a malformed descriptor is rejected at
+  // storage time instead of surfacing later as a tunnel handshake failure.
+  if (typeof jwk.kty !== 'string' || typeof jwk.crv !== 'string' || typeof jwk.x !== 'string') return null;
   try {
     const parsed = new URL(relayUrl);
     if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') return null;

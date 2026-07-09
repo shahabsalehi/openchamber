@@ -401,6 +401,9 @@ describe('core-routes', () => {
     app.set('trust proxy', true);
     dependencies.clientPairingRuntime.redeemPairingSession.mockRejectedValue(new Error('Invalid or expired pairing session'));
 
+    // The X-Forwarded-For headers below are deliberate spoof attempts: the rate
+    // limiter buckets by socket address (not forwarded headers), so rotating the
+    // header must NOT reset the counter or evade the lockout.
     for (let index = 0; index < 10; index += 1) {
       await request(app)
         .post('/api/client-auth/pairing/redeem')
