@@ -268,6 +268,7 @@ export const settingsDict = {
   'settings.remoteInstances.clientAuth.lastUsed': '마지막 사용 {date}',
   'settings.remoteInstances.clientAuth.neverUsed': '사용한 적 없음',
   'settings.remoteInstances.relay.title': 'OpenChamber Relay',
+  'settings.remoteInstances.relay.autoHint': 'Turns on automatically when you pair a device over the relay.',
   'settings.remoteInstances.relay.description': '포트를 열지 않고도 다른 기기가 어디서든 연결할 수 있습니다. 트래픽은 종단 간 암호화되어 릴레이는 내용을 읽을 수 없습니다.',
   'settings.remoteInstances.relay.enableHint': '이 서버에서 릴레이를 켜기 전까지는 아무것도 공유되지 않습니다.',
   'settings.remoteInstances.relay.actions.enable': '릴레이 켜기',

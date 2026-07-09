@@ -301,6 +301,7 @@ export const settingsDict = {
   'settings.remoteInstances.clientAuth.lastUsed': '最終使用 {date}',
   'settings.remoteInstances.clientAuth.neverUsed': '未使用',
   'settings.remoteInstances.relay.title': 'OpenChamber Relay',
+  'settings.remoteInstances.relay.autoHint': 'Turns on automatically when you pair a device over the relay.',
   'settings.remoteInstances.relay.description': 'ポートを開放せずに、他のデバイスからどこからでも接続できます。通信はエンドツーエンドで暗号化され、リレーは内容を読めません。',
   'settings.remoteInstances.relay.enableHint': 'このサーバーでリレーを有効にするまで、何も共有されません。',
   'settings.remoteInstances.relay.actions.enable': 'リレーを有効にする',

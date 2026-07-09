@@ -268,6 +268,7 @@ export const settingsDict = {
   'settings.remoteInstances.clientAuth.lastUsed': '上次使用 {date}',
   'settings.remoteInstances.clientAuth.neverUsed': '从未使用',
   'settings.remoteInstances.relay.title': 'OpenChamber Relay',
+  'settings.remoteInstances.relay.autoHint': 'Turns on automatically when you pair a device over the relay.',
   'settings.remoteInstances.relay.description': '无需开放端口，即可让你的其他设备从任何地方连接。流量端到端加密，中继无法读取内容。',
   'settings.remoteInstances.relay.enableHint': '在此服务器上启用中继之前，不会共享任何内容。',
   'settings.remoteInstances.relay.actions.enable': '启用中继',

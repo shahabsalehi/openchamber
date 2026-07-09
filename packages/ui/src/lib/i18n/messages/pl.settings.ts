@@ -1493,6 +1493,7 @@ export const settingsDict = {
   'settings.remoteInstances.clientAuth.lastUsed': 'Ostatnio użyto {date}',
   'settings.remoteInstances.clientAuth.neverUsed': 'Nigdy nie użyto',
   'settings.remoteInstances.relay.title': 'OpenChamber Relay',
+  'settings.remoteInstances.relay.autoHint': 'Turns on automatically when you pair a device over the relay.',
   'settings.remoteInstances.relay.description': 'Pozwól swoim innym urządzeniom łączyć się z dowolnego miejsca bez otwierania portów. Ruch jest szyfrowany od końca do końca — relay nie może go odczytać.',
   'settings.remoteInstances.relay.enableHint': 'Nic nie jest udostępniane, dopóki nie włączysz relay na tym serwerze.',
   'settings.remoteInstances.relay.actions.enable': 'Włącz Relay',

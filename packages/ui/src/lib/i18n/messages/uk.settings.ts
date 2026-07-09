@@ -268,6 +268,7 @@ export const settingsDict = {
   "settings.remoteInstances.clientAuth.lastUsed": "Останнє використання {date}",
   "settings.remoteInstances.clientAuth.neverUsed": "Ще не використовувався",
   "settings.remoteInstances.relay.title": "OpenChamber Relay",
+  "settings.remoteInstances.relay.autoHint": "Вмикається автоматично, коли ти паруєш пристрій через relay.",
   "settings.remoteInstances.relay.description": "Дозволяє вашим іншим пристроям підключатися звідки завгодно без відкриття портів. Трафік шифрується наскрізно — релей не може його прочитати.",
   "settings.remoteInstances.relay.enableHint": "Нічого не передається, доки ви не увімкнете релей на цьому сервері.",
   "settings.remoteInstances.relay.actions.enable": "Увімкнути Relay",

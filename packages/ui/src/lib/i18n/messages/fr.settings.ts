@@ -1805,6 +1805,7 @@ export const settingsDict = {
   'settings.remoteInstances.clientAuth.lastUsed': 'Dernière utilisation le {date}',
   'settings.remoteInstances.clientAuth.neverUsed': 'Jamais utilisé',
   'settings.remoteInstances.relay.title': 'OpenChamber Relay',
+  'settings.remoteInstances.relay.autoHint': 'Turns on automatically when you pair a device over the relay.',
   'settings.remoteInstances.relay.description': 'Permettez à vos autres appareils de se connecter depuis n’importe où sans ouvrir de ports. Le trafic est chiffré de bout en bout — le relais ne peut pas le lire.',
   'settings.remoteInstances.relay.enableHint': 'Rien n’est partagé tant que vous n’activez pas le relais sur ce serveur.',
   'settings.remoteInstances.relay.actions.enable': 'Activer le relais',

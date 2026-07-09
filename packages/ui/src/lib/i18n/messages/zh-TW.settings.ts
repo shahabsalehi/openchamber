@@ -274,6 +274,7 @@
   'settings.remoteInstances.clientAuth.lastUsed': '上次使用：{date}',
   'settings.remoteInstances.clientAuth.neverUsed': '從未使用',
   'settings.remoteInstances.relay.title': 'OpenChamber Relay',
+  'settings.remoteInstances.relay.autoHint': 'Turns on automatically when you pair a device over the relay.',
   'settings.remoteInstances.relay.description': '無需開放連接埠，即可讓你的其他裝置從任何地方連線。流量端對端加密，中繼無法讀取內容。',
   'settings.remoteInstances.relay.enableHint': '在此伺服器上啟用中繼之前，不會共享任何內容。',
   'settings.remoteInstances.relay.actions.enable': '啟用中繼',

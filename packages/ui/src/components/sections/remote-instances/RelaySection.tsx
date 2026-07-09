@@ -6,7 +6,6 @@ import { runtimeFetch } from '@/lib/runtime-fetch';
 
 // OpenChamber-owned relay routes (registered before the generic OpenCode proxy).
 const RELAY_STATUS_ROUTE = '/api/openchamber/relay/status';
-const RELAY_ENABLE_ROUTE = '/api/openchamber/relay/enable';
 const RELAY_DISABLE_ROUTE = '/api/openchamber/relay/disable';
 
 const STATUS_POLL_INTERVAL_MS = 5_000;
@@ -110,23 +109,6 @@ export const RelaySection: React.FC = () => {
     };
   }, [refreshStatus]);
 
-  const handleEnable = React.useCallback(async () => {
-    setIsToggling(true);
-    try {
-      const response = await runtimeFetch(RELAY_ENABLE_ROUTE, { method: 'POST' });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      await refreshStatus();
-    } catch (err) {
-      toast.error(t('settings.remoteInstances.relay.toast.enableFailed'), {
-        description: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      setIsToggling(false);
-    }
-  }, [refreshStatus, t]);
-
   const handleDisable = React.useCallback(async () => {
     const confirmed = window.confirm(t('settings.remoteInstances.relay.confirm.disable'));
     if (!confirmed) return;
@@ -147,46 +129,39 @@ export const RelaySection: React.FC = () => {
   }, [refreshStatus, t]);
 
   const enabled = status?.enabled === true;
-  const state: RelayState = status?.state ?? 'disabled';
+  const state: RelayState = enabled ? (status?.state ?? 'disabled') : 'disabled';
 
+  // Quiet status row. The relay turns on automatically when a device is paired
+  // over it (the add-device dialog), so there is no manual "enable" here — just a
+  // subtle indicator, and a "turn off" affordance while it is active.
   return (
     <div data-settings-item="remote-instances.relay" className="mb-8 border-t border-[var(--surface-subtle)] pt-8">
-      <div className="mb-1 px-1 space-y-0.5">
-        <h3 className="typography-ui-header font-medium text-foreground">{t('settings.remoteInstances.relay.title')}</h3>
-        <p className="typography-meta text-muted-foreground">{t('settings.remoteInstances.relay.description')}</p>
+      <div className="flex items-center justify-between gap-3 px-1">
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className={`h-2 w-2 shrink-0 rounded-full ${stateDotClass(state)}`} />
+            <p className="typography-ui-label text-foreground truncate">{t('settings.remoteInstances.relay.title')}</p>
+            {enabled ? <span className="typography-micro text-muted-foreground shrink-0">· {t(stateLabelKey(state))}</span> : null}
+          </div>
+          {!statusLoaded ? null : (
+            <p className="typography-micro text-muted-foreground/70 truncate">
+              {enabled
+                ? ((status?.connectedClients ?? 0) === 1
+                    ? t('settings.remoteInstances.relay.status.clientsOne', { count: 1 })
+                    : t('settings.remoteInstances.relay.status.clientsMany', { count: status?.connectedClients ?? 0 }))
+                : t('settings.remoteInstances.relay.autoHint')}
+            </p>
+          )}
+          {enabled && state === 'error' && status?.lastError ? (
+            <p className="typography-micro text-[var(--status-error)] break-all">{status.lastError}</p>
+          ) : null}
+        </div>
+        {enabled ? (
+          <Button type="button" variant="ghost" size="xs" className="!font-normal shrink-0" onClick={() => void handleDisable()} disabled={isToggling}>
+            {t('settings.remoteInstances.relay.actions.disable')}
+          </Button>
+        ) : null}
       </div>
-      <section className="px-2 pb-2 pt-0 space-y-3">
-        {!statusLoaded ? (
-          <p className="typography-meta text-muted-foreground">{t('settings.remoteInstances.relay.state.loading')}</p>
-        ) : !enabled ? (
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <p className="typography-meta text-muted-foreground/70">{t('settings.remoteInstances.relay.enableHint')}</p>
-            <Button type="button" size="xs" className="!font-normal shrink-0" onClick={() => void handleEnable()} disabled={isToggling}>
-              {t('settings.remoteInstances.relay.actions.enable')}
-            </Button>
-          </div>
-        ) : (
-          <div className="flex items-center justify-between gap-3 py-1.5">
-            <div className="min-w-0">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className={`h-2 w-2 rounded-full ${stateDotClass(state)}`} />
-                <p className="typography-ui-label text-foreground truncate">{t(stateLabelKey(state))}</p>
-              </div>
-              <p className="typography-micro text-muted-foreground truncate">
-                {(status?.connectedClients ?? 0) === 1
-                  ? t('settings.remoteInstances.relay.status.clientsOne', { count: 1 })
-                  : t('settings.remoteInstances.relay.status.clientsMany', { count: status?.connectedClients ?? 0 })}
-              </p>
-              {state === 'error' && status?.lastError ? (
-                <p className="typography-micro text-[var(--status-error)] break-all">{status.lastError}</p>
-              ) : null}
-            </div>
-            <Button type="button" variant="outline" size="xs" className="!font-normal shrink-0" onClick={() => void handleDisable()} disabled={isToggling}>
-              {t('settings.remoteInstances.relay.actions.disable')}
-            </Button>
-          </div>
-        )}
-      </section>
     </div>
   );
 };

@@ -268,6 +268,7 @@ export const settingsDict = {
   "settings.remoteInstances.clientAuth.lastUsed": "Último uso {date}",
   "settings.remoteInstances.clientAuth.neverUsed": "Nunca usado",
   "settings.remoteInstances.relay.title": "OpenChamber Relay",
+  "settings.remoteInstances.relay.autoHint": "Turns on automatically when you pair a device over the relay.",
   "settings.remoteInstances.relay.description": "Permite que tus otros dispositivos se conecten desde cualquier lugar sin abrir puertos. El tráfico está cifrado de extremo a extremo: el relay no puede leerlo.",
   "settings.remoteInstances.relay.enableHint": "No se comparte nada hasta que actives el relay en este servidor.",
   "settings.remoteInstances.relay.actions.enable": "Activar Relay",
