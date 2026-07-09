@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=800, initial-scale=1.0">
+<title>Reproduction: Issue #2119 - Cropped/Misaligned Messages (Stacking Context)</title>
+<style>
+  /* Simulates the OpenChamber chat layout with virtualizer transform stacking context */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    display: flex;
+    justify-content: center;
+    padding: 20px;
+  }
+
+  /* Scroll container - matches ChatContainer's ScrollShadow setup */
+  .scroll-container {
+    width: 700px;
+    height: 600px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    border: 1px solid #333;
+    border-radius: 12px;
+    background: #16213e;
+    position: relative;
+  }
+
+  /* Inner wrapper - matches MessageList's sizeContainerRef */
+  .virtualizer-container {
+    position: relative;
+    width: 100%;
+  }
+
+  /* Transform stacking context - matches virtualizer's translateY wrapper */
+  .virtualizer-transform {
+    /* THIS IS THE KEY: transform creates a stacking context */
+    /* All turns inside here share the same stacking context */
+    /* Later DOM elements paint ON TOP of earlier ones */
+  }
+
+  /* Individual turn section - matches TurnItem */
+  .turn-section {
+    position: relative;
+    width: 100%;
+  }
+
+  /* Turn border to visually separate turns */
+  .turn-section + .turn-section {
+    border-top: 1px dashed #444;
+  }
+
+  /* Sticky user header - matches TurnItem's sticky wrapper */
+  .sticky-header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: #16213e;
+    padding: 12px 16px 4px;
+    /* overflow-anchor: none would be here */
+  }
+
+  .sticky-header .user-message {
+    position: relative;
+    z-index: 10;
+    background: #1a3a5c;
+    border-radius: 12px 12px 4px 12px;
+    padding: 10px 16px;
+    font-size: 14px;
+    line-height: 1.5;
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+
+  /* Gradient overlay - matches TurnItem's gradient overlay */
+  .gradient-overlay {
+    pointer-events: none;
+    position: absolute;
+    inset-inline: 0;
+    top: 100%;
+    z-index: 0;
+    height: 32px;
+    background: linear-gradient(to bottom, #16213e, transparent);
+  }
+
+  /* Assistant message area - matches TurnAssistantBlock */
+  .assistant-block {
+    position: relative;
+    z-index: 0;
+    padding: 0 16px 12px;
+  }
+
+  .assistant-message {
+    background: #1e2a45;
+    border-radius: 12px;
+    padding: 10px 16px;
+    font-size: 14px;
+    line-height: 1.6;
+    margin-top: 8px;
+  }
+
+  /* Action buttons at bottom of assistant messages */
+  .action-buttons {
+    display: flex;
+    gap: 4px;
+    margin-top: 8px;
+    padding-top: 4px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+  }
+
+  .action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: none;
+    background: rgba(255,255,255,0.06);
+    color: #aaa;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background 0.15s;
+  }
+
+  .action-btn:hover {
+    background: rgba(255,255,255,0.12);
+    color: #fff;
+  }
+
+  /* Turn labels */
+  .turn-label {
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  /* Instructions */
+  .instructions {
+    width: 700px;
+    margin-bottom: 12px;
+    padding: 12px 16px;
+    background: #0f3460;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #ccc;
+  }
+  .instructions strong { color: #fff; }
+  .instructions code {
+    background: rgba(255,255,255,0.08);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+  }
+
+  /* Debug overlay - semi-transparent to see overlap */
+  .debug-mode .turn-section {
+    opacity: 0.85;
+  }
+  .debug-mode .turn-section:nth-child(odd) {
+    background: rgba(0, 100, 200, 0.05);
+  }
+  .debug-mode .turn-section:nth-child(even) {
+    background: rgba(200, 100, 0, 0.05);
+  }
+
+  .toggle-debug {
+    margin-bottom: 8px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .toggle-debug button {
+    padding: 6px 14px;
+    border: 1px solid #555;
+    background: #1a1a2e;
+    color: #ccc;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .toggle-debug button:hover {
+    background: #2a2a4e;
+  }
+
+  /* Highlight the overlapping area */
+  .overlap-highlight {
+    background: rgba(255, 0, 0, 0.15) !important;
+  }
+</style>
+</head>
+<body>
+  <div style="display:flex; flex-direction: column; align-items: center;">
+    <div class="instructions">
+      <strong>Reproduction of Issue #2119 / #2095 — Stacking Context Overlap</strong><br><br>
+      The virtualizer's <code>transform: translateY()</code> creates a <strong>CSS stacking context</strong>.
+      Inside it, each turn (<code>&lt;section&gt;</code>) paints in DOM order. Turn N's sticky header
+      is <code>z-index: 20</code> within its own section, but Turn N+1's <em>entire section</em> paints
+      <strong>on top</strong> of Turn N because it appears later in the DOM.<br><br>
+      <strong>Result:</strong> When scrolling to the bottom, Turn N+1's sticky header overlaps the
+      action buttons and bottom content of Turn N's assistant message, making messages appear
+      <strong>cropped/misaligned</strong>.<br><br>
+      <em>Scroll the chat panel below to see the overlap. The later turns' content paints over earlier turns.</em>
+    </div>
+
+    <div class="toggle-debug">
+      <button onclick="document.body.classList.toggle('debug-mode')">Toggle Debug Mode</button>
+      <button onclick="highlightOverlap()">Highlight Overlap Zones</button>
+      <button onclick="document.querySelector('.scroll-container').scrollTop = document.querySelector('.scroll-container').scrollHeight">Scroll to Bottom</button>
+    </div>
+
+    <div class="scroll-container">
+      <div class="virtualizer-container">
+        <div class="virtualizer-transform">
+          <!-- Each turn is a section in the transform stacking context -->
+          <div class="turn-section" data-turn="1">
+            <div class="sticky-header">
+              <div class="turn-label">Turn 1 — User (sticky)</div>
+              <div class="user-message">What is the capital of France?</div>
+              <div class="gradient-overlay"></div>
+            </div>
+            <div class="assistant-block">
+              <div class="turn-label">Assistant</div>
+              <div class="assistant-message">
+                The capital of France is <strong>Paris</strong>. It is one of the most famous cities in the world, known for its art, fashion, gastronomy, and culture. Paris is located in the north-central part of France on the Seine River.
+              </div>
+              <div class="action-buttons">
+                <button class="action-btn" title="Copy">📋</button>
+                <button class="action-btn" title="Edit">✏️</button>
+                <button class="action-btn" title="Fork">🔀</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="turn-section" data-turn="2">
+            <div class="sticky-header">
+              <div class="turn-label">Turn 2 — User (sticky)</div>
+              <div class="user-message">Tell me about the Eiffel Tower.</div>
+              <div class="gradient-overlay"></div>
+            </div>
+            <div class="assistant-block">
+              <div class="turn-label">Assistant</div>
+              <div class="assistant-message">
+                The <strong>Eiffel Tower</strong> is a wrought-iron lattice tower on the Champ de Mars in Paris, France. It was completed in 1889 as the centerpiece of the 1889 World's Fair. It is named after the engineer Gustave Eiffel, whose company designed and built the tower.
+              </div>
+              <div class="action-buttons">
+                <button class="action-btn" title="Copy">📋</button>
+                <button class="action-btn" title="Edit">✏️</button>
+                <button class="action-btn" title="Fork">🔀</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="turn-section" data-turn="3">
+            <div class="sticky-header">
+              <div class="turn-label">Turn 3 — User (sticky)</div>
+              <div class="user-message">What other landmarks should I visit in Paris?</div>
+              <div class="gradient-overlay"></div>
+            </div>
+            <div class="assistant-block">
+              <div class="turn-label">Assistant</div>
+              <div class="assistant-message">
+                <p>Paris has many amazing landmarks beyond the Eiffel Tower:</p>
+                <ul>
+                  <li><strong>Louvre Museum</strong> — the world's largest art museum, home to the Mona Lisa</li>
+                  <li><strong>Notre-Dame Cathedral</strong> — a masterpiece of French Gothic architecture</li>
+                  <li><strong>Sacré-Cœur Basilica</strong> — a stunning white basilica atop Montmartre hill</li>
+                  <li><strong>Arc de Triomphe</strong> — a monumental arch at the center of Place Charles de Gaulle</li>
+                  <li><strong>Palace of Versailles</strong> — a magnificent royal palace just outside the city</li>
+                </ul>
+                <p>Each of these offers a unique glimpse into French history and culture.</p>
+              </div>
+              <div class="action-buttons">
+                <button class="action-btn" title="Copy">📋</button>
+                <button class="action-btn" title="Edit">✏️</button>
+                <button class="action-btn" title="Fork">🔀</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="turn-section" data-turn="4">
+            <div class="sticky-header">
+              <div class="turn-label">Turn 4 — User (sticky)</div>
+              <div class="user-message">Can you recommend some good restaurants in the Latin Quarter?</div>
+              <div class="gradient-overlay"></div>
+            </div>
+            <div class="assistant-block">
+              <div class="turn-label">Assistant</div>
+              <div class="assistant-message">
+                The Latin Quarter in Paris is known for its vibrant food scene. Here are some recommendations:
+                <br><br>
+                <strong>Traditional French:</strong><br>
+                • Le Petit Pontoise — classic French bistro with excellent wine list<br>
+                • Les Pipos — cozy spot serving traditional Parisian dishes<br><br>
+                <strong>Affordable Options:</strong><br>
+                • Crêperie des Arts — delicious savory and sweet crêpes<br>
+                • Le Pré Verre — modern French cuisine at reasonable prices<br><br>
+                <strong>Boulangeries:</strong><br>
+                • Boulangerie Poilâne — famous for their sourdough bread<br>
+                • Eric Kayser — excellent artisan bakery and sandwiches
+              </div>
+              <div class="action-buttons">
+                <button class="action-btn" title="Copy">📋</button>
+                <button class="action-btn" title="Edit">✏️</button>
+                <button class="action-btn" title="Fork">🔀</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="turn-section" data-turn="5">
+            <div class="sticky-header">
+              <div class="turn-label">Turn 5 — User (sticky)</div>
+              <div class="user-message">What's the best way to get around Paris?</div>
+              <div class="gradient-overlay"></div>
+            </div>
+            <div class="assistant-block">
+              <div class="turn-label">Assistant</div>
+              <div class="assistant-message">
+                <strong>Paris has an excellent public transportation system:</strong><br><br>
+                <strong>Metro:</strong> The Paris Métro is one of the most efficient subway systems in the world. With 16 lines and over 300 stations, you can reach almost anywhere in the city quickly. Single tickets cost €2.10, or you can buy a carnet of 10 tickets for €16.90.<br><br>
+                <strong>RER:</strong> The regional express network connects the city center to suburbs and airports. Useful for reaching Versailles, Disneyland Paris, and Charles de Gaulle Airport.<br><br>
+                <strong>Buses:</strong> Extensive bus network with routes covering the entire city. Great for sightseeing as you can see the city above ground.<br><br>
+                <strong>Walking:</strong> Many neighborhoods are best explored on foot. The city is very walkable, especially central areas like Le Marais, Saint-Germain, and Montmartre.<br><br>
+                <strong>Vélib' Métropole:</strong> Bike-sharing service with stations throughout the city. A great way to cover more ground than walking while still enjoying the fresh air.<br><br>
+                <strong>Uber/Taxis:</strong> Available but more expensive. Useful late at night or with heavy luggage.
+              </div>
+              <div class="action-buttons">
+                <button class="action-btn" title="Copy">📋</button>
+                <button class="action-btn" title="Edit">✏️</button>
+                <button class="action-btn" title="Fork">🔀</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="turn-section" data-turn="6">
+            <div class="sticky-header">
+              <div class="turn-label">Turn 6 — User (sticky)</div>
+              <div class="user-message">Is it safe to travel to Paris right now?</div>
+              <div class="gradient-overlay"></div>
+            </div>
+            <div class="assistant-block">
+              <div class="turn-label">Assistant</div>
+              <div class="assistant-message">
+                Paris is generally a safe city for tourists, though like any major city, it has areas where you should take normal precautions.<br><br>
+                <strong>General Safety Tips:</strong><br>
+                • Keep an eye on your belongings in crowded areas and on public transport<br>
+                • Avoid walking alone late at night in less central neighborhoods<br>
+                • Be aware of common pickpocketing techniques around tourist attractions<br>
+                • Keep copies of important documents (passport, travel insurance) separately<br><br>
+                <strong>Areas to be cautious:</strong><br>
+                • Around Gare du Nord and Gare de l'Est stations at night<br>
+                • Montmartre (especially around the cable car and stairs to Sacré-Cœur)<br>
+                • The Châtelet-Les Halles area<br><br>
+                Overall, millions of tourists visit Paris safely every year. Use common sense and stay aware of your surroundings, and you should have a wonderful visit!
+              </div>
+              <div class="action-buttons">
+                <button class="action-btn" title="Copy">📋</button>
+                <button class="action-btn" title="Edit">✏️</button>
+                <button class="action-btn" title="Fork">🔀</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="instructions" style="margin-top: 12px;">
+      <strong>How to verify the issue:</strong><br>
+      1. Scroll down so the bottom-most messages are visible<br>
+      2. Notice that later turns' content paints <strong>on top</strong> of earlier turns' content<br>
+      3. The action buttons at the bottom of each assistant message may be partially or fully <strong>hidden</strong> under the next turn's sticky header<br>
+      4. Toggle "Debug Mode" to see the turn boundaries more clearly<br>
+      5. Click "Highlight Overlap Zones" to see which areas overlap<br><br>
+      <strong>Root cause:</strong> The virtualizer's <code>transform: translateY()</code> (line 1201 of MessageList.tsx) creates a CSS stacking context. Each turn's <code>section { position: relative }</code> creates a child stacking context. Later turns paint on top of earlier turns because they appear later in the DOM. The <code>z-index: 20</code> on sticky headers only applies <em>within</em> each turn's stacking context, not across turns.
+    </div>
+  </div>
+
+  <script>
+    function highlightOverlap() {
+      const sections = document.querySelectorAll('.turn-section');
+      sections.forEach((section, i) => {
+        if (i > 0) {
+          const prevSection = sections[i - 1];
+          // Check if this section's sticky header overlaps the previous section's assistant content
+          const prevActions = prevSection.querySelector('.action-buttons');
+          const thisHeader = section.querySelector('.sticky-header');
+          if (prevActions && thisHeader) {
+            prevActions.classList.toggle('overlap-highlight');
+            thisHeader.classList.toggle('overlap-highlight');
+          }
+        }
+      });
+    }
+  </script>
+</body>
+</html>
