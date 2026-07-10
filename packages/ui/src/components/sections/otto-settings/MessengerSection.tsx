@@ -1316,6 +1316,9 @@ function ConnectionCard({ conn }: { conn: MessengerConnection }) {
         <DiscordOnboardingWizard conn={conn} onScrollToSection={scrollToSection} />
       )}
 
+      {/* Token / sync / advanced — only outside the wizard so fields aren't duplicated */}
+      {!showWizard && (
+        <>
       {/* Step 1: Token */}
       {!token ? (
         <div ref={tokenSectionRef} className="space-y-2">
@@ -1459,6 +1462,8 @@ function ConnectionCard({ conn }: { conn: MessengerConnection }) {
             onOpenChange={setAdvancedOpen}
           />
         </div>
+      )}
+        </>
       )}
 
       <Dialog open={disconnectConfirmOpen} onOpenChange={setDisconnectConfirmOpen}>
