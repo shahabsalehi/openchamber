@@ -7,18 +7,26 @@ export const discordIntegrationI18n = {
     'settings.integrations.discord.wizard.next': 'Next',
     'settings.integrations.discord.wizard.finish': 'Finish setup',
     'settings.integrations.discord.wizard.skipToAdvanced': 'Skip to full settings',
-    'settings.integrations.discord.wizard.step1.title': 'Create bot and get token',
+    'settings.integrations.discord.wizard.step1.title': 'Create a Discord bot',
     'settings.integrations.discord.wizard.step1.description':
-      'Open the Discord Developer Portal, create a bot, and enable the Message Content intent.',
-    'settings.integrations.discord.wizard.step1.steps':
-      'New Application → name your bot → Bot (left menu) → Reset Token → copy token. Enable Message Content intent under Privileged Gateway Intents.',
-    'settings.integrations.discord.wizard.step1.stepNewApp': 'New Application',
-    'settings.integrations.discord.wizard.step1.stepNameBot': 'Name your bot',
-    'settings.integrations.discord.wizard.step1.stepBotMenu': 'Bot (left menu)',
-    'settings.integrations.discord.wizard.step1.stepResetToken': 'Reset Token → copy token',
-    'settings.integrations.discord.wizard.step1.stepIntent': 'Enable Message Content intent',
+      'Otto connects through a Discord bot you own. Create one in the Developer Portal, copy its token, then paste it below.',
+    'settings.integrations.discord.wizard.step1.guideTitle': 'How to get the token',
+    'settings.integrations.discord.wizard.step1.stepNewApp.title': 'Create an application',
+    'settings.integrations.discord.wizard.step1.stepNewApp.description':
+      'Open the Developer Portal and click New Application. Give it any name — this becomes your bot.',
+    'settings.integrations.discord.wizard.step1.stepBotMenu.title': 'Open Bot settings',
+    'settings.integrations.discord.wizard.step1.stepBotMenu.description':
+      'In the left sidebar, open Bot. Discord creates the bot user for this application automatically.',
+    'settings.integrations.discord.wizard.step1.stepResetToken.title': 'Copy the bot token',
+    'settings.integrations.discord.wizard.step1.stepResetToken.description':
+      'Click Reset Token, confirm, then copy the token. Treat it like a password — anyone with it can control your bot.',
+    'settings.integrations.discord.wizard.step1.stepIntent.title': 'Enable Message Content Intent',
+    'settings.integrations.discord.wizard.step1.stepIntent.description':
+      'Under Privileged Gateway Intents, turn on Message Content Intent and save. Without this, Otto cannot read messages in your server.',
     'settings.integrations.discord.wizard.step1.openPortal': 'Open Developer Portal',
     'settings.integrations.discord.wizard.step1.tokenLabel': 'Bot token',
+    'settings.integrations.discord.wizard.step1.tokenHint': 'Paste the token you copied from the Bot page.',
+    'settings.integrations.discord.wizard.step1.saveToken': 'Save token',
     'settings.integrations.discord.wizard.step1.verify': 'Verify token',
     'settings.integrations.discord.wizard.step1.verifying': 'Verifying…',
     'settings.integrations.discord.wizard.step1.verified': 'Token verified as {username}',
@@ -120,18 +128,26 @@ export const discordIntegrationI18n = {
     'settings.integrations.discord.wizard.next': 'Далі',
     'settings.integrations.discord.wizard.finish': 'Завершити налаштування',
     'settings.integrations.discord.wizard.skipToAdvanced': 'Перейти до повних налаштувань',
-    'settings.integrations.discord.wizard.step1.title': 'Створіть бота та отримайте токен',
+    'settings.integrations.discord.wizard.step1.title': 'Створіть Discord-бота',
     'settings.integrations.discord.wizard.step1.description':
-      'Відкрийте Discord Developer Portal, створіть бота та увімкніть Message Content intent.',
-    'settings.integrations.discord.wizard.step1.steps':
-      'New Application → назвіть бота → Bot (ліве меню) → Reset Token → скопіюйте токен. Увімкніть Message Content intent у Privileged Gateway Intents.',
-    'settings.integrations.discord.wizard.step1.stepNewApp': 'New Application',
-    'settings.integrations.discord.wizard.step1.stepNameBot': 'Назвіть бота',
-    'settings.integrations.discord.wizard.step1.stepBotMenu': 'Bot (ліве меню)',
-    'settings.integrations.discord.wizard.step1.stepResetToken': 'Reset Token → скопіюйте токен',
-    'settings.integrations.discord.wizard.step1.stepIntent': 'Увімкніть Message Content intent',
+      'Otto підключається через Discord-бота, яким ви володієте. Створіть його в Developer Portal, скопіюйте токен і вставте нижче.',
+    'settings.integrations.discord.wizard.step1.guideTitle': 'Як отримати токен',
+    'settings.integrations.discord.wizard.step1.stepNewApp.title': 'Створіть застосунок',
+    'settings.integrations.discord.wizard.step1.stepNewApp.description':
+      'Відкрийте Developer Portal і натисніть New Application. Дайте будь-яку назву — це стане вашим ботом.',
+    'settings.integrations.discord.wizard.step1.stepBotMenu.title': 'Відкрийте налаштування Bot',
+    'settings.integrations.discord.wizard.step1.stepBotMenu.description':
+      'У лівому меню відкрийте Bot. Discord автоматично створить користувача-бота для цього застосунку.',
+    'settings.integrations.discord.wizard.step1.stepResetToken.title': 'Скопіюйте токен бота',
+    'settings.integrations.discord.wizard.step1.stepResetToken.description':
+      'Натисніть Reset Token, підтвердіть і скопіюйте токен. Ставтеся до нього як до пароля — хто має токен, той керує ботом.',
+    'settings.integrations.discord.wizard.step1.stepIntent.title': 'Увімкніть Message Content Intent',
+    'settings.integrations.discord.wizard.step1.stepIntent.description':
+      'У розділі Privileged Gateway Intents увімкніть Message Content Intent і збережіть. Без цього Otto не зможе читати повідомлення на сервері.',
     'settings.integrations.discord.wizard.step1.openPortal': 'Відкрити Developer Portal',
     'settings.integrations.discord.wizard.step1.tokenLabel': 'Токен бота',
+    'settings.integrations.discord.wizard.step1.tokenHint': 'Вставте токен, скопійований зі сторінки Bot.',
+    'settings.integrations.discord.wizard.step1.saveToken': 'Зберегти токен',
     'settings.integrations.discord.wizard.step1.verify': 'Перевірити токен',
     'settings.integrations.discord.wizard.step1.verifying': 'Перевірка…',
     'settings.integrations.discord.wizard.step1.verified': 'Токен підтверджено: {username}',

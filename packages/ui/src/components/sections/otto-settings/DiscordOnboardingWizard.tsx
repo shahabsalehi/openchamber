@@ -185,53 +185,102 @@ export function DiscordOnboardingWizard({
 
       {/* Step 0: Token */}
       {step === 0 && (
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div>
-            <div className="text-xs font-medium text-foreground">
+            <div className="typography-ui-label font-medium text-foreground">
               {t('settings.integrations.discord.wizard.step1.title')}
             </div>
-            <p className="mt-1 text-[11px] text-muted-foreground leading-snug">
+            <p className="mt-1 typography-meta text-muted-foreground leading-snug">
               {t('settings.integrations.discord.wizard.step1.description')}
             </p>
           </div>
+
           <Button
             type="button"
             variant="outline"
-            size="xs"
+            size="sm"
             className="!font-normal"
             onClick={() => window.open(DEVELOPER_PORTAL_URL, '_blank', 'noopener,noreferrer')}
           >
             <Icon name="external-link" className="size-3.5" />
             {t('settings.integrations.discord.wizard.step1.openPortal')}
           </Button>
-          <ol className="list-decimal space-y-1 pl-4 text-[11px] text-muted-foreground leading-snug">
-            <li>{t('settings.integrations.discord.wizard.step1.stepNewApp')}</li>
-            <li>{t('settings.integrations.discord.wizard.step1.stepNameBot')}</li>
-            <li>{t('settings.integrations.discord.wizard.step1.stepBotMenu')}</li>
-            <li>{t('settings.integrations.discord.wizard.step1.stepResetToken')}</li>
-            <li>{t('settings.integrations.discord.wizard.step1.stepIntent')}</li>
-          </ol>
+
+          <div className="space-y-3">
+            <div className="typography-ui-label font-medium text-foreground">
+              {t('settings.integrations.discord.wizard.step1.guideTitle')}
+            </div>
+            <ol className="space-y-3">
+              {(
+                [
+                  {
+                    title: 'settings.integrations.discord.wizard.step1.stepNewApp.title',
+                    description: 'settings.integrations.discord.wizard.step1.stepNewApp.description',
+                  },
+                  {
+                    title: 'settings.integrations.discord.wizard.step1.stepBotMenu.title',
+                    description: 'settings.integrations.discord.wizard.step1.stepBotMenu.description',
+                  },
+                  {
+                    title: 'settings.integrations.discord.wizard.step1.stepResetToken.title',
+                    description:
+                      'settings.integrations.discord.wizard.step1.stepResetToken.description',
+                  },
+                  {
+                    title: 'settings.integrations.discord.wizard.step1.stepIntent.title',
+                    description: 'settings.integrations.discord.wizard.step1.stepIntent.description',
+                  },
+                ] as const
+              ).map((item, index) => (
+                <li key={item.title} className="flex gap-3">
+                  <span
+                    className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--primary-base)_15%,transparent)] typography-micro font-medium text-[var(--primary-base)] tabular-nums"
+                    aria-hidden
+                  >
+                    {index + 1}
+                  </span>
+                  <div className="min-w-0 space-y-0.5">
+                    <div className="typography-ui-label font-medium text-foreground">
+                      {t(item.title)}
+                    </div>
+                    <p className="typography-meta text-muted-foreground leading-snug">
+                      {t(item.description)}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </div>
+
           {!hasToken ? (
-            <div className="flex gap-2">
-              <input
-                type="password"
-                value={tokenInput}
-                onChange={(e) => setTokenInput(e.target.value)}
-                placeholder={t('settings.integrations.discord.wizard.step1.tokenLabel')}
-                className={inputClass}
-              />
-              <Button
-                type="button"
-                size="sm"
-                disabled={!tokenInput.trim()}
-                onClick={handleSaveToken}
-              >
-                Save
-              </Button>
+            <div className="space-y-1.5">
+              <label className="typography-ui-label font-medium text-foreground">
+                {t('settings.integrations.discord.wizard.step1.tokenLabel')}
+              </label>
+              <p className="typography-meta text-muted-foreground leading-snug">
+                {t('settings.integrations.discord.wizard.step1.tokenHint')}
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={tokenInput}
+                  onChange={(e) => setTokenInput(e.target.value)}
+                  placeholder={t('settings.integrations.discord.wizard.step1.tokenLabel')}
+                  className={inputClass}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={!tokenInput.trim()}
+                  onClick={handleSaveToken}
+                >
+                  {t('settings.integrations.discord.wizard.step1.saveToken')}
+                </Button>
+              </div>
             </div>
           ) : (
             <div className="space-y-2">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <div className="flex items-center gap-2 typography-ui-label text-muted-foreground">
                 <Icon name="check" className="size-3.5 text-[var(--status-success)]" />
                 {isConnected
                   ? t('settings.integrations.discord.wizard.step1.verified', {
