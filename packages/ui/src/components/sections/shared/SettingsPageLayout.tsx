@@ -68,7 +68,7 @@ const SettingsSaveStatus: React.FC = () => {
   const [status, setStatus] = React.useState<'idle' | 'saving' | 'saved'>('idle');
 
   React.useEffect(() => {
-    let timeout: ReturnType<typeof window.setTimeout> | undefined;
+    let timeout: number | undefined;
     const handleSaveState = (event: Event) => {
       const state = (event as CustomEvent<'saving' | 'saved' | 'error'>).detail;
       if (state === 'saving') {
