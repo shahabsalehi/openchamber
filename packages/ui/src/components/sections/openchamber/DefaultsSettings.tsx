@@ -6,6 +6,7 @@ import {
   SettingsSection,
   SettingsFieldRow,
   SettingsCheckboxRow,
+  SETTINGS_CUSTOM_TRIGGER_CLASS,
   SETTINGS_SELECT_TRIGGER_CLASS,
   SETTINGS_SELECT_SIZE,
 } from '@/components/sections/shared/SettingsSection';
@@ -308,7 +309,12 @@ export const DefaultsSettings: React.FC = () => {
             settingsItem="sessions.default-model"
             label={t('settings.openchamber.defaults.field.defaultModel')}
           >
-            <ModelSelector providerId={parsedModel.providerId} modelId={parsedModel.modelId} onChange={handleModelChange} />
+            <ModelSelector
+              providerId={parsedModel.providerId}
+              modelId={parsedModel.modelId}
+              onChange={handleModelChange}
+              className={SETTINGS_CUSTOM_TRIGGER_CLASS}
+            />
           </SettingsFieldRow>
 
           <SettingsFieldRow
@@ -336,7 +342,11 @@ export const DefaultsSettings: React.FC = () => {
             settingsItem="sessions.default-agent"
             label={t('settings.openchamber.defaults.field.defaultAgent')}
           >
-            <AgentSelector agentName={defaultAgent || ''} onChange={handleAgentChange} />
+            <AgentSelector
+              agentName={defaultAgent || ''}
+              onChange={handleAgentChange}
+              className={SETTINGS_CUSTOM_TRIGGER_CLASS}
+            />
           </SettingsFieldRow>
 
           <SettingsCheckboxRow
@@ -371,6 +381,7 @@ export const DefaultsSettings: React.FC = () => {
                 modelId={parsedSmallModel.modelId}
                 onChange={handleSmallModelOverrideChange}
                 allowedProviderIds={smallModelProviders}
+                className={SETTINGS_CUSTOM_TRIGGER_CLASS}
               />
             </SettingsFieldRow>
           ) : null}

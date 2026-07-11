@@ -7,6 +7,7 @@ import {
   SettingsSection,
   SettingsFieldRow,
   SettingsCheckboxRow,
+  SETTINGS_ICON_BUTTON_CLASS,
 } from '@/components/sections/shared/SettingsSection';
 import { isDesktopShell, requestFileAccess } from '@/lib/desktop';
 import { updateDesktopSettings } from '@/lib/persistence';
@@ -128,7 +129,7 @@ export const OpenCodeCliSettings: React.FC = () => {
             onChange={(e) => setValue(e.target.value)}
             placeholder={t('settings.openchamber.opencodeCli.field.binaryPathPlaceholder')}
             disabled={isLoading || isSaving}
-            className="h-7 min-w-0 flex-1 font-mono text-xs"
+            className="h-9 min-w-0 flex-1 font-mono text-xs"
           />
           <Button
             type="button"
@@ -136,7 +137,7 @@ export const OpenCodeCliSettings: React.FC = () => {
             size="xs"
             onClick={handleBrowse}
             disabled={isLoading || isSaving || !isDesktopShell()}
-            className="h-7 w-7 p-0"
+            className={SETTINGS_ICON_BUTTON_CLASS}
             aria-label={t('settings.openchamber.opencodeCli.actions.browseAria')}
             title={t('settings.openchamber.opencodeCli.actions.browse')}
           >

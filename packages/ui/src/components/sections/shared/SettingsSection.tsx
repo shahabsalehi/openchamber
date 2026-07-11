@@ -8,9 +8,16 @@ import { cn } from '@/lib/utils';
 export const SETTINGS_SELECT_TRIGGER_CLASS = 'w-full min-w-40 sm:w-56';
 export const SETTINGS_SELECT_SIZE = 'settings' as const;
 
-/** Compact reset / icon action next to a settings control. */
+/** Compact reset / icon action next to a settings control (matches h-9 controls). */
 export const SETTINGS_ICON_BUTTON_CLASS =
-  'h-7 w-7 px-0 text-muted-foreground hover:text-foreground';
+  'h-9 w-9 px-0 text-muted-foreground hover:text-foreground';
+
+/** Custom dropdown triggers (ModelSelector / AgentSelector) in settings rows. */
+export const SETTINGS_CUSTOM_TRIGGER_CLASS =
+  'h-9 min-h-9 w-full min-w-40 sm:w-56 rounded-md px-3';
+
+/** Shared width for stacked control clusters (select/input + reset). */
+export const SETTINGS_CONTROL_CLUSTER_CLASS = 'w-full max-w-[28rem]';
 
 /** Vertical stack spacing for fields inside a column. */
 export const SETTINGS_FIELDS_STACK_CLASS = 'space-y-3';
@@ -112,14 +119,14 @@ interface SettingsGroupTitleProps {
   as?: 'h2' | 'h3' | 'div';
 }
 
-/** In-section control-group heading (one step under SettingsSection title). */
+/** In-section control-group heading (quieter than SettingsSection title). */
 export const SettingsGroupTitle: React.FC<SettingsGroupTitleProps> = ({
   children,
   className,
   as: Tag = 'h3',
 }) => {
   return (
-    <Tag className={cn('typography-ui-header font-medium text-foreground', className)}>
+    <Tag className={cn('typography-ui-label font-medium text-foreground', className)}>
       {children}
     </Tag>
   );
@@ -161,30 +168,40 @@ export const SettingsControlGroup: React.FC<SettingsControlGroupProps> = ({
 interface SettingsStackedFieldProps {
   label: React.ReactNode;
   description?: React.ReactNode;
+  /** Where helper text sits relative to the control. @default 'before' */
+  descriptionPlacement?: 'before' | 'after';
   children: React.ReactNode;
   settingsItem?: string;
   className?: string;
   controlClassName?: string;
 }
 
-/** Label (+ optional description) above a control — for two-column cells. */
+/**
+ * Label (+ optional description) above a control — for two-column cells.
+ * Prefer this over SettingsFieldRow inside SettingsTwoColumn (FieldRow overflows half-width columns).
+ */
 export const SettingsStackedField: React.FC<SettingsStackedFieldProps> = ({
   label,
   description,
+  descriptionPlacement = 'before',
   children,
   settingsItem,
   className,
   controlClassName,
 }) => {
+  const descriptionNode =
+    description != null ? (
+      <p className="typography-meta text-muted-foreground">{description}</p>
+    ) : null;
+
   return (
     <div data-settings-item={settingsItem} className={cn('space-y-1.5', className)}>
       <div className="space-y-0.5">
         <div className="typography-ui-label text-foreground">{label}</div>
-        {description != null ? (
-          <p className="typography-meta text-muted-foreground">{description}</p>
-        ) : null}
+        {descriptionPlacement === 'before' ? descriptionNode : null}
       </div>
       <div className={cn('flex min-w-0 items-center gap-2', controlClassName)}>{children}</div>
+      {descriptionPlacement === 'after' ? descriptionNode : null}
     </div>
   );
 };

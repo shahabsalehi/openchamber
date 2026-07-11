@@ -131,9 +131,7 @@ export const SessionRetentionSettings: React.FC = () => {
 
       <div className="mt-1 py-1.5 space-y-1">
         <SettingsFieldRow
-          label={(
-            <p className="typography-meta text-foreground font-medium">{t('settings.openchamber.sessionRetention.manualCleanup.title')}</p>
-          )}
+          label={t('settings.openchamber.sessionRetention.manualCleanup.title')}
         >
           <Button
             type="button"

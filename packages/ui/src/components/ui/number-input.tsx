@@ -260,7 +260,7 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
     return (
       <div
         className={cn(
-          "flex h-8 shrink-0 items-stretch overflow-x-hidden overflow-y-hidden rounded-md border border-border bg-transparent",
+          "flex h-9 shrink-0 items-stretch overflow-x-hidden overflow-y-hidden rounded-md border border-border bg-transparent",
           "disabled:pointer-events-none disabled:opacity-50",
           "transition-[background-color,border-color,box-shadow] duration-150 ease-in-out",
           containerClassName

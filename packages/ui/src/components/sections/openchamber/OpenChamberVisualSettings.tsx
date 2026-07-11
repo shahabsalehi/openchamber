@@ -45,6 +45,7 @@ import {
     SETTINGS_SELECT_TRIGGER_CLASS,
     SETTINGS_SELECT_SIZE,
     SETTINGS_ICON_BUTTON_CLASS,
+    SETTINGS_CONTROL_CLUSTER_CLASS,
     SETTINGS_FIELDS_STACK_CLASS,
     SETTINGS_OPTION_STACK_CLASS,
 } from '@/components/sections/shared/SettingsSection';
@@ -927,6 +928,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                     <SettingsStackedField
                                         label={t('settings.appearance.language.label')}
                                         description={t('settings.appearance.language.description')}
+                                        descriptionPlacement="after"
                                         settingsItem="appearance.language"
                                     >
                                         <Select value={locale} onValueChange={(value) => setLocale(value as Locale)}>
@@ -994,7 +996,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                     label={t('settings.openchamber.visual.field.installAppName')}
                                     description={t('settings.openchamber.visual.field.installAppNameHint')}
                                     settingsItem="appearance.pwa-install-name"
-                                    controlClassName="w-full max-w-[28rem]"
+                                    controlClassName={SETTINGS_CONTROL_CLUSTER_CLASS}
                                 >
                                     <Input
                                         value={pwaInstallName}
@@ -1010,7 +1012,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                                 void applyPwaInstallName(pwaInstallName);
                                             }
                                         }}
-                                        className="h-7"
+                                        className="min-w-0 flex-1"
                                         maxLength={64}
                                         aria-label={t('settings.openchamber.visual.field.pwaInstallAppNameAria')}
                                     />
@@ -1035,7 +1037,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                     label={t('settings.openchamber.visual.field.installOrientation')}
                                     description={t('settings.openchamber.visual.field.installOrientationHint')}
                                     settingsItem="appearance.pwa-orientation"
-                                    controlClassName="w-full max-w-[18rem]"
+                                    controlClassName={SETTINGS_CONTROL_CLUSTER_CLASS}
                                 >
                                     <Select
                                         value={pwaOrientation}
@@ -1045,7 +1047,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                             void applyPwaOrientation(orientation);
                                         }}
                                     >
-                                        <SelectTrigger aria-label={t('settings.openchamber.visual.field.pwaInstallOrientationAria')} size={SETTINGS_SELECT_SIZE} className={SETTINGS_SELECT_TRIGGER_CLASS}>
+                                        <SelectTrigger aria-label={t('settings.openchamber.visual.field.pwaInstallOrientationAria')} size={SETTINGS_SELECT_SIZE} className={cn(SETTINGS_SELECT_TRIGGER_CLASS, 'sm:w-full')}>
                                             <SelectValue placeholder={t('settings.openchamber.visual.field.selectOrientationPlaceholder')}>
                                                 {selectedPwaOrientationLabel}
                                             </SelectValue>
@@ -1080,7 +1082,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                     label={t('settings.openchamber.visual.field.mobileKeyboardMode')}
                                     description={t('settings.openchamber.visual.field.mobileKeyboardModeHint')}
                                     settingsItem="appearance.mobile-keyboard-mode"
-                                    controlClassName="w-full max-w-[18rem]"
+                                    controlClassName={SETTINGS_CONTROL_CLUSTER_CLASS}
                                 >
                                     <Select
                                         value={mobileKeyboardMode}
@@ -1090,7 +1092,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                             void updateDesktopSettings({ mobileKeyboardMode: mode });
                                         }}
                                     >
-                                        <SelectTrigger aria-label={t('settings.openchamber.visual.field.mobileKeyboardModeAria')} size={SETTINGS_SELECT_SIZE} className={SETTINGS_SELECT_TRIGGER_CLASS}>
+                                        <SelectTrigger aria-label={t('settings.openchamber.visual.field.mobileKeyboardModeAria')} size={SETTINGS_SELECT_SIZE} className={cn(SETTINGS_SELECT_TRIGGER_CLASS, 'sm:w-full')}>
                                             <SelectValue placeholder={t('settings.openchamber.visual.field.selectMobileKeyboardModePlaceholder')}>
                                                 {selectedMobileKeyboardModeLabel}
                                             </SelectValue>
@@ -1130,7 +1132,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                         <SettingsTwoColumn>
                             <div className={SETTINGS_FIELDS_STACK_CLASS}>
                                 {shouldShow('fontSize') && !isMobile && (
-                                    <SettingsFieldRow
+                                    <SettingsStackedField
                                         label={t('settings.openchamber.visual.field.interfaceFont')}
                                         settingsItem="appearance.interface-font-size"
                                     >
@@ -1157,11 +1159,11 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                         >
                                             <Icon name="restart" className="h-3.5 w-3.5" />
                                         </Button>
-                                    </SettingsFieldRow>
+                                    </SettingsStackedField>
                                 )}
 
                                 {shouldShow('terminalFontSize') && (
-                                    <SettingsFieldRow label={t('settings.openchamber.visual.field.codeFont')}>
+                                    <SettingsStackedField label={t('settings.openchamber.visual.field.codeFont')}>
                                         <Select value={monoFont} onValueChange={(value) => setMonoFont(value as MonoFontOption)}>
                                             <SelectTrigger aria-label={t('settings.openchamber.visual.field.selectCodeFontAria')} size={SETTINGS_SELECT_SIZE} className={SETTINGS_SELECT_TRIGGER_CLASS}>
                                                 <SelectValue>{CODE_FONT_OPTIONS.find((option) => option.id === monoFont)?.label}</SelectValue>
@@ -1185,11 +1187,11 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                         >
                                             <Icon name="restart" className="h-3.5 w-3.5" />
                                         </Button>
-                                    </SettingsFieldRow>
+                                    </SettingsStackedField>
                                 )}
 
                                 {shouldShow('fontSize') && !isMobile && (
-                                    <SettingsFieldRow label={t('settings.openchamber.visual.field.interfaceFontSize')}>
+                                    <SettingsStackedField label={t('settings.openchamber.visual.field.interfaceFontSize')}>
                                         <NumberInput
                                             value={fontSize}
                                             onValueChange={setFontSize}
@@ -1210,11 +1212,11 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                         >
                                             <Icon name="restart" className="h-3.5 w-3.5" />
                                         </Button>
-                                    </SettingsFieldRow>
+                                    </SettingsStackedField>
                                 )}
 
                                 {shouldShow('terminalFontSize') && (
-                                    <SettingsFieldRow
+                                    <SettingsStackedField
                                         label={t('settings.openchamber.visual.field.terminalFontSize')}
                                         settingsItem="appearance.terminal-font-size"
                                     >
@@ -1238,13 +1240,13 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                         >
                                             <Icon name="restart" className="h-3.5 w-3.5" />
                                         </Button>
-                                    </SettingsFieldRow>
+                                    </SettingsStackedField>
                                 )}
                             </div>
 
                             <div className={SETTINGS_FIELDS_STACK_CLASS}>
                                 {shouldShow('spacing') && (
-                                    <SettingsFieldRow
+                                    <SettingsStackedField
                                         label={t('settings.openchamber.visual.field.spacingDensity')}
                                         settingsItem="appearance.spacing-density"
                                     >
@@ -1268,11 +1270,11 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                         >
                                             <Icon name="restart" className="h-3.5 w-3.5" />
                                         </Button>
-                                    </SettingsFieldRow>
+                                    </SettingsStackedField>
                                 )}
 
                                 {shouldShow('inputBarOffset') && (
-                                    <SettingsFieldRow
+                                    <SettingsStackedField
                                         label={(
                                             <span className="inline-flex items-center gap-1.5">
                                                 {t('settings.openchamber.visual.field.inputBarOffset')}
@@ -1308,7 +1310,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                         >
                                             <Icon name="restart" className="h-3.5 w-3.5" />
                                         </Button>
-                                    </SettingsFieldRow>
+                                    </SettingsStackedField>
                                 )}
                             </div>
                         </SettingsTwoColumn>
@@ -1372,6 +1374,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                     <>
                         {showBehaviorDisplaySettings && (
                             <SettingsSection
+                                title={t('settings.openchamber.visual.section.chatDisplay')}
                                 divider={behaviorSectionDivider}
                                 contentClassName="space-y-6"
                             >
@@ -1524,6 +1527,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
 
                         {showBehaviorMessageOptions && (
                             <SettingsSection
+                                title={t('settings.openchamber.visual.section.chatMessageOptions')}
                                 divider={showBehaviorDisplaySettings || behaviorSectionDivider}
                                 contentClassName="space-y-0"
                             >
@@ -1604,6 +1608,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
 
                         {showBehaviorFeatureCheckboxes && (
                             <SettingsSection
+                                title={t('settings.openchamber.visual.section.chatFeatures')}
                                 divider={showBehaviorDisplaySettings || showBehaviorMessageOptions || behaviorSectionDivider}
                                 contentClassName={SETTINGS_OPTION_STACK_CLASS}
                             >
