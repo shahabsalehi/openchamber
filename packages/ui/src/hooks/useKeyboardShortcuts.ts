@@ -37,7 +37,6 @@ export const useKeyboardShortcuts = () => {
   const setTimelineDialogOpen = useUIStore((s) => s.setTimelineDialogOpen);
   const togglePromptNavigatorPanel = useUIStore((s) => s.togglePromptNavigatorPanel);
   const setPromptNavigatorPanelOpen = useUIStore((s) => s.setPromptNavigatorPanelOpen);
-  const promptNavigatorEnabled = useUIStore((s) => s.promptNavigatorEnabled);
   const toggleExpandedInput = useUIStore((s) => s.toggleExpandedInput);
   const shortcutOverrides = useUIStore((s) => s.shortcutOverrides);
   const currentDirectory = useDirectoryStore((s) => s.currentDirectory);
@@ -148,6 +147,7 @@ export const useKeyboardShortcuts = () => {
       if (eventMatchesShortcut(e, combo('toggle_prompt_navigator'))) {
         const {
           activeMainTab,
+          promptNavigatorEnabled,
           isSettingsDialogOpen,
           isCommandPaletteOpen,
           isHelpDialogOpen,
@@ -642,7 +642,6 @@ export const useKeyboardShortcuts = () => {
     setTimelineDialogOpen,
     togglePromptNavigatorPanel,
     setPromptNavigatorPanelOpen,
-    promptNavigatorEnabled,
     toggleExpandedInput,
     setThemeMode,
     working,
