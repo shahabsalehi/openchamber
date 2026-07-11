@@ -29,6 +29,7 @@ import { useFeatureFlagsStore } from '@/stores/useFeatureFlagsStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useSessionGoalArmStore } from '@/stores/useSessionGoalArmStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useGitStore } from '@/stores/useGitStore';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
@@ -594,6 +595,10 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null }) => {
         }
 
         setCurrentSession(sessionId, directoryHint);
+        // "Run as goal" rides the same arm mechanism as the composer target
+        // button; set explicitly either way so a stray armed flag cannot
+        // leak into a non-goal plan send.
+        useSessionGoalArmStore.getState().setArmed(execution.runAsGoal === true);
         await sendMessage(
           visiblePrompt,
           execution.providerID,
@@ -778,6 +783,7 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null }) => {
         target={pendingPlanSend?.target ?? 'session'}
         projectDirectory={currentProjectRef?.path ?? null}
         submitting={isPlanSendSubmitting}
+        allowRunAsGoal
         onConfirm={handleConfirmPlanSend}
       />
 
