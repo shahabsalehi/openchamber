@@ -14,6 +14,12 @@ Um objetivo transforma um único prompt em uma linha de chegada. Em vez de cutuc
 
 Funciona igualmente em uma sessão existente e em um rascunho de sessão nova: arme o alvo, escreva a primeira mensagem, envie — a nova sessão começa com o objetivo já ativo.
 
+### Mais formas de iniciar um objetivo
+
+- **A partir de uma resposta do agente**: no diálogo "Start new session from this answer", marque **Executar como objetivo** — a resposta é entregue como uma tarefa que a nova sessão executa até concluir (combine com **Create worktree** para uma execução isolada).
+- **A partir de um plano**: ao implementar um plano salvo em uma sessão ou worktree novos, marque **Executar como objetivo** no diálogo. O objetivo carrega o conteúdo do plano, então o auditor julga o progresso contra o plano real.
+- **Em um cronograma**: marque **Executar como objetivo** em uma [tarefa agendada](/scheduled-tasks/) para que execuções recorrentes persigam o prompt até concluir.
+
 ## Escreva um objetivo autocontido
 
 O auditor de progresso vê apenas o seu objetivo e a última resposta do agente — não o histórico do chat. Então formule a mensagem-objetivo de forma que alguém sem o contexto da conversa entenda como é o estado final.
@@ -34,15 +40,26 @@ Quando o agente para e a sessão fica quieta por um momento, o OpenChamber:
 
 Há também freios de segurança: um orçamento de tokens opcional, um teto de continuações automáticas e parada em erros de turno. Se o contexto da sessão for compactado no meio do trabalho, o objetivo simplesmente continua — bater na janela de contexto é prova de que o trabalho não tinha terminado.
 
+### Parar e retomar
+
+- O **botão de parar** aborta o turno em andamento e pausa o objetivo — o seu "para" explícito sempre vence o loop.
+- **Pausar** na faixa do objetivo faz o mesmo pelo outro lado: pausa o objetivo e para o turno em andamento.
+- Enquanto pausado, converse normalmente — o loop fica de fora.
+- **Retomar** rearma o loop: em uma sessão ociosa o empurrão de continuação sai imediatamente; se o agente estiver trabalhando, o loop se reconecta silenciosamente na próxima pausa dele.
+
 ## Acompanhar e gerenciar
 
-- A faixa acima do compositor mostra a última nota de progresso, o status e o uso de tokens, com um botão de pausar/retomar integrado.
-- O botão de alvo fica aceso enquanto o objetivo roda (azul), fica verde ao concluir e vermelho quando bloqueado ou sem orçamento. Pressione-o para abrir o diálogo do objetivo: edite o objetivo ou o orçamento, ou remova-o (um objetivo concluído é removido antes de iniciar um novo).
+- A faixa acima do compositor mostra a última nota de progresso, o status e o uso de tokens, com um botão de pausar/retomar integrado. Quando o agente parou e o objetivo está ativo, a faixa mostra um **Avaliando…** girando — é a janela de silêncio e a auditoria em andamento.
+- O botão de alvo fica aceso enquanto o objetivo roda (azul), fica verde ao concluir e vermelho quando bloqueado ou sem orçamento. Pressione-o para abrir o diálogo do objetivo: edite o objetivo ou o orçamento, ou remova-o. Um objetivo concluído é somente leitura — remova-o e arme um novo.
 - Na barra lateral de sessões, um pequeno alvo aparece ao lado da data da sessão, colorido pelo estado do objetivo.
+
+## Notificações
+
+Enquanto um objetivo está ativo, as notificações por turno de "agente pronto" são suprimidas — elas só ecoariam as continuações do próprio loop. Quando o objetivo se resolve (concluído, bloqueado ou orçamento atingido) você recebe uma única notificação final, no desktop e como push móvel. Ela obedece à mesma configuração de "notificar ao concluir"; solicitações de permissão, perguntas e notificações de erro continuam funcionando normalmente.
 
 ## Orçamento de tokens
 
-Em **Configurações → Chat → Objetivo** você pode definir um orçamento de tokens padrão para novos objetivos. Quando um objetivo atinge o orçamento, ele para como "orçamento atingido" em vez de gastar mais — você pode aumentar o orçamento e retomar pela faixa do objetivo.
+Em **Configurações → Chat → Objetivo** você pode definir um orçamento de tokens padrão para novos objetivos. Quando um objetivo atinge o orçamento, ele para como "orçamento atingido" em vez de gastar mais — você pode aumentar o orçamento e retomar pelo diálogo do objetivo.
 
 ## Tenha em mente
 

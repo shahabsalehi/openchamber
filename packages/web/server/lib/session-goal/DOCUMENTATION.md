@@ -29,8 +29,12 @@ the web server and survives UI disconnects.
 
 The UI writes goals (create/edit/pause/resume/clear) by patching this
 metadata; the runtime never creates a goal on its own. Goal creation happens
-at send time (the composer target button arms "the next prompt is the
-objective"), and the armed send also attaches a synthetic system-reminder
+at send time via the arm store (`useSessionGoalArmStore`): the composer
+target button arms "the next prompt is the objective", and the run-as-goal
+flows (fork-from-answer dialog, plan implement dialog) arm the same way —
+the plan flow additionally supplies an objective OVERRIDE carrying the plan
+content, since "Implement this plan: X" alone gives the audit nothing to
+judge against. The armed send also attaches a synthetic system-reminder
 part telling the agent goal mode is active and that each turn should end
 with a factual done/verified/remaining statement for the independent audit.
 Freshness/stale-write protection is by `id`: every runtime write re-reads the
@@ -42,7 +46,8 @@ session and drops the write when the stored goal id no longer matches.
    as session-assist — it needs the envelope's `directory`).
 2. `session.status: idle` arms a 15s per-session timer; `busy`/`retry` clears
    it. A `session.updated` carrying a fresh active goal (`turnsUsed === 0` or
-   `statusReason === 'resumed'`) arms a short 3s kickoff timer, since setting
+   `statusReason === 'resumed'`) arms a kickoff timer — 3s for fresh goals,
+   ~250ms for an explicit Resume so the nudge feels immediate — since setting
    a goal on an idle session emits no status transition.
 3. On fire (`tick`), gated by the `sessionGoalEnabled` setting:
    - fetch session (skip sub-agent sessions), require an `active` goal;
@@ -92,7 +97,15 @@ session and drops the write when the stored goal id no longer matches.
      continuation prompt using the last assistant message's
      provider/model/agent — the goal spends the session's own subscription.
 4. Settling (`complete`/`blocked`/`budgetLimited`) fires the injected
-   `emitGoalNotification` so the user hears about it even with the UI closed.
+   `emitGoalNotification` so the user hears about it even with the UI closed:
+   desktop + UI broadcast + the standard push fanout (web-push with full
+   text; APNs with a generic per-type title and the session name as body).
+   It obeys the notify-on-completion setting. Conversely, while a goal is
+   ACTIVE the notifications runtime suppresses per-turn "ready"
+   notifications on every channel — they would only echo the loop's own
+   continuations; error/question/permission notifications are untouched.
+   Pausing a goal from the UI also aborts the running turn (and vice versa —
+   an abort pauses the goal), so "stop" means stop on both axes.
 
 ## Continuation prompt
 

@@ -14,6 +14,12 @@ A goal turns one prompt into a finish line. Instead of nudging the agent with "c
 
 This works in an existing session and in a new session draft alike: arm the target, write the first message, send — the new session starts with the goal already active.
 
+### More ways to start a goal
+
+- **From an agent's reply**: in the "Start new session from this answer" dialog, check **Run as goal** — the reply is handed over as an assignment the new session executes to completion (combine with **Create worktree** for an isolated run).
+- **From a plan**: when implementing a saved plan in a new session or worktree, check **Run as goal** in the dialog. The goal carries the plan content as its objective, so the auditor judges progress against the actual plan.
+- **On a schedule**: check **Run as goal** on a [scheduled task](/scheduled-tasks/) to make recurring runs pursue their prompt to completion.
+
 ## Write a self-contained objective
 
 The progress auditor sees only your objective and the agent's latest reply — not the chat history. So phrase the goal message so that someone without the conversation context would understand what the finished state looks like.
@@ -34,15 +40,26 @@ After the agent stops and the session stays quiet for a moment, OpenChamber:
 
 There are hard safety stops too: an optional token budget, a cap on automatic continuations, and a stop on turn errors. If the session's context gets compacted mid-work, the goal simply continues — running into the context window is proof the work wasn't finished.
 
+### Stopping and resuming
+
+- The **stop button** aborts the running turn and pauses the goal — your explicit "stop" always wins over the loop.
+- **Pause** on the goal strip does the same from the other direction: it pauses the goal and stops the running turn.
+- While paused, chat normally — the loop stays out of the way.
+- **Resume** re-arms the loop: on an idle session the continuation nudge goes out immediately; if the agent happens to be working, the loop silently re-attaches at its next pause.
+
 ## Watch and manage
 
-- The strip above the composer shows the goal's latest progress note, status, and token usage, with an inline pause/resume button.
-- The target button stays lit while the goal runs (blue), turns green on completion, and red when blocked or out of budget. Press it to open the goal dialog: edit the objective or budget, or remove the goal (a completed goal is removed before starting a new one).
+- The strip above the composer shows the goal's latest progress note, status, and token usage, with an inline pause/resume button. When the agent has stopped and the goal is active, the strip shows a spinning **Evaluating…** — that's the quiet window and the audit running.
+- The target button stays lit while the goal runs (blue), turns green on completion, and red when blocked or out of budget. Press it to open the goal dialog: edit the objective or budget, or remove the goal. A completed goal is read-only — remove it, then arm a new one.
 - In the session sidebar, a small target appears next to the session date, colored by the goal's state.
+
+## Notifications
+
+While a goal is active, the per-turn "agent is ready" notifications are suppressed — they would just echo the goal loop's own continuations. When the goal settles (complete, blocked, or budget reached) you get one final notification instead, on desktop and as a mobile push. It obeys the same "notify on completion" setting; permission requests, questions, and error notifications keep working as usual throughout.
 
 ## Token budget
 
-In **Settings → Chat → Goal** you can set a default token budget for new goals. When a goal reaches its budget it stops as "budget reached" instead of spending more — you can raise the budget and resume from the goal strip.
+In **Settings → Chat → Goal** you can set a default token budget for new goals. When a goal reaches its budget it stops as "budget reached" instead of spending more — you can raise the budget and resume from the goal dialog.
 
 ## Keep in mind
 
