@@ -191,12 +191,14 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     page: 'chat',
     titleKey: 'settings.openchamber.visual.field.sessionGoal',
     keywords: ['goal', 'objective', 'auto continue', 'small model'],
+    isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
     id: 'chat.session-goal-budget',
     page: 'chat',
     titleKey: 'settings.openchamber.visual.goal.budgetLabel',
     keywords: ['goal', 'budget', 'tokens', 'limit'],
+    isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
     id: 'chat.reasoning-traces',

@@ -1819,7 +1819,9 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                 </div>
                             )}
 
-                            {shouldShow('sessionGoal') && (
+                            {/* The goal loop runs in the web server — VS Code only renders
+                                goal state, so the settings section is hidden there too. */}
+                            {shouldShow('sessionGoal') && !isVSCode && (
                                 <div className="mb-8">
                                     <div className="mb-1 px-1">
                                         <h3 className="typography-ui-header font-medium text-foreground">{t('settings.openchamber.visual.goal.sectionTitle')}</h3>
