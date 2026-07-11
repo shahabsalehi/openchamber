@@ -494,7 +494,7 @@ export const settingsDict = {
   "settings.behavior.page.responseStyle.tooltip": "Cuando está habilitado, estas instrucciones guían cómo responde el asistente en cada conversación nueva. Se envían con tu primer mensaje y no cambian tus reglas globales de AGENTS.md.",
   "settings.behavior.page.responseStyle.enableAria": "Habilitar instrucciones de estilo de respuesta",
   "settings.behavior.page.responseStyle.enable": "Agregar instrucciones de estilo de respuesta a conversaciones nuevas",
-  "settings.behavior.page.responseStyle.preset": "Preset",
+  "settings.behavior.page.responseStyle.preset": "Preajuste",
   "settings.behavior.page.responseStyle.option.concise": "Conciso",
   "settings.behavior.page.responseStyle.option.detailed": "Detallado",
   "settings.behavior.page.responseStyle.option.mentor": "Mentor",
