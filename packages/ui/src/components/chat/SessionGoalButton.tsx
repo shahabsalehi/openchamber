@@ -1,17 +1,9 @@
 import React from 'react';
 import { Icon } from '@/components/icon/Icon';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { toast } from '@/components/ui';
 import { useSessionGoal } from '@/hooks/useSessionGoal';
 import { useSessionGoalArmStore } from '@/stores/useSessionGoalArmStore';
-import { clearSessionGoal } from '@/lib/sessionGoalActions';
+import { SessionGoalDialog } from '@/components/chat/SessionGoalDialog';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
@@ -26,10 +18,11 @@ interface SessionGoalButtonProps {
   withTooltip?: boolean;
 }
 
-// Composer target button — the goal switch. One tap arms goal mode: the next
-// sent prompt becomes the objective (works on drafts too). While a goal is
-// live the target stays lit (info while running, success when complete,
-// error when blocked / out of budget); tapping again asks to cancel it.
+// Composer target button — the goal switch. With no live goal one tap arms
+// goal mode (the next sent prompt becomes the objective; works on drafts
+// too) and a second tap disarms. While a goal is live the target stays lit
+// (info while running, success when complete, error when blocked / out of
+// budget) and tapping opens the manage dialog.
 export const SessionGoalButton: React.FC<SessionGoalButtonProps> = React.memo(({
   sessionId,
   directory,
@@ -42,8 +35,7 @@ export const SessionGoalButton: React.FC<SessionGoalButtonProps> = React.memo(({
   const { goal, enabled } = useSessionGoal(sessionId ?? '', directory);
   const armed = useSessionGoalArmStore((state) => state.armed);
   const setArmed = useSessionGoalArmStore((state) => state.setArmed);
-  const [confirmOpen, setConfirmOpen] = React.useState(false);
-  const [busy, setBusy] = React.useState(false);
+  const [dialogOpen, setDialogOpen] = React.useState(false);
 
   // The goal loop runs in the web server; the VS Code extension only renders
   // goal state. Arming a goal there would create one nothing drives, so the
@@ -65,29 +57,15 @@ export const SessionGoalButton: React.FC<SessionGoalButtonProps> = React.memo(({
   })();
 
   const label = liveGoal
-    ? t('chat.goal.button.cancelAria')
+    ? t('chat.goal.button.manageAria')
     : (armed ? t('chat.goal.button.disarmAria') : t('chat.goal.button.armAria'));
 
   const handleClick = () => {
     if (liveGoal) {
-      setConfirmOpen(true);
+      setDialogOpen(true);
       return;
     }
     setArmed(!armed);
-  };
-
-  const handleCancelGoal = async () => {
-    if (!sessionId) return;
-    setBusy(true);
-    try {
-      await clearSessionGoal(sessionId, directory);
-      setConfirmOpen(false);
-    } catch (error) {
-      console.warn('[session-goal] cancel failed:', error);
-      toast.error(t('chat.goal.toast.actionFailed'));
-    } finally {
-      setBusy(false);
-    }
   };
 
   const button = (
@@ -115,28 +93,9 @@ export const SessionGoalButton: React.FC<SessionGoalButtonProps> = React.memo(({
           <TooltipContent side="top" sideOffset={6}>{label}</TooltipContent>
         </Tooltip>
       ) : button}
-
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{t('chat.goal.cancelDialog.title')}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <p className="typography-ui-label text-muted-foreground">{t('chat.goal.cancelDialog.description')}</p>
-            {liveGoal ? (
-              <p className="typography-meta text-foreground line-clamp-3">{liveGoal.objective}</p>
-            ) : null}
-            <div className="flex items-center justify-end gap-2">
-              <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmOpen(false)}>
-                {t('chat.goal.cancelDialog.keep')}
-              </Button>
-              <Button variant="destructive" size="sm" disabled={busy} onClick={handleCancelGoal}>
-                {t('chat.goal.cancelDialog.confirm')}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {sessionId ? (
+        <SessionGoalDialog open={dialogOpen} onOpenChange={setDialogOpen} sessionId={sessionId} directory={directory} />
+      ) : null}
     </>
   );
 });
