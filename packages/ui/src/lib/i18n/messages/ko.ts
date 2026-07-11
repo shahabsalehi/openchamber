@@ -1423,6 +1423,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.goal.dialog.objectivePlaceholder': '에이전트가 도달하고 검증해야 할 최종 상태를 설명하세요…',
   'chat.goal.dialog.budgetLabel': '토큰 예산',
   'chat.goal.status.active': '진행 중',
+  'chat.goal.status.evaluating': '평가 중…',
   'chat.goal.status.paused': '일시 중지됨',
   'chat.goal.status.blocked': '차단됨',
   'chat.goal.status.budgetLimited': '예산 도달',

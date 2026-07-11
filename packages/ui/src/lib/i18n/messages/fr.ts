@@ -1242,6 +1242,7 @@ export const dict = {
   'chat.goal.dialog.objectivePlaceholder': 'Décrivez l\'état final que l\'agent doit atteindre et vérifier…',
   'chat.goal.dialog.budgetLabel': 'Budget de tokens',
   'chat.goal.status.active': 'Actif',
+  'chat.goal.status.evaluating': 'Évaluation…',
   'chat.goal.status.paused': 'En pause',
   'chat.goal.status.blocked': 'Bloqué',
   'chat.goal.status.budgetLimited': 'Budget atteint',

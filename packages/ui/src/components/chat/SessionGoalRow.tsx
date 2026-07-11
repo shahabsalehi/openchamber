@@ -1,5 +1,6 @@
 import React from 'react';
 import { Icon } from '@/components/icon/Icon';
+import { useSessionStatus } from '@/sync/sync-context';
 import { useSessionGoal } from '@/hooks/useSessionGoal';
 import { formatGoalTokens } from '@/lib/sessionGoalMetadata';
 import { sessionGoalStatusColor, sessionGoalStatusLabelKey } from '@/lib/sessionGoalPresentation';
@@ -21,6 +22,7 @@ interface SessionGoalRowProps {
 export const SessionGoalRow: React.FC<SessionGoalRowProps> = React.memo(({ sessionId, directory, className }) => {
   const { t } = useI18n();
   const { goal, enabled } = useSessionGoal(sessionId ?? '', directory);
+  const sessionStatus = useSessionStatus(sessionId ?? '', directory);
   const [busy, setBusy] = React.useState(false);
 
   const handleToggleStatus = React.useCallback(async (nextStatus: 'active' | 'paused') => {
@@ -69,9 +71,19 @@ export const SessionGoalRow: React.FC<SessionGoalRowProps> = React.memo(({ sessi
       <span className="min-w-0 flex-1 truncate typography-meta text-foreground">
         {goal.note || goal.objective}
       </span>
-      <span className="flex-shrink-0 typography-meta text-muted-foreground">
-        {t(sessionGoalStatusLabelKey[goal.status] as never)}
-      </span>
+      {goal.status === 'active' && (!sessionStatus || sessionStatus.type === 'idle') ? (
+        // The agent stopped but the goal is still active: the server is
+        // sitting out the quiet window and running the audit — show that
+        // instead of a static "Active" that looks stuck.
+        <span className="flex flex-shrink-0 items-center gap-1 typography-meta text-muted-foreground">
+          <Icon name="loader-4" className="h-3 w-3 animate-spin" aria-hidden="true" />
+          {t('chat.goal.status.evaluating')}
+        </span>
+      ) : (
+        <span className="flex-shrink-0 typography-meta text-muted-foreground">
+          {t(sessionGoalStatusLabelKey[goal.status] as never)}
+        </span>
+      )}
       {usage ? (
         <span className="flex-shrink-0 typography-meta tabular-nums text-muted-foreground/70">
           {usage}

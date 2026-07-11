@@ -1391,6 +1391,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.goal.dialog.objectivePlaceholder': '描述代理應達成並驗證的最終狀態…',
   'chat.goal.dialog.budgetLabel': '權杖預算',
   'chat.goal.status.active': '進行中',
+  'chat.goal.status.evaluating': '評估中…',
   'chat.goal.status.paused': '已暫停',
   'chat.goal.status.blocked': '已受阻',
   'chat.goal.status.budgetLimited': '已達預算',

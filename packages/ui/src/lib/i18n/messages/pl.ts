@@ -2103,6 +2103,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.goal.dialog.objectivePlaceholder': 'Opisz stan końcowy, który agent ma osiągnąć i zweryfikować…',
   'chat.goal.dialog.budgetLabel': 'Budżet tokenów',
   'chat.goal.status.active': 'Aktywny',
+  'chat.goal.status.evaluating': 'Ocenianie…',
   'chat.goal.status.paused': 'Wstrzymany',
   'chat.goal.status.blocked': 'Zablokowany',
   'chat.goal.status.budgetLimited': 'Budżet wyczerpany',

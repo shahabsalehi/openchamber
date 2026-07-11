@@ -1417,6 +1417,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.goal.dialog.objectivePlaceholder': 'エージェントが到達して検証すべき最終状態を記述してください…',
   'chat.goal.dialog.budgetLabel': 'トークン予算',
   'chat.goal.status.active': '進行中',
+  'chat.goal.status.evaluating': '評価中…',
   'chat.goal.status.paused': '一時停止',
   'chat.goal.status.blocked': 'ブロック',
   'chat.goal.status.budgetLimited': '予算上限に到達',
