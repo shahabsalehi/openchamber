@@ -753,6 +753,15 @@ const sessionGoalRuntime = createSessionGoalRuntime({
     };
     const desktopNotificationDelivered = emitDesktopNotification(notificationPayload);
     broadcastUiNotification(notificationPayload, { desktopNotificationDelivered });
+    void notificationTriggerRuntime.sendGoalSettlePush({
+      sessionId,
+      directory,
+      status,
+      title,
+      body: notificationPayload.body,
+    }).catch((error) => {
+      console.warn('[session-goal] push fanout failed:', error?.message || error);
+    });
   },
 });
 
