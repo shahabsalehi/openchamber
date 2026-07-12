@@ -149,6 +149,7 @@ const ChatSectionContent: React.FC = () => {
     return (
         <OpenChamberVisualSettings
             visibleSettings={[
+                'sessionGoal',
                 'sessionAssist',
                 'chatRenderMode',
                 'messageTransport',
