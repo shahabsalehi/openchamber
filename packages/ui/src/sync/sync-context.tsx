@@ -1135,7 +1135,9 @@ export async function resyncBlockingRequestsForDirectory(
     }
 
     const permissionStore = usePermissionStore.getState()
-    const autoAcceptingSessionIds = Object.keys(grouped).filter((sessionId) => permissionStore.isSessionAutoAccepting(sessionId))
+    const autoAcceptingSessionIds = isVSCodeRuntime()
+      ? Object.keys(grouped).filter((sessionId) => permissionStore.isSessionAutoAccepting(sessionId))
+      : []
 
     if (autoAcceptingSessionIds.length > 0) {
       const acceptedIdsBySession = new Map<string, Set<string>>()
@@ -1336,6 +1338,19 @@ function handleEvent(
   childStores: ChildStoreManager,
   routingIndex: EventRoutingIndex,
 ) {
+  if ((payload as { type?: unknown }).type === "openchamber:permission-auto-accept.updated") {
+    const properties = (payload as unknown as { properties?: unknown }).properties
+    if (properties && typeof properties === "object") {
+      const snapshot = properties as { sessions?: unknown }
+      if (snapshot.sessions && typeof snapshot.sessions === "object") {
+        usePermissionStore.getState().applySnapshot({
+          sessions: snapshot.sessions as Record<string, boolean>,
+        })
+      }
+    }
+    return
+  }
+
   const directory = resolveDirectoryFromRoutingIndex(routingIndex, rawDirectory, payload, childStores)
 
   if (handleUiNotificationEvent(payload, directory)) {
@@ -1421,7 +1436,9 @@ function handleEvent(
     const permissionStore = usePermissionStore.getState()
     if (permissionStore.isSessionAutoAccepting(permission.sessionID)) {
       updateRoutingIndexFromEvent(routingIndex, resolvedDirectory, payload)
-      void sessionActions.respondToPermission(permission.sessionID, permission.id, "once").catch(() => undefined)
+      if (isVSCodeRuntime()) {
+        void sessionActions.respondToPermission(permission.sessionID, permission.id, "once").catch(() => undefined)
+      }
       return
     }
 
@@ -1732,6 +1749,11 @@ export function SyncProvider(props: {
   }, [childStores, routingIndex])
 
   // Configure child store manager
+  useEffect(() => {
+    if (isVSCodeRuntime()) return
+    void usePermissionStore.getState().hydrate().catch(() => undefined)
+  }, [props.sdk])
+
   useEffect(() => {
     const bootingDirs = new Set<string>()
 
