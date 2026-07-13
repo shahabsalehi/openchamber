@@ -10,7 +10,7 @@ import { pathToFileURL } from 'url';
 import { isModuleCliExecution, normalizeCliEntryPath } from './cli-entry.js';
 import { requestJson } from './lib/cli-http.js';
 import { inspectTunnelAttachability } from './lib/cli-lifecycle.js';
-import { buildTaskPayload } from './lib/commands-schedule.js';
+import { buildTaskPayload, formatGoal } from './lib/commands-schedule.js';
 import { buildSessionCreatePayload, buildSessionListEndpoint, filterVisibleSessions, formatSessionLine } from './lib/commands-session.js';
 import { formatModelsOutput } from './lib/commands-models.js';
 import { formatProjectLine } from './lib/commands-projects.js';
@@ -254,6 +254,14 @@ describe('cli args', () => {
     expect(parsed.options.server).toBe('http://homebridge:3002');
   });
 
+  it('parses connect-url --relay flag', () => {
+    const parsed = parseArgs(['connect-url', '--relay', '--name', 'My laptop']);
+
+    expect(parsed.command).toBe('connect-url');
+    expect(parsed.options.relay).toBe(true);
+    expect(parsed.options.name).toBe('My laptop');
+  });
+
   it('parses connect-url api-only help', () => {
     const parsed = parseArgs(['connect-url', '--api-only', '--help']);
 
@@ -324,6 +332,58 @@ describe('cli args', () => {
         agent: 'build',
       },
     });
+  });
+
+  it('builds goal-enabled scheduled task payloads', () => {
+    const parsed = parseArgs([
+      'schedule',
+      'create',
+      '--dir',
+      '/repo',
+      '--name',
+      'Finish migration',
+      '--prompt',
+      'Complete and verify the migration',
+      '--model',
+      'openai/gpt-5.5',
+      '--daily',
+      '09:30',
+      '--goal',
+      '--goal-token-budget',
+      '200000',
+    ]);
+
+    expect(parsed.options.goal).toBe(true);
+    expect(parsed.options.goalTokenBudget).toBe('200000');
+    expect(buildTaskPayload(parsed.options).execution).toEqual({
+      prompt: 'Complete and verify the migration',
+      providerID: 'openai',
+      modelID: 'gpt-5.5',
+      goalEnabled: true,
+      goalTokenBudget: 200000,
+    });
+  });
+
+  it('validates scheduled goal token budgets', () => {
+    const base = {
+      name: 'Goal task',
+      prompt: 'Complete the goal',
+      model: 'openai/gpt-5.5',
+      daily: '09:30',
+    };
+
+    expect(() => buildTaskPayload({ ...base, goalTokenBudget: '200000' })).toThrow('--goal-token-budget requires --goal.');
+    for (const value of ['0', '-1', '999', '1.5', '100000001', 'nope']) {
+      expect(() => buildTaskPayload({ ...base, goal: true, goalTokenBudget: value })).toThrow(
+        '--goal-token-budget must be an integer from 1000 to 100000000.',
+      );
+    }
+  });
+
+  it('formats scheduled goal state compactly', () => {
+    expect(formatGoal({})).toBe('goal:no');
+    expect(formatGoal({ goalEnabled: true })).toBe('goal:yes');
+    expect(formatGoal({ goalEnabled: true, goalTokenBudget: 200000 })).toBe('goal:yes budget:200000');
   });
 
   it('rejects ambiguous scheduled task schedule selectors', () => {
@@ -679,8 +739,9 @@ describe('compatibility exports', () => {
 
   it('includes ngrok in fallback tunnel providers when no server is reachable', async () => {
     await withTempOpenChamberDataDir(async () => {
+      const port = await allocateLoopbackPort();
       const output = await captureStdout(async () => {
-        await commands.tunnel({ json: true }, 'providers');
+        await commands.tunnel({ json: true, explicitPort: true, port }, 'providers');
       });
 
       const body = JSON.parse(output);

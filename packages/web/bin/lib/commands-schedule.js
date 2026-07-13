@@ -57,6 +57,22 @@ const parseModel = (value) => {
   };
 };
 
+const parseGoalTokenBudget = (options) => {
+  if (options.goalTokenBudget === undefined) return undefined;
+  if (options.goal !== true) {
+    throw new TunnelCliError('--goal-token-budget requires --goal.', EXIT_CODE.USAGE_ERROR);
+  }
+  const raw = String(options.goalTokenBudget).trim();
+  if (!/^\d+$/.test(raw)) {
+    throw new TunnelCliError('--goal-token-budget must be an integer from 1000 to 100000000.', EXIT_CODE.USAGE_ERROR);
+  }
+  const budget = Number(raw);
+  if (!Number.isSafeInteger(budget) || budget < 1000 || budget > 100000000) {
+    throw new TunnelCliError('--goal-token-budget must be an integer from 1000 to 100000000.', EXIT_CODE.USAGE_ERROR);
+  }
+  return budget;
+};
+
 const parseWeekdays = (value) => {
   const raw = assertRequired(value, '--weekly');
   const weekdays = raw.split(',').map((entry) => Number.parseInt(entry.trim(), 10));
@@ -111,6 +127,8 @@ const buildTaskPayload = (options) => {
   const { providerID, modelID } = parseModel(options.model);
   const agent = asNonEmptyString(options.agent);
   const variant = asNonEmptyString(options.variant);
+  const goalEnabled = options.goal === true;
+  const goalTokenBudget = parseGoalTokenBudget(options);
   return {
     name: assertRequired(options.name, '--name'),
     enabled: options.disabled !== true,
@@ -121,8 +139,17 @@ const buildTaskPayload = (options) => {
       modelID,
       ...(agent ? { agent } : {}),
       ...(variant ? { variant } : {}),
+      ...(goalEnabled ? { goalEnabled: true } : {}),
+      ...(goalTokenBudget !== undefined ? { goalTokenBudget } : {}),
     },
   };
+};
+
+const formatGoal = (execution) => {
+  if (execution?.goalEnabled !== true) return 'goal:no';
+  return Number.isFinite(execution.goalTokenBudget)
+    ? `goal:yes budget:${execution.goalTokenBudget}`
+    : 'goal:yes';
 };
 
 const formatSchedule = (schedule) => {
@@ -142,7 +169,7 @@ const outputTasks = (options, tasks) => {
   }
   if (isQuietMode(options)) {
     for (const task of normalizedTasks) {
-      process.stdout.write(`${task.id} enabled:${task.enabled === false ? 'no' : 'yes'} status:${task.state?.lastStatus || 'idle'} ${formatSchedule(task.schedule)} ${task.name || ''}\n`);
+      process.stdout.write(`${task.id} enabled:${task.enabled === false ? 'no' : 'yes'} ${formatGoal(task.execution)} status:${task.state?.lastStatus || 'idle'} ${formatSchedule(task.schedule)} ${task.name || ''}\n`);
     }
     return;
   }
@@ -155,7 +182,7 @@ const outputTasks = (options, tasks) => {
   }
   for (const task of normalizedTasks) {
     const status = task.enabled === false ? 'warning' : 'success';
-    const detail = `id: ${task.id}; status: ${task.state?.lastStatus || 'idle'}; ${formatSchedule(task.schedule)}`;
+    const detail = `id: ${task.id}; ${formatGoal(task.execution)}; status: ${task.state?.lastStatus || 'idle'}; ${formatSchedule(task.schedule)}`;
     logStatus(status, task.name || task.id, detail);
   }
   clackOutro(`${normalizedTasks.length} task(s)`);
@@ -181,7 +208,7 @@ const updateTaskEnabled = async (port, options, projectID, taskID, enabled) => {
 
 async function scheduleCommand(options = {}, action = 'help') {
   if (action === 'help') {
-    process.stdout.write(`OpenChamber Schedule Commands\n\nUSAGE:\n  openchamber schedule status [OPTIONS]\n  openchamber schedule list (--project <projectId> | --dir <path>) [OPTIONS]\n  openchamber schedule create (--project <projectId> | --dir <path>) --name <name> --prompt <prompt> --model <provider/model> (--daily <HH:mm> | --weekly <0,1,2> --time <HH:mm> | --once <YYYY-MM-DD> --time <HH:mm> | --cron <expr>) [OPTIONS]\n  openchamber schedule run (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n  openchamber schedule delete (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n  openchamber schedule enable (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n  openchamber schedule disable (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n\nOPTIONS:\n  --project <projectId>   Project id from openchamber projects\n  --dir <path>            Resolve project by directory\n  -p, --port <port>       OpenChamber server port\n  --timezone <zone>       IANA timezone for created tasks\n  --agent <id>            Agent to use when running task\n  --variant <id>          Model variant to use when running task\n  --disabled              Create task disabled\n  --json                  Output machine-readable JSON\n  -q, --quiet             Print concise output\n`);
+    process.stdout.write(`OpenChamber Schedule Commands\n\nUSAGE:\n  openchamber schedule status [OPTIONS]\n  openchamber schedule list (--project <projectId> | --dir <path>) [OPTIONS]\n  openchamber schedule create (--project <projectId> | --dir <path>) --name <name> --prompt <prompt> --model <provider/model> (--daily <HH:mm> | --weekly <0,1,2> --time <HH:mm> | --once <YYYY-MM-DD> --time <HH:mm> | --cron <expr>) [OPTIONS]\n  openchamber schedule run (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n  openchamber schedule delete (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n  openchamber schedule enable (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n  openchamber schedule disable (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n\nOPTIONS:\n  --project <projectId>   Project id from openchamber projects\n  --dir <path>            Resolve project by directory\n  -p, --port <port>       OpenChamber server port\n  --timezone <zone>       IANA timezone for created tasks\n  --agent <id>            Agent to use when running task\n  --variant <id>          Model variant to use when running task\n  --goal                  Continue the scheduled session toward a goal\n  --goal-token-budget <n> Goal token budget (1000-100000000; requires --goal)\n  --disabled              Create task disabled\n  --json                  Output machine-readable JSON\n  -q, --quiet             Print concise output\n`);
     return;
   }
 
@@ -231,7 +258,7 @@ async function scheduleCommand(options = {}, action = 'help') {
       return;
     }
     clackIntro('Scheduled Task Created');
-    logStatus('success', body?.task?.name || task.name, `id: ${body?.task?.id || 'unknown'}; ${formatSchedule(body?.task?.schedule || task.schedule)}`);
+    logStatus('success', body?.task?.name || task.name, `id: ${body?.task?.id || 'unknown'}; ${formatGoal(body?.task?.execution || task.execution)}; ${formatSchedule(body?.task?.schedule || task.schedule)}`);
     clackOutro('created');
     return;
   }
@@ -302,4 +329,4 @@ async function scheduleCommand(options = {}, action = 'help') {
   throw new TunnelCliError(`Unknown schedule command '${action}'.`, EXIT_CODE.USAGE_ERROR);
 }
 
-export { scheduleCommand, buildTaskPayload, buildSchedule, resolveProjectID };
+export { scheduleCommand, buildTaskPayload, buildSchedule, resolveProjectID, parseGoalTokenBudget, formatGoal };
