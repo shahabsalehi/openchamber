@@ -1,5 +1,3 @@
-"use no memo";
-
 import React from 'react';
 import type { Part } from '@opencode-ai/sdk/v2';
 
