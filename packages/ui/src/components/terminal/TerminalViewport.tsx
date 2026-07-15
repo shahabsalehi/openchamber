@@ -140,8 +140,9 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     const previous = lastChunkRef.current;
     const previousIndex = previous === null ? -1 : chunks.findIndex((chunk) => chunk.id === previous);
     if (previous !== null && previousIndex < 0) terminal.reset();
+    const isReplay = previousIndex < 0;
     const pending = previousIndex >= 0 ? chunks.slice(previousIndex + 1) : chunks;
-    writeQueueRef.current += pending.map((chunk) => chunk.data).join('');
+    writeQueueRef.current += pending.map((chunk) => isReplay ? (chunk.replayData ?? chunk.data) : chunk.data).join('');
     lastChunkRef.current = chunks.at(-1)?.id ?? null;
     flush();
   }, [chunks, flush, ready]);

@@ -169,6 +169,28 @@ describe('terminal runtime', () => {
     } finally { await harness.runtime.shutdown(); }
   });
 
+  it('deduplicates concurrent creates and rejects cross-directory id reuse', async () => {
+    const harness = createHarness();
+    try {
+      const create = harness.routes.post.get('/api/terminal/create');
+      const first = createResponse();
+      const second = createResponse();
+      await Promise.all([
+        create({ body: { sessionId: 'term-shared', cwd: '/repo' } }, first),
+        create({ body: { sessionId: 'term-shared', cwd: '/repo' } }, second),
+      ]);
+      expect(harness.processes).toHaveLength(1);
+      expect(first.body.sessionId).toBe('term-shared');
+      expect(second.body.sessionId).toBe('term-shared');
+
+      const conflicting = createResponse();
+      await create({ body: { sessionId: 'term-shared', cwd: '/other' } }, conflicting);
+      expect(conflicting.statusCode).toBe(400);
+      expect(conflicting.body.error).toBe('Terminal session belongs to a different working directory');
+      expect(harness.processes).toHaveLength(1);
+    } finally { await harness.runtime.shutdown(); }
+  });
+
   it('restarts atomically with the same identity and closes the previous process', async () => {
     const harness = createHarness();
     try {
@@ -275,13 +297,15 @@ describe('terminal runtime', () => {
       expect(processes[0].writes).toEqual(['echo ok\r']);
       processes[0].emitData('ok\r\n');
       expect(await first.next('output')).toMatchObject({ s: 'term-live', q: 1, d: 'ok\r\n' });
+      processes[0].emitData('\u001b[6n');
+      expect(await first.next('output')).toMatchObject({ s: 'term-live', q: 2, d: '\u001b[6n', r: '' });
       first.socket.close();
 
       const second = await open();
       second.socket.send(createTerminalWsControlFrame({ t: 'attach', v: 3, s: 'term-live' }));
-      expect(await second.next('snapshot')).toMatchObject({ s: 'term-live', q: 1, history: 'ok\r\n', status: 'running' });
+      expect(await second.next('snapshot')).toMatchObject({ s: 'term-live', q: 2, history: 'ok\r\n', status: 'running' });
       processes[0].emitExit(7);
-      expect(await second.next('exit')).toMatchObject({ s: 'term-live', q: 2, exitCode: 7 });
+      expect(await second.next('exit')).toMatchObject({ s: 'term-live', q: 3, exitCode: 7 });
 
       const closed = await fetch(`${base}/api/terminal/term-live`, { method: 'DELETE' });
       expect(closed.status).toBe(200);

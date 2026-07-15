@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { TerminalAPI, TerminalHandlers } from './api/types';
 import { waitForTerminalExit } from './projectActionTerminal';
+import { detectDevServerCommand } from './detectDevServer';
 
 const fakeTerminal = () => {
   let handlers: TerminalHandlers | null = null;
@@ -14,6 +15,16 @@ const fakeTerminal = () => {
 };
 
 describe('project action terminal lifecycle', () => {
+  test('preserves a configured dev action preview URL', async () => {
+    const detected = await detectDevServerCommand('/repo', [{
+      id: 'dev',
+      name: 'Dev server',
+      command: 'bun run dev',
+      openUrl: 'http://localhost:4321',
+    }], null);
+    expect(detected?.previewUrlHint).toBe('http://localhost:4321');
+  });
+
   test('resolves on live exit and closes its temporary subscription', async () => {
     const fake = fakeTerminal();
     const result = waitForTerminalExit(fake.terminal, 'term-1', 100);

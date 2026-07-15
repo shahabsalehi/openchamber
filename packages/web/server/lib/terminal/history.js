@@ -2,7 +2,9 @@ const isCsiFinalByte = (code) => code >= 0x40 && code <= 0x7e;
 const shouldStripCsi = (body, finalByte) =>
   finalByte === 'n'
   || (finalByte === 'R' && /^[0-9;?]*$/.test(body))
-  || (finalByte === 'c' && /^[>0-9;?]*$/.test(body));
+  || (finalByte === 'c' && /^[>0-9;?]*$/.test(body))
+  || ((finalByte === 'p' || finalByte === 'y') && /^\?2031(?:;[0-9]+)?\$$/.test(body))
+  || ((finalByte === 'h' || finalByte === 'l') && body === '?2031');
 const shouldStripOsc = (content) => /^(10|11|12);(?:\?|rgb:)/.test(content);
 const stripTerminator = (value) => {
   if (value.endsWith('\u001b\\')) return value.slice(0, -2);

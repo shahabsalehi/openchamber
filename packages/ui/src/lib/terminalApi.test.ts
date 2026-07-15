@@ -110,6 +110,28 @@ describe('terminal transport', () => {
     transport.dispose();
   });
 
+  test('uses replay-safe output for projections and preserves terminal error codes', async () => {
+    const socket = new FakeSocket();
+    const transport = new TerminalTransport({ refreshAuth: async () => '', openSocket: () => socket });
+    let errorCode: string | undefined;
+    transport.subscribe('term-1', { onEvent: () => {}, onError: (error) => { errorCode = error.code; } });
+    await tick();
+    socket.open();
+    await tick();
+    socket.emit({ t: 'snapshot', v: 3, s: 'term-1', q: 0, history: '', status: 'running' });
+    socket.emit({ t: 'output', v: 3, s: 'term-1', q: 1, d: 'prompt\u001b[6n', r: 'prompt' });
+    await tick();
+
+    const replay: string[] = [];
+    transport.subscribe('term-1', { onEvent: (event) => { if (event.type === 'snapshot') replay.push(event.data ?? ''); } });
+    expect(replay).toEqual(['prompt']);
+
+    socket.emit({ t: 'error', v: 3, s: 'term-1', code: 'SESSION_NOT_FOUND', message: 'missing', fatal: true });
+    await tick();
+    expect(errorCode).toBe('SESSION_NOT_FOUND');
+    transport.dispose();
+  });
+
   test('does not reconnect after the last subscriber detaches', async () => {
     let attempts = 0;
     const transport = new TerminalTransport({
@@ -122,7 +144,29 @@ describe('terminal transport', () => {
     const unsubscribe = transport.subscribe('term-1', { onEvent: () => {} });
     unsubscribe();
     await new Promise((resolve) => setTimeout(resolve, 550));
-    expect(attempts).toBe(1);
+    expect(attempts).toBe(0);
+    transport.dispose();
+  });
+
+  test('single-flights auth and socket opening for an immediate first write', async () => {
+    const sockets: FakeSocket[] = [];
+    let authCalls = 0;
+    const transport = new TerminalTransport({
+      refreshAuth: async () => { authCalls += 1; await tick(); },
+      openSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    transport.subscribe('term-1', { onEvent: () => {} });
+    await transport.write('term-1', 'bun run dev\r');
+    expect(authCalls).toBe(1);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].sent.filter((message) => message.t === 'write')).toEqual([
+      { t: 'write', v: 3, s: 'term-1', d: 'bun run dev\r' },
+    ]);
     transport.dispose();
   });
 });

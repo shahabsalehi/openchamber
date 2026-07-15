@@ -275,6 +275,7 @@ export const TerminalView: React.FC = () => {
                                 focusTerminalWhenWindowActive();
 
                                 replaceBuffer(directory, tabId, event.data ?? '', event.sequence ?? 0);
+                                scanTerminalPreviewOutput(directory, tabId, event.data ?? '');
                                 if (event.status === 'exited') setTabLifecycle(directory, tabId, 'exited');
                                 break;
                             }
@@ -287,7 +288,7 @@ export const TerminalView: React.FC = () => {
                             }
                             case 'data': {
                                 if (event.data) {
-                                    appendToBuffer(directory, tabId, event.data, event.sequence);
+                                    appendToBuffer(directory, tabId, event.data, event.sequence, event.replayData);
                                     scanTerminalPreviewOutput(directory, tabId, event.data);
                                 }
                                 break;
@@ -336,6 +337,18 @@ export const TerminalView: React.FC = () => {
                         }
 
                         setIsReconnectPending(false);
+                        if (error.code === 'SESSION_NOT_FOUND') {
+                            const currentTab = useTerminalStore.getState().getDirectoryState(directory)?.tabs.find((tab) => tab.id === tabId);
+                            if (!currentTab?.label?.startsWith('Action:')) {
+                                setConnectionError(null);
+                                setIsFatalError(false);
+                                setConnecting(directory, tabId, false);
+                                setTabSessionId(directory, tabId, null);
+                                setTabLifecycle(directory, tabId, 'idle');
+                                disconnectStream();
+                                return;
+                            }
+                        }
                         setConnectionError(
                             t('terminalView.error.connectionFailed', { message: error.message })
                         );
@@ -388,7 +401,11 @@ export const TerminalView: React.FC = () => {
             const directory = effectiveDirectory;
             if (!directoryRef.current || directoryRef.current !== directory) return;
 
-            ensureDirectory(directory);
+            const existingState = useTerminalStore.getState().getDirectoryState(directory);
+            if (!existingState) {
+                ensureDirectory(directory);
+                return;
+            }
 
             const state = useTerminalStore.getState().getDirectoryState(directory);
             if (!state || state.tabs.length === 0) {
@@ -442,7 +459,8 @@ export const TerminalView: React.FC = () => {
                         directoryRef.current === directory &&
                         activeTabIdRef.current === tabId;
 
-                    if (!stillActive) {
+                    const owningTab = useTerminalStore.getState().getDirectoryState(directory)?.tabs.find((entry) => entry.id === tabId);
+                    if (!owningTab) {
                         try {
                             await terminal.close(session.sessionId);
                         } catch { /* ignored */ }
@@ -450,6 +468,7 @@ export const TerminalView: React.FC = () => {
                     }
 
                     setTabSessionId(directory, tabId, session.sessionId);
+                    if (!stillActive) return;
                     terminalId = session.sessionId;
                 } catch (error) {
                     if (!cancelled) {

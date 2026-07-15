@@ -10,7 +10,7 @@
 
 - `attach` registers a connection for one terminal. One socket may attach to many terminals.
 - Every attach and reconnect begins with an authoritative `snapshot` containing bounded history and the current sequence.
-- `output`, `exit`, and `restarted` carry monotonically increasing per-terminal sequences.
+- `output`, `exit`, and `restarted` carry monotonically increasing per-terminal sequences. Output carries raw live bytes plus replay-safe bytes with terminal query exchanges removed.
 - Attach registers before capturing the snapshot, buffers concurrent events, drops events represented by the snapshot sequence, then enters live delivery.
 - `write` always includes the terminal ID; sockets never have mutable single-terminal binding state.
 - `detach` removes only that attachment.
@@ -21,6 +21,7 @@ HTTP remains the authenticated command plane for create, resize, appearance upda
 ## PTY Lifecycle
 
 - IDs are client-provided or generated with `randomUUID()`.
+- Concurrent creates for one ID are single-flight, and an existing ID cannot be reused for another working directory.
 - Dimensions are bounded to 1-1000 columns and 1-500 rows; input is capped at 64 KiB.
 - PTY data and exit callbacks enter one FIFO queue. Stale callbacks from replaced processes are ignored.
 - Scrollback is retained on the server and capped at 512 KiB with UTF-8-safe trimming. Device-status, device-attribute, cursor-position reply, and color-query exchanges are removed from replay history with incomplete control sequences carried across PTY chunks; live output remains byte-for-byte unchanged.

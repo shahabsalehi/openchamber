@@ -3,7 +3,7 @@ import { sanitizeTerminalHistoryChunk } from './history.js';
 
 describe('terminal replay history', () => {
   it('removes device and color query exchanges while preserving display controls', () => {
-    const input = `before\u001b[6n\u001b[12;40R\u001b[>0c\u001b]10;?\u0007\u001b[31mred\u001b[0mafter`;
+    const input = `before\u001b[6n\u001b[12;40R\u001b[>0c\u001b[?2031h\u001b[?2031$p\u001b[?2031;1$y\u001b]10;?\u0007\u001b[31mred\u001b[0mafter`;
     expect(sanitizeTerminalHistoryChunk('', input)).toEqual({ visible: 'before\u001b[31mred\u001b[0mafter', pending: '' });
   });
 

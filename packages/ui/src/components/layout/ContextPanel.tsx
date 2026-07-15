@@ -957,21 +957,30 @@ const PreviewPane: React.FC<PreviewPaneProps> = ({ rawUrl, onNavigate }) => {
   const [upstreamState, setUpstreamState] = React.useState<UpstreamState>('unknown');
   const upstreamProbeStartedAtRef = React.useRef<number>(0);
   const upstreamProbeAttemptRef = React.useRef<number>(0);
+  const upstreamProbeKeyRef = React.useRef<string>('');
   const PREVIEW_STARTUP_GRACE_MS = 15_000;
 
   React.useEffect(() => {
     if (!proxySrc) {
       setUpstreamState('unknown');
+      upstreamProbeKeyRef.current = '';
       upstreamProbeStartedAtRef.current = 0;
       upstreamProbeAttemptRef.current = 0;
       return;
     }
 
     let cancelled = false;
-    if (!upstreamProbeStartedAtRef.current) {
+    let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+    if (upstreamProbeKeyRef.current !== proxyCacheKey) {
+      upstreamProbeKeyRef.current = proxyCacheKey;
       upstreamProbeStartedAtRef.current = Date.now();
       upstreamProbeAttemptRef.current = 0;
     }
+    const scheduleRetry = (delay: number) => {
+      retryTimeout = setTimeout(() => {
+        if (!cancelled) bumpReload();
+      }, delay);
+    };
     setUpstreamState('unknown');
 
     void (async () => {
@@ -993,8 +1002,8 @@ const PreviewPane: React.FC<PreviewPaneProps> = ({ rawUrl, onNavigate }) => {
       if (cancelled) return;
 
       if (!response) {
-        // Network-level failure (e.g. server itself is down) — treat as unreachable.
         setUpstreamState('unreachable');
+        scheduleRetry(5000);
         return;
       }
 
@@ -1021,19 +1030,17 @@ const PreviewPane: React.FC<PreviewPaneProps> = ({ rawUrl, onNavigate }) => {
         upstreamProbeAttemptRef.current += 1;
         const attempt = upstreamProbeAttemptRef.current;
         const delay = Math.min(2000, 250 * Math.pow(2, Math.min(4, attempt)));
-        setTimeout(() => {
-          if (!cancelled) {
-            bumpReload();
-          }
-        }, delay).unref?.();
+        scheduleRetry(delay);
         return;
       }
 
       setUpstreamState('unreachable');
+      scheduleRetry(5000);
     })();
 
     return () => {
       cancelled = true;
+      if (retryTimeout) clearTimeout(retryTimeout);
     };
   }, [proxyCacheKey, proxySrc, reloadNonce]);
 

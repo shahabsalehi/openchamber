@@ -20,6 +20,19 @@ describe('terminal state reconciliation', () => {
     expect(tab.lastSequence).toBe(5);
   });
 
+  test('keeps raw live bytes separate from replay-safe bytes', () => {
+    const tabId = setup();
+    useTerminalStore.getState().appendToBuffer('/repo', tabId, 'prompt\u001b[6n', 1, 'prompt');
+    const chunk = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0].bufferChunks[0];
+    expect(chunk.data).toBe('prompt\u001b[6n');
+    expect(chunk.replayData).toBe('prompt');
+  });
+
+  test('uses collision-resistant tab identities', () => {
+    const tabId = setup();
+    expect(/^tab-\d+$/.test(tabId)).toBe(false);
+  });
+
   test('does not let stale snapshots replace newer output', () => {
     const tabId = setup();
     useTerminalStore.getState().replaceBuffer('/repo', tabId, 'new', 8);

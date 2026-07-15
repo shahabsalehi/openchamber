@@ -30,6 +30,7 @@ export function createTerminalRuntime({
   loadPtyProvider, terminalTerminationGraceMs = TERMINATION_GRACE_MS,
 }) {
   const sessions = new Map();
+  const pendingSessionCreates = new Map();
   const connections = new Set();
   const pendingTerminations = new Set();
   const runtime = typeof globalThis.Bun === 'undefined' ? 'node' : 'bun';
@@ -154,7 +155,7 @@ export function createTerminalRuntime({
           session.pendingHistoryControlSequence = sanitized.pending;
           session.history = trimHistory(session.history + sanitized.visible);
           session.lastActivity = Date.now();
-          publish(session, { t: 'output', d: event.data });
+          publish(session, { t: 'output', d: event.data, ...(sanitized.visible !== event.data ? { r: sanitized.visible } : {}) });
         } else {
           session.status = 'exited';
           session.exitCode = Number.isInteger(event.exitCode) ? event.exitCode : null;
@@ -204,12 +205,30 @@ export function createTerminalRuntime({
     const id = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : randomUUID();
     if (id.length > 128) throw new Error('Invalid terminal session id');
     const existing = sessions.get(id);
-    if (existing?.status === 'running') { applyAppearance(existing, { themeMode, terminalBackground, terminalForeground }); return existing; }
-    if (!existing && sessions.size >= MAX_SESSIONS) throw new Error('Maximum terminal sessions reached');
-    const session = existing ?? { id, sequence: 0, history: '', pendingHistoryControlSequence: '', pendingThemeControlSequence: '', eventQueue: [], draining: false };
-    await startSession(session, { cwd, cols, rows, themeMode, terminalBackground, terminalForeground });
-    sessions.set(id, session);
-    return session;
+    const resolvedCwd = path.resolve(cwd);
+    if (existing?.status === 'running') {
+      if (path.resolve(existing.cwd) !== resolvedCwd) throw new Error('Terminal session belongs to a different working directory');
+      applyAppearance(existing, { themeMode, terminalBackground, terminalForeground });
+      return existing;
+    }
+    const pending = pendingSessionCreates.get(id);
+    if (pending) {
+      if (pending.cwd !== resolvedCwd) throw new Error('Terminal session belongs to a different working directory');
+      const session = await pending.promise;
+      applyAppearance(session, { themeMode, terminalBackground, terminalForeground });
+      return session;
+    }
+    if (!existing && sessions.size + pendingSessionCreates.size >= MAX_SESSIONS) throw new Error('Maximum terminal sessions reached');
+    const creation = (async () => {
+      const session = existing ?? { id, sequence: 0, history: '', pendingHistoryControlSequence: '', pendingThemeControlSequence: '', eventQueue: [], draining: false };
+      await startSession(session, { cwd, cols, rows, themeMode, terminalBackground, terminalForeground });
+      sessions.set(id, session);
+      return session;
+    })();
+    const pendingEntry = { cwd: resolvedCwd, promise: creation };
+    pendingSessionCreates.set(id, pendingEntry);
+    try { return await creation; }
+    finally { if (pendingSessionCreates.get(id) === pendingEntry) pendingSessionCreates.delete(id); }
   };
 
   wsServer.on('connection', (socket) => {

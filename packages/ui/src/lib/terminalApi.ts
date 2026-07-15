@@ -1,4 +1,4 @@
-import type { CreateTerminalOptions, TerminalHandlers, TerminalSession, TerminalStreamEvent } from './api/types';
+import type { CreateTerminalOptions, TerminalError, TerminalHandlers, TerminalSession, TerminalStreamEvent } from './api/types';
 import { openRuntimeWebSocket } from './relay/runtime-socket';
 import type { RelayTunnelWebSocket } from './relay/tunnel-client';
 import { runtimeFetch } from './runtime-fetch';
@@ -63,6 +63,7 @@ type TerminalTransportDependencies = {
 export class TerminalTransport {
   private socket: RelayTunnelWebSocket | null = null;
   private opening: Promise<void> | null = null;
+  private openingGeneration: number | null = null;
   private subscribers = new Map<string, Set<Subscriber>>();
   private projections = new Map<string, TerminalProjection>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -112,6 +113,9 @@ export class TerminalTransport {
   async write(sessionId: string, data: string): Promise<void> {
     if (!data) return;
     await this.ensureConnected();
+    if (this.send({ t: 'write', v: 3, s: sessionId, d: data })) return;
+    this.closeSocket();
+    await this.ensureConnected();
     if (!this.send({ t: 'write', v: 3, s: sessionId, d: data })) throw new Error('Terminal connection is unavailable');
   }
 
@@ -134,10 +138,20 @@ export class TerminalTransport {
   private async ensureConnected(): Promise<void> {
     if (this.disposed) throw new Error('Terminal runtime changed');
     if (this.socket?.readyState === SOCKET_OPEN) return;
-    if (this.opening) return this.opening;
-    await this.dependencies.refreshAuth();
+    if (this.opening && this.openingGeneration === this.generation) {
+      await this.opening;
+      if (this.socket?.readyState === SOCKET_OPEN) return;
+      return this.ensureConnected();
+    }
+    if (this.openingGeneration !== this.generation) {
+      this.opening = null;
+      this.openingGeneration = null;
+    }
     const generation = this.generation;
-    const opening = new Promise<void>((resolve, reject) => {
+    const opening = (async () => {
+      await this.dependencies.refreshAuth();
+      if (generation !== this.generation || this.disposed) throw new Error('Terminal runtime changed');
+      await new Promise<void>((resolve, reject) => {
       let settled = false;
       let pendingSocket: RelayTunnelWebSocket | null = null;
       const finish = (error?: Error) => {
@@ -179,12 +193,17 @@ export class TerminalTransport {
         finish(error instanceof Error ? error : new Error('Terminal WebSocket failed'));
         if (!this.disposed && this.subscribers.size > 0) this.scheduleReconnect();
       }
-    });
+      });
+    })();
     this.opening = opening;
+    this.openingGeneration = generation;
     try {
       await opening;
     } finally {
-      if (this.opening === opening) this.opening = null;
+      if (this.opening === opening) {
+        this.opening = null;
+        this.openingGeneration = null;
+      }
     }
   }
 
@@ -192,7 +211,8 @@ export class TerminalTransport {
     const message = await decode(raw);
     if (!message || message.t === 'hello' || message.t === 'pong') return;
     if (message.t === 'error') {
-      const error = new Error(typeof message.message === 'string' ? message.message : 'Terminal error');
+      const error = new Error(typeof message.message === 'string' ? message.message : 'Terminal error') as TerminalError;
+      if (typeof message.code === 'string') error.code = message.code;
       const targets = message.s ? [message.s] : [...this.subscribers.keys()];
       for (const id of targets) for (const sub of this.subscribers.get(id) ?? []) sub.handlers.onError?.(error, message.fatal === true);
       return;
@@ -220,14 +240,14 @@ export class TerminalTransport {
     if (typeof message.q !== 'number') return;
     const previous = this.projections.get(message.s);
     if (previous && message.q > previous.sequence) {
-      if (message.t === 'output') this.projections.set(message.s, { ...previous, sequence: message.q, history: trimProjection(previous.history + (typeof message.d === 'string' ? message.d : '')) });
+      if (message.t === 'output') this.projections.set(message.s, { ...previous, sequence: message.q, history: trimProjection(previous.history + (typeof message.r === 'string' ? message.r : (typeof message.d === 'string' ? message.d : ''))) });
       else if (message.t === 'exit') this.projections.set(message.s, { ...previous, sequence: message.q, status: 'exited', exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined, signal: typeof message.signal === 'number' ? message.signal : null });
       else if (message.t === 'restarted') this.projections.set(message.s, { ...previous, sequence: message.q, history: typeof message.history === 'string' ? message.history : '', status: 'running', exitCode: undefined, signal: null });
     }
     for (const sub of subscribers) {
       if (message.q <= sub.lastSequence) continue;
       sub.lastSequence = message.q;
-      if (message.t === 'output') sub.handlers.onEvent({ type: 'data', sequence: message.q, data: typeof message.d === 'string' ? message.d : '' });
+      if (message.t === 'output') sub.handlers.onEvent({ type: 'data', sequence: message.q, data: typeof message.d === 'string' ? message.d : '', replayData: typeof message.r === 'string' ? message.r : undefined });
       else if (message.t === 'exit') sub.handlers.onEvent({ type: 'exit', sequence: message.q, exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined, signal: typeof message.signal === 'number' ? message.signal : null });
       else if (message.t === 'restarted') sub.handlers.onEvent({ type: 'snapshot', sequence: message.q, data: typeof message.history === 'string' ? message.history : '', status: 'running' });
     }

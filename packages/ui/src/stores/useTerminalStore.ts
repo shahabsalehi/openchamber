@@ -6,6 +6,7 @@ import { getSafeSessionStorage } from '@/stores/utils/safeStorage';
 export interface TerminalChunk {
   id: number;
   data: string;
+  replayData?: string;
   byteLength: number;
 }
 
@@ -62,7 +63,7 @@ interface TerminalStore {
   setTabLifecycle: (directory: string, tabId: string, lifecycle: TerminalTabLifecycle) => void;
   setConnecting: (directory: string, tabId: string, isConnecting: boolean) => void;
   replaceBuffer: (directory: string, tabId: string, content: string, sequence: number) => void;
-  appendToBuffer: (directory: string, tabId: string, chunk: string, sequence?: number) => void;
+  appendToBuffer: (directory: string, tabId: string, chunk: string, sequence?: number, replayData?: string) => void;
   setTabPreviewUrl: (directory: string, tabId: string, url: string | null, options?: { locked?: boolean; autoOpened?: boolean }) => void;
   markPreviewAutoOpened: (directory: string, tabId: string) => void;
   setProjectActionRun: (run: TerminalProjectActionRun) => void;
@@ -86,6 +87,13 @@ const trimToBufferLimit = (value: string): string => {
 };
 const TERMINAL_STORE_NAME = 'terminal-store';
 let hydrationListenerAttached = false;
+let fallbackTabId = 0;
+
+const createTerminalTabId = (): string => {
+  if (typeof globalThis.crypto?.randomUUID === 'function') return `tab-${globalThis.crypto.randomUUID()}`;
+  fallbackTabId += 1;
+  return `tab-${Date.now().toString(36)}-${fallbackTabId.toString(36)}`;
+};
 
 type PersistedTerminalTab = Pick<TerminalTab, 'id' | 'label' | 'iconKey' | 'createdAt'>;
 
@@ -161,7 +169,7 @@ export const useTerminalStore = create<TerminalStore>()(
             }
 
             const newSessions = new Map(state.sessions);
-            const tabId = `tab-${state.nextTabId}`;
+            const tabId = createTerminalTabId();
             const firstTab = createEmptyTab(tabId, 'Terminal');
             newSessions.set(key, createEmptyDirectoryState(firstTab));
 
@@ -189,7 +197,7 @@ export const useTerminalStore = create<TerminalStore>()(
             return 'tab-invalid';
           }
 
-          const tabId = `tab-${get().nextTabId}`;
+          const tabId = createTerminalTabId();
 
           set((state) => {
             const newSessions = new Map(state.sessions);
@@ -326,7 +334,7 @@ export const useTerminalStore = create<TerminalStore>()(
             const runsChanged = Object.keys(nextRuns).length !== Object.keys(state.projectActionRuns).length;
 
             if (nextTabs.length === 0) {
-              const newTabId = `tab-${state.nextTabId}`;
+              const newTabId = createTerminalTabId();
               const newTab = createEmptyTab(newTabId, 'Terminal');
               newSessions.set(key, createEmptyDirectoryState(newTab));
               return {
@@ -460,7 +468,7 @@ export const useTerminalStore = create<TerminalStore>()(
           });
         },
 
-        appendToBuffer: (directory: string, tabId: string, chunk: string, sequence?: number) => {
+        appendToBuffer: (directory: string, tabId: string, chunk: string, sequence?: number, replayData?: string) => {
           if (!chunk) {
             return;
           }
@@ -482,7 +490,15 @@ export const useTerminalStore = create<TerminalStore>()(
             if (sequence !== undefined && sequence <= tab.lastSequence) return state;
             const chunkId = state.nextChunkId;
             const retainedChunk = trimToBufferLimit(chunk);
-            const chunkEntry: TerminalChunk = { id: chunkId, data: retainedChunk, byteLength: byteLength(retainedChunk) };
+            const retainedReplayData = replayData !== undefined && replayData !== chunk
+              ? trimToBufferLimit(replayData)
+              : undefined;
+            const chunkEntry: TerminalChunk = {
+              id: chunkId,
+              data: retainedChunk,
+              ...(retainedReplayData !== undefined ? { replayData: retainedReplayData } : {}),
+              byteLength: byteLength(retainedChunk),
+            };
 
             const bufferChunks = [...tab.bufferChunks, chunkEntry];
             let bufferLength = tab.bufferLength + chunkEntry.byteLength;
@@ -666,21 +682,24 @@ export const useTerminalStore = create<TerminalStore>()(
 
             const rawTabs = Array.isArray(rawState.tabs) ? (rawState.tabs as unknown[]) : [];
             const tabs: TerminalTab[] = [];
+            const migratedTabIds = new Map<string, string>();
 
             for (const rawTab of rawTabs) {
               if (!isRecord(rawTab)) {
                 continue;
               }
 
-              const id = typeof rawTab.id === 'string' ? rawTab.id : null;
-              if (!id) {
+              const persistedId = typeof rawTab.id === 'string' ? rawTab.id : null;
+              if (!persistedId) {
                 continue;
               }
 
-              const num = tabIdNumber(id);
+              const num = tabIdNumber(persistedId);
               if (num !== null) {
                 maxTabNum = Math.max(maxTabNum, num);
               }
+              const id = num === null ? persistedId : createTerminalTabId();
+              migratedTabIds.set(persistedId, id);
 
               tabs.push({
                 id,
@@ -705,11 +724,12 @@ export const useTerminalStore = create<TerminalStore>()(
 
             const activeTabId =
               typeof rawState.activeTabId === 'string' ? (rawState.activeTabId as string) : null;
-            const activeExists = activeTabId ? tabs.some((t) => t.id === activeTabId) : false;
+            const migratedActiveTabId = activeTabId ? (migratedTabIds.get(activeTabId) ?? activeTabId) : null;
+            const activeExists = migratedActiveTabId ? tabs.some((t) => t.id === migratedActiveTabId) : false;
 
             sessions.set(directory, {
               tabs,
-              activeTabId: activeExists ? activeTabId : tabs[0].id,
+              activeTabId: activeExists ? migratedActiveTabId : tabs[0].id,
             });
           }
 

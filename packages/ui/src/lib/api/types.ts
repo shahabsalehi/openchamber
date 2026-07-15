@@ -29,6 +29,7 @@ export interface TerminalStreamEvent {
   type: 'snapshot' | 'data' | 'exit' | 'reconnecting';
   sequence?: number;
   data?: string;
+  replayData?: string;
   status?: 'running' | 'exited' | 'error';
   exitCode?: number;
   signal?: number | null;
@@ -37,6 +38,10 @@ export interface TerminalStreamEvent {
 
   runtime?: 'node' | 'bun';
   ptyBackend?: string;
+}
+
+export interface TerminalError extends Error {
+  code?: string;
 }
 
 export interface CreateTerminalOptions {
@@ -57,7 +62,7 @@ export interface ResizeTerminalPayload {
 
 export interface TerminalHandlers {
   onEvent: (event: TerminalStreamEvent) => void;
-  onError?: (error: Error, fatal?: boolean) => void;
+  onError?: (error: TerminalError, fatal?: boolean) => void;
 }
 
 export interface ForceKillOptions {

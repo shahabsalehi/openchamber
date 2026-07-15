@@ -157,6 +157,7 @@ export const ProjectActionsButton = ({
   const loadDesktopSsh = useDesktopSshStore((state) => state.load);
 
   const setBottomTerminalOpen = useUIStore((state) => state.setBottomTerminalOpen);
+  const isBottomTerminalOpen = useUIStore((state) => state.isBottomTerminalOpen);
   const setActiveMainTab = useUIStore((state) => state.setActiveMainTab);
   const setSettingsPage = useUIStore((state) => state.setSettingsPage);
   const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
@@ -182,6 +183,7 @@ export const ProjectActionsButton = ({
   const urlWatchByRunKeyRef = React.useRef<Record<string, UrlWatchEntry>>({});
   const streamCleanupByRunKeyRef = React.useRef<Record<string, () => void>>({});
   const previewWaitTimeoutByRunKeyRef = React.useRef<Record<string, number>>({});
+  const startingRunKeysRef = React.useRef<Set<string>>(new Set());
   const loadRequestIdRef = React.useRef(0);
 
   const projectId = projectRef?.id ?? null;
@@ -308,7 +310,8 @@ export const ProjectActionsButton = ({
   React.useEffect(() => {
     const monitorRuns = () => {
       const terminalSessions = useTerminalStore.getState().sessions;
-      for (const [runKey, entry] of Object.entries(projectActionRuns)) {
+      const currentRuns = useTerminalStore.getState().projectActionRuns;
+      for (const [runKey, entry] of Object.entries(currentRuns)) {
         const directoryState = terminalSessions.get(entry.directory);
         const tab = directoryState?.tabs.find((item) => item.id === entry.tabId);
         if (!tab || tab.terminalSessionId !== entry.sessionId) {
@@ -335,7 +338,7 @@ export const ProjectActionsButton = ({
         if (maybeUrl) {
           watch.openedUrl = true;
           if (watch.openInPreview) {
-            const run = projectActionRuns[runKey];
+            const run = currentRuns[runKey];
             if (run) {
               setTabPreviewUrl(run.directory, run.tabId, maybeUrl, { locked: false, autoOpened: false });
               if (run.status === 'waiting-for-preview') updateProjectActionRunStatus(runKey, 'running');
@@ -352,7 +355,7 @@ export const ProjectActionsButton = ({
       }
 
       for (const runKey of Object.keys(urlWatchByRunKeyRef.current)) {
-        if (!projectActionRuns[runKey]) {
+        if (!currentRuns[runKey]) {
           delete urlWatchByRunKeyRef.current[runKey];
           window.clearTimeout(previewWaitTimeoutByRunKeyRef.current[runKey]);
           delete previewWaitTimeoutByRunKeyRef.current[runKey];
@@ -366,7 +369,7 @@ export const ProjectActionsButton = ({
     });
   }, [displayActions, openContextPreview, openExternal, projectActionRuns, removeProjectActionRun, setTabPreviewUrl, t, updateProjectActionRunStatus]);
 
-  const getOrCreateActionTab = React.useCallback(async (action: OpenChamberProjectAction, options: { revealTerminal?: boolean } = {}) => {
+  const getOrCreateActionTab = React.useCallback(async (action: OpenChamberProjectAction, options: { revealTerminal?: boolean; activateTab?: boolean } = {}) => {
     if (!normalizedDirectory) {
       throw new Error(t('projectActions.error.noActiveDirectory'));
     }
@@ -389,8 +392,10 @@ export const ProjectActionsButton = ({
 
     setTabLabel(normalizedDirectory, tabId, `Action: ${action.name}`);
     setTabIconKey(normalizedDirectory, tabId, action.icon || 'play');
-    if (options.revealTerminal !== false) {
+    if (options.activateTab !== false) {
       setActiveTab(normalizedDirectory, tabId);
+    }
+    if (options.revealTerminal !== false) {
       setBottomTerminalOpen(true);
       setActiveMainTab('terminal');
     }
@@ -428,6 +433,8 @@ export const ProjectActionsButton = ({
     if (existingRun && existingRun.status === 'running') {
       return;
     }
+    if (startingRunKeysRef.current.has(runKey)) return;
+    startingRunKeysRef.current.add(runKey);
 
     try {
       const discovered = action.id === AUTO_DISCOVER_ACTION_ID
@@ -452,7 +459,9 @@ export const ProjectActionsButton = ({
         : action;
 
       const hasCustomOpenUrl = discovered.autoOpenUrl === true && (discovered.openUrl || '').trim().length > 0;
-      const { key, tabId, sessionId } = await getOrCreateActionTab(discovered, { revealTerminal: !hasCustomOpenUrl && action.id !== AUTO_DISCOVER_ACTION_ID });
+      const revealTerminal = !hasCustomOpenUrl && action.id !== AUTO_DISCOVER_ACTION_ID;
+      const activateTab = revealTerminal || (action.id === AUTO_DISCOVER_ACTION_ID && isBottomTerminalOpen);
+      const { key, tabId, sessionId } = await getOrCreateActionTab(discovered, { revealTerminal, activateTab });
       let activeSessionId = sessionId;
 
       if (!activeSessionId) {
@@ -486,7 +495,7 @@ export const ProjectActionsButton = ({
               useTerminalStore.getState().setConnecting(normalizedDirectory, tabId, false);
             }
             if (event.type === 'data' && typeof event.data === 'string' && event.data.length > 0) {
-              useTerminalStore.getState().appendToBuffer(normalizedDirectory, tabId, event.data, event.sequence);
+              useTerminalStore.getState().appendToBuffer(normalizedDirectory, tabId, event.data, event.sequence, event.replayData);
             }
             if (event.type === 'exit') {
               useTerminalStore.getState().setTabLifecycle(normalizedDirectory, tabId, 'exited');
@@ -529,10 +538,26 @@ export const ProjectActionsButton = ({
       delete previewWaitTimeoutByRunKeyRef.current[key];
       if (discovered.id === AUTO_DISCOVER_ACTION_ID && !manualOpenUrl) {
         previewWaitTimeoutByRunKeyRef.current[key] = window.setTimeout(() => {
-          useTerminalStore.getState().updateProjectActionRunStatus(key, 'running');
+          const store = useTerminalStore.getState();
+          const run = store.projectActionRuns[key];
+          store.updateProjectActionRunStatus(key, 'running');
+          if (run) {
+            store.setActiveTab(run.directory, run.tabId);
+            useUIStore.getState().setBottomTerminalOpen(true);
+          }
           delete previewWaitTimeoutByRunKeyRef.current[key];
         }, AUTO_DISCOVER_PREVIEW_WAIT_TIMEOUT_MS);
       }
+
+      urlWatchByRunKeyRef.current[key] = {
+        lastSeenChunkId: null,
+        openedUrl: Boolean(desktopForwardUrl) || Boolean(manualOpenUrl) || hasCustomOpenUrl,
+        tail: '',
+        openInPreview: discovered.id === AUTO_DISCOVER_ACTION_ID,
+      };
+
+      const normalizedCommand = stripControlChars(discovered.command.trim().replace(/\r\n|\r/g, '\n'));
+      await terminal.sendInput(activeSessionId, `${normalizedCommand}\r`);
 
       if (desktopForwardUrl) {
         setTabPreviewUrl(normalizedDirectory, tabId, null, { locked: true });
@@ -552,15 +577,6 @@ export const ProjectActionsButton = ({
         setTabPreviewUrl(normalizedDirectory, tabId, null, { locked: false, autoOpened: false });
       }
 
-      urlWatchByRunKeyRef.current[key] = {
-        lastSeenChunkId: null,
-        openedUrl: Boolean(desktopForwardUrl) || Boolean(manualOpenUrl) || hasCustomOpenUrl,
-        tail: '',
-        openInPreview: discovered.id === AUTO_DISCOVER_ACTION_ID,
-      };
-
-      const normalizedCommand = stripControlChars(discovered.command.trim().replace(/\r\n|\r/g, '\n'));
-      await terminal.sendInput(activeSessionId, `${normalizedCommand}\r`);
     } catch (error) {
       removeProjectActionRun(runKey);
       delete urlWatchByRunKeyRef.current[runKey];
@@ -569,6 +585,8 @@ export const ProjectActionsButton = ({
       window.clearTimeout(previewWaitTimeoutByRunKeyRef.current[runKey]);
       delete previewWaitTimeoutByRunKeyRef.current[runKey];
       toast.error(error instanceof Error ? error.message : t('projectActions.error.failedToRunAction'));
+    } finally {
+      startingRunKeysRef.current.delete(runKey);
     }
   }, [
     currentTheme.colors.surface.background,
@@ -579,6 +597,7 @@ export const ProjectActionsButton = ({
     allowMobile,
     isMobile,
     isDesktopShellApp,
+    isBottomTerminalOpen,
     normalizedDirectory,
     openExternal,
     openContextPreview,
