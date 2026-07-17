@@ -209,7 +209,7 @@ export const KeyboardShortcutsSettings: React.FC = () => {
         </div>
       )}
 
-      <div className="space-y-0.5">
+      <div>
         {actions.map((action, index) => {
           const effective = getEffectiveShortcutCombo(action.id, shortcutOverrides);
           const draft = draftByAction[action.id];
@@ -217,7 +217,7 @@ export const KeyboardShortcutsSettings: React.FC = () => {
           const hasDraft = typeof draft === 'string' && normalizeCombo(draft) !== normalizeCombo(effective);
 
           return (
-            <div key={action.id} className={cn(index > 0 && "border-t border-border/40")}>
+            <div key={action.id} className={cn("py-1.5", index > 0 && "border-t border-border/40")}>
               <SettingsFieldRow
                 label={actionLabel(action.id, action.label)}
                 alignEnd={false}
