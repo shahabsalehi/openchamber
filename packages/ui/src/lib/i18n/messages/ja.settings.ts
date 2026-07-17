@@ -424,6 +424,7 @@ export const settingsDict = {
   'settings.common.actions.clear': 'クリア',
   'settings.common.actions.saving': '保存中...',
   'settings.common.status.saved': '保存済み',
+  'settings.common.status.saveFailed': '保存に失敗しました',
   'settings.common.actions.saveChanges': '変更を保存',
   'settings.common.scope.global': 'グローバル',
   'settings.common.scope.project': 'プロジェクト',

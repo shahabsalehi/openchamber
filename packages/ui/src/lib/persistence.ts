@@ -140,7 +140,7 @@ const dispatchSettingsSynced = (settings: DesktopSettings): void => {
   window.dispatchEvent(new CustomEvent<DesktopSettings>('openchamber:settings-synced', { detail: settings }));
 };
 
-type SettingsSaveState = 'idle' | 'saving' | 'saved';
+type SettingsSaveState = 'idle' | 'saving' | 'error';
 
 let _settingsSaveState: SettingsSaveState = 'idle';
 let _settingsSaveStateResetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -167,14 +167,16 @@ const dispatchSettingsSaveState = (state: 'saving' | 'saved' | 'error'): void =>
     _settingsSaveStateResetTimer = null;
   }
 
-  const nextState: SettingsSaveState = state === 'error' ? 'idle' : state;
+  // Quiet indicator: success is the normal case and renders nothing ('saved' → idle);
+  // only in-flight saves and failures surface in the UI.
+  const nextState: SettingsSaveState = state === 'saved' ? 'idle' : state;
   if (nextState !== _settingsSaveState) {
     _settingsSaveState = nextState;
     _settingsSaveStateListeners.forEach((listener) => listener());
   }
 
-  if (nextState === 'saved') {
-    _settingsSaveStateResetTimer = setTimeout(() => dispatchSettingsSaveState('error'), 1800);
+  if (nextState === 'error') {
+    _settingsSaveStateResetTimer = setTimeout(() => dispatchSettingsSaveState('saved'), 6000);
   }
 
   if (typeof window === 'undefined') {

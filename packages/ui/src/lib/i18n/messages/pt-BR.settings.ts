@@ -391,6 +391,7 @@ export const settingsDict = {
   "settings.common.actions.clear": "Limpar",
   "settings.common.actions.saving": "Salvando...",
   'settings.common.status.saved': 'Salvo',
+  'settings.common.status.saveFailed': 'Falha ao salvar',
   "settings.common.actions.saveChanges": "Salvar alterações",
   "settings.common.scope.global": "Global",
   "settings.common.scope.project": "Projeto",

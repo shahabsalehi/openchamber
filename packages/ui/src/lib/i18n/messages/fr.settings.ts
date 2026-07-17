@@ -314,6 +314,7 @@ export const settingsDict = {
   'settings.common.actions.clear': 'Effacer',
   'settings.common.actions.saving': 'Enregistrement...',
   'settings.common.status.saved': 'Enregistré',
+  'settings.common.status.saveFailed': 'Échec de l’enregistrement',
   'settings.common.actions.saveChanges': 'Enregistrer les modifications',
   'settings.common.scope.global': 'Mondial',
   'settings.common.scope.project': 'Projet',

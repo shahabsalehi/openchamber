@@ -391,6 +391,7 @@ export const settingsDict = {
   'settings.common.actions.clear': '지우기',
   'settings.common.actions.saving': '저장 중...',
   'settings.common.status.saved': '저장됨',
+  'settings.common.status.saveFailed': '저장 실패',
   'settings.common.actions.saveChanges': '변경 사항 저장',
   'settings.common.scope.global': '전역',
   'settings.common.scope.project': '프로젝트',

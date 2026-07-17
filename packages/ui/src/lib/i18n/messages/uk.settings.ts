@@ -391,6 +391,7 @@ export const settingsDict = {
   "settings.common.actions.clear": "Очистити",
   "settings.common.actions.saving": "Збереження...",
   'settings.common.status.saved': 'Збережено',
+  'settings.common.status.saveFailed': 'Не вдалося зберегти',
   "settings.common.actions.saveChanges": "Зберегти зміни",
   "settings.common.scope.global": "Глобальний",
   "settings.common.scope.project": "Проєкт",

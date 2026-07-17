@@ -424,6 +424,7 @@ export const settingsDict = {
   'settings.common.actions.clear': 'Clear',
   'settings.common.actions.saving': 'Saving...',
   'settings.common.status.saved': 'Saved',
+  'settings.common.status.saveFailed': 'Save failed',
   'settings.common.actions.saveChanges': 'Save Changes',
   'settings.common.scope.global': 'Global',
   'settings.common.scope.project': 'Project',

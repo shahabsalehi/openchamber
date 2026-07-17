@@ -98,6 +98,10 @@ export const SettingsPageLayout: React.FC<SettingsPageLayoutProps> = ({
   );
 };
 
+// Only saves slower than this surface a "Saving…" spinner — local writes
+// finish instantly and stay silent; remote/mobile connections get feedback.
+const SAVE_SPINNER_DELAY_MS = 500;
+
 const SettingsSaveStatus: React.FC = () => {
   const { t } = useI18n();
   const status = React.useSyncExternalStore(
@@ -105,26 +109,40 @@ const SettingsSaveStatus: React.FC = () => {
     getSettingsSaveState,
     getSettingsSaveState,
   );
+  const [showSaving, setShowSaving] = React.useState(false);
 
-  if (status === 'idle') {
-    return null;
+  React.useEffect(() => {
+    if (status !== 'saving') {
+      setShowSaving(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowSaving(true), SAVE_SPINNER_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [status]);
+
+  if (status === 'error') {
+    return (
+      <div
+        aria-live="assertive"
+        className="flex shrink-0 items-center gap-1.5 typography-meta text-[var(--status-error)]"
+      >
+        <Icon name="error-warning" className="size-3.5" />
+        <span>{t('settings.common.status.saveFailed')}</span>
+      </div>
+    );
   }
 
-  const isSaving = status === 'saving';
+  if (status !== 'saving' || !showSaving) {
+    return null;
+  }
 
   return (
     <div
       aria-live="polite"
-      className={cn(
-        'flex shrink-0 items-center gap-1.5 typography-meta',
-        isSaving ? 'text-muted-foreground' : 'text-[var(--status-success)]',
-      )}
+      className="flex shrink-0 items-center gap-1.5 typography-meta text-muted-foreground"
     >
-      <Icon
-        name={isSaving ? 'loader-4' : 'check'}
-        className={cn('size-3.5', isSaving && 'animate-spin')}
-      />
-      <span>{isSaving ? t('settings.common.actions.saving') : t('settings.common.status.saved')}</span>
+      <Icon name="loader-4" className="size-3.5 animate-spin" />
+      <span>{t('settings.common.actions.saving')}</span>
     </div>
   );
 };
