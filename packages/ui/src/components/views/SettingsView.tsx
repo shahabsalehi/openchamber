@@ -59,7 +59,7 @@ import {
 import { buildSettingsSearchResults, type SettingsSearchResult } from '@/lib/settings/search';
 
 // UI Kit: fixed settings navigation width
-const SETTINGS_NAV_WIDTH = 240;
+const SETTINGS_NAV_WIDTH = 256;
 const SETTINGS_SPLIT_SIDEBAR_WIDTH = 280;
 const SETTINGS_DETAIL_HISTORY_KEY = '__openchamberSettingsDetail';
 
@@ -819,7 +819,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
 
     return (
       <div className="flex h-full flex-col overflow-hidden">
-        <div className="px-2 pt-3">
+        <div className="px-4 pt-3">
           <div className="flex h-10 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-muted-foreground focus-within:ring-2 focus-within:ring-primary/40 sm:h-8">
             <Icon name="search" className="h-4 w-4 shrink-0" />
             <input
@@ -845,7 +845,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
 
         {/* Scrollable nav items */}
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
-          <div className="flex flex-col gap-0.5 pt-4 pb-2 px-2">
+          <div className="flex flex-col gap-0.5 px-4 pt-4 pb-2">
             {hasSearchQuery ? (
               settingsSearchResults.length > 0 ? (() => {
                 let resultIndex = 0;
@@ -911,7 +911,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
                 <div key={group} className="space-y-0.5">
                   <div
                     className={cn(
-                      'px-3 pb-1 typography-micro font-medium text-muted-foreground/70 sm:px-2 sm:pb-0.5',
+                      'px-3 pb-1 typography-micro font-semibold uppercase tracking-wide text-muted-foreground sm:px-2 sm:pb-0.5',
                       groupIndex === 0 ? 'pt-1' : 'pt-4 sm:pt-3',
                     )}
                   >
@@ -960,7 +960,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
 
         {/* Footer */}
         <div className="overflow-hidden transition-opacity duration-150 opacity-100">
-          <div className="border-t border-border bg-background px-2 py-1 space-y-0.5 sm:bg-sidebar">
+          <div className="border-t border-border bg-background px-4 py-1 space-y-0.5 sm:bg-sidebar">
             {!runtimeCtx.isVSCode && (
               <Tooltip>
                 <TooltipTrigger asChild>

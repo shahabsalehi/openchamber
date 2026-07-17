@@ -12,6 +12,7 @@ import { useOpenCodeReadiness } from '@/hooks/useOpenCodeReadiness';
 import { useDeviceInfo } from '@/lib/device';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
+import { dropdownTriggerVariants } from '@/components/ui/dropdown-trigger';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { ModelPickerList, type ModelPickerEntry, type ModelPickerProvider } from '@/components/model-picker/ModelPickerList';
@@ -131,8 +132,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                     onClick={isReady ? () => setIsMobilePanelOpen(true) : undefined}
                     disabled={!isReady}
                     className={cn(
-                        'flex w-full items-center justify-between gap-2 rounded-lg border border-border/40 bg-[var(--surface-elevated)] px-2 py-1.5 text-left',
-                        !isReady && 'opacity-60 cursor-not-allowed',
+                        dropdownTriggerVariants(),
+                        'w-full',
                         className,
                     )}
                 >
@@ -166,7 +167,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         <DropdownMenu open={isReady && isDropdownOpen} onOpenChange={isReady ? setIsDropdownOpen : undefined}>
             <DropdownMenuTrigger asChild>
                 <div className={cn(
-                    'border-input data-[placeholder]:text-muted-foreground flex min-w-0 items-center justify-between gap-2 rounded-lg border bg-transparent px-2 py-2 typography-ui-label whitespace-nowrap shadow-none outline-none hover:bg-interactive-hover data-[popup-open]:bg-interactive-active h-6 w-fit',
+                    dropdownTriggerVariants({ size: 'sm' }),
+                    'min-w-0 w-fit',
                     !isReady && 'opacity-60 cursor-not-allowed',
                     className,
                 )}>

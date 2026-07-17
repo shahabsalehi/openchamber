@@ -601,7 +601,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const hasAppearanceSettings = isVSCode
         ? hasLocalizationSettings
         : (shouldShow('theme') || showMobileLayoutSetting || shouldShow('pwaInstallName') || shouldShow('pwaOrientation') || shouldShow('timeFormat') || shouldShow('weekStart'));
-    const hasLayoutSettings = shouldShow('fontSize') || shouldShow('terminalFontSize') || shouldShow('editorFontSize') || shouldShow('spacing') || shouldShow('inputBarOffset');
+    const hasLayoutSettings = shouldShow('fontSize') || shouldShow('terminalFontSize') || shouldShow('editorFontSize') || shouldShow('spacing') || (shouldShow('inputBarOffset') && isMobile);
     const hasNavigationSettings = (shouldShow('terminalQuickKeys') && !isMobile) || ((shouldShow('terminalShell') || shouldShow('terminalLoginShell')) && !isVSCode) || shouldShow('fileEditorKeymap') || shouldShow('expandedEditorToolbar');
     const hasBehaviorSettings = shouldShow('mermaidRendering')
         || (shouldShow('sessionGoal') && !isVSCode)
@@ -1347,7 +1347,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                             </SettingsTwoColumn>
                         ) : null}
 
-                        {shouldShow('spacing') || shouldShow('inputBarOffset') ? (
+                        {shouldShow('spacing') || (shouldShow('inputBarOffset') && isMobile) ? (
                             <SettingsTwoColumn>
                                 {shouldShow('spacing') && (
                                     <SettingsStackedField
@@ -1378,7 +1378,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                         </div>
                                     </SettingsStackedField>
                                 )}
-                                {shouldShow('inputBarOffset') && (
+                                {shouldShow('inputBarOffset') && isMobile && (
                                     <SettingsStackedField
                                         label={t('settings.openchamber.visual.field.inputBarOffset')}
                                         info={t('settings.openchamber.visual.field.inputBarOffsetTooltip')}

@@ -11,6 +11,7 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useDeviceInfo } from '@/lib/device';
 import { cn } from '@/lib/utils';
+import { dropdownTriggerVariants } from '@/components/ui/dropdown-trigger';
 import { MobileOverlayPanel } from '@/components/ui/MobileOverlayPanel';
 import { Icon } from "@/components/icon/Icon";
 import { useI18n } from '@/lib/i18n';
@@ -132,8 +133,8 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
                     onClick={isReady ? () => setIsMobilePanelOpen(true) : undefined}
                     disabled={!isReady}
                     className={cn(
-                        'flex w-full items-center justify-between gap-2 rounded-lg border border-border/40 bg-background/95 px-2 py-1.5 text-left',
-                        !isReady && 'opacity-60 cursor-not-allowed',
+                        dropdownTriggerVariants(),
+                        'w-full',
                         className
                     )}
                 >
@@ -156,7 +157,8 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
                 </button>
             ) : !isReady ? (
                 <div className={cn(
-                    'border-input flex items-center gap-2 px-2 rounded-lg border bg-transparent h-6 w-fit opacity-60',
+                    dropdownTriggerVariants({ size: 'sm' }),
+                    'w-fit opacity-60',
                     className
                 )}>
                     <Icon name="loader-4" className="h-3 w-3 animate-spin text-muted-foreground flex-shrink-0" />
@@ -168,7 +170,8 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
                 <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                         <div className={cn(
-                            'border-input flex items-center gap-2 px-2 rounded-lg border bg-transparent cursor-pointer hover:bg-interactive-hover data-[popup-open]:bg-interactive-active h-6 w-fit',
+                            dropdownTriggerVariants({ size: 'sm' }),
+                            'w-fit cursor-pointer',
                             className
                         )}>
                             <Icon name="robot-2" className="h-3 w-3 flex-shrink-0 text-muted-foreground" />

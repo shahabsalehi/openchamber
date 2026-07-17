@@ -538,10 +538,7 @@ export const ProvidersPage: React.FC = () => {
                       <DropdownMenuTrigger asChild>
                         <button
                           type="button"
-                          className={cn(
-                            "flex items-center justify-between gap-2 border border-input bg-transparent typography-ui-label whitespace-nowrap shadow-none outline-none hover:bg-interactive-hover",
-                            SETTINGS_CUSTOM_TRIGGER_CLASS,
-                          )}
+                          className={SETTINGS_CUSTOM_TRIGGER_CLASS}
                         >
                           <span className="flex items-center gap-2 min-w-0">
                             {candidateProviderId ? <ProviderLogo providerId={candidateProviderId} className="h-3.5 w-3.5 flex-shrink-0" /> : null}

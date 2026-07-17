@@ -142,6 +142,8 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     titleKey: 'settings.openchamber.visual.field.inputBarOffset',
     descriptionKey: 'settings.openchamber.visual.field.inputBarOffsetTooltip',
     keywords: ['input', 'home bar', 'offset'],
+    // Only the mobile composer applies this offset (ChatInput gates on isMobile).
+    isAvailable: (ctx) => ctx.isMobile,
   },
   {
     id: 'appearance.expanded-editor-toolbar',
@@ -165,7 +167,7 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
   },
   {
     id: 'appearance.usage-reports',
-    page: 'appearance',
+    page: 'general',
     titleKey: 'settings.openchamber.visual.field.sendAnonymousUsageReports',
     descriptionKey: 'settings.openchamber.visual.field.sendAnonymousUsageReportsHint',
     keywords: ['telemetry', 'analytics'],

@@ -387,7 +387,7 @@ export function ScheduledTasksDialog() {
           }
         }}
       >
-        <SelectTrigger className={isMobile ? 'w-full' : undefined}>
+        <SelectTrigger size="lg" className={isMobile ? 'w-full' : undefined}>
           {selectedProject ? (
             <SelectValue>{renderProjectLabel(selectedProject)}</SelectValue>
           ) : (
