@@ -150,6 +150,7 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     page: 'general',
     titleKey: 'settings.openchamber.visual.field.expandedEditorToolbar',
     keywords: ['editor', 'toolbar', 'tabs', 'docked', 'files'],
+    isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
     id: 'appearance.file-editor-keymap',

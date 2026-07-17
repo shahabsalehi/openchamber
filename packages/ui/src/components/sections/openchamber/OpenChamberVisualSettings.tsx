@@ -418,7 +418,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         void updateDesktopSettings({ reportUsage: enabled });
     }, [setReportUsage]);
 
-    const shouldAnimateChatPreview = isSettingsDialogOpen
+    const shouldAnimateChatPreview = (isSettingsDialogOpen || isMobile || isVSCodeRuntime())
         && (visibleSettings ? visibleSettings.includes('chatRenderMode') : true);
 
     React.useEffect(() => {
@@ -602,7 +602,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         ? hasLocalizationSettings
         : (shouldShow('theme') || showMobileLayoutSetting || shouldShow('pwaInstallName') || shouldShow('pwaOrientation') || shouldShow('timeFormat') || shouldShow('weekStart'));
     const hasLayoutSettings = shouldShow('fontSize') || shouldShow('terminalFontSize') || shouldShow('editorFontSize') || shouldShow('spacing') || (shouldShow('inputBarOffset') && isMobile);
-    const hasNavigationSettings = (shouldShow('terminalQuickKeys') && !isMobile) || ((shouldShow('terminalShell') || shouldShow('terminalLoginShell')) && !isVSCode) || shouldShow('fileEditorKeymap') || shouldShow('expandedEditorToolbar');
+    const hasNavigationSettings = (shouldShow('terminalQuickKeys') && !isMobile) || ((shouldShow('terminalShell') || shouldShow('terminalLoginShell')) && !isVSCode) || shouldShow('fileEditorKeymap') || (shouldShow('expandedEditorToolbar') && !isVSCode);
     const hasBehaviorSettings = shouldShow('mermaidRendering')
         || (shouldShow('sessionGoal') && !isVSCode)
         || shouldShow('userMessageRendering')
@@ -1435,7 +1435,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                             </SettingsControlGroup>
                         )}
                         <div className={SETTINGS_OPTION_STACK_CLASS}>
-                            {shouldShow('expandedEditorToolbar') && (
+                            {shouldShow('expandedEditorToolbar') && !isVSCode && (
                                 <SettingsCheckboxRow
                                     checked={expandedEditorToolbar}
                                     onChange={handleExpandedEditorToolbarChange}
