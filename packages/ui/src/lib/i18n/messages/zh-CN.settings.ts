@@ -379,6 +379,7 @@ export const settingsDict = {
   'settings.remoteInstances.page.logsDialog.selectedInstanceFallback': '所选实例',
   'settings.remoteInstances.page.patternDialog.descriptionWithHost': '{host} 需要一个具体目标地址。',
   'settings.remoteInstances.page.patternDialog.description': '输入目标地址。',
+  'settings.common.infoAria': '更多信息',
   'settings.common.actions.cancel': '取消',
   'settings.common.actions.create': '创建',
   'settings.common.actions.delete': '删除',

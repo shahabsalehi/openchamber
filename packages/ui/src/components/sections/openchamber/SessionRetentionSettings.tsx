@@ -1,5 +1,4 @@
 import React from 'react';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from '@/components/ui';
 import { NumberInput } from '@/components/ui/number-input';
 import { Button } from '@/components/ui/button';
@@ -66,16 +65,7 @@ export const SessionRetentionSettings: React.FC = () => {
   return (
     <SettingsSection
       title={t('settings.openchamber.sessionRetention.title')}
-      titleAccessory={(
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-          </TooltipTrigger>
-          <TooltipContent sideOffset={8} className="max-w-xs">
-            {t('settings.openchamber.sessionRetention.tooltip')}
-          </TooltipContent>
-        </Tooltip>
-      )}
+      info={t('settings.openchamber.sessionRetention.tooltip')}
     >
       <SettingsCheckboxRow
         settingsItem="sessions.auto-cleanup"

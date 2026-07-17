@@ -1,7 +1,6 @@
 import * as React from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Icon } from "@/components/icon/Icon";
 import {
   SettingsSection,
@@ -103,26 +102,23 @@ export const OpenCodeCliSettings: React.FC = () => {
   }, [setShowOpenCodeUpdateNotifications]);
 
   return (
-    <SettingsSection
-      title={t('settings.openchamber.opencodeCli.title')}
-      titleAccessory={(
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-          </TooltipTrigger>
-          <TooltipContent sideOffset={8} className="max-w-xs">
-            {t('settings.openchamber.opencodeCli.tooltipPrefix')}
-            {' '}
-            <code className="font-mono text-xs">opencode</code>
-            {t('settings.openchamber.opencodeCli.tooltipSuffix')}
-          </TooltipContent>
-        </Tooltip>
-      )}
-    >
+    <SettingsSection title={t('settings.openchamber.opencodeCli.title')}>
       <div className="space-y-0.5">
         <SettingsFieldRow
           settingsItem="sessions.opencode-binary"
           label={t('settings.openchamber.opencodeCli.field.binaryPath')}
+          info={(
+            <>
+              {t('settings.openchamber.opencodeCli.tipPrefix')}
+              {' '}
+              <span className="font-mono">OPENCODE_BINARY</span>
+              {' '}
+              {t('settings.openchamber.opencodeCli.tipMiddle')}
+              {' '}
+              <span className="font-mono">~/.config/openchamber/settings.json</span>
+              {'.'}
+            </>
+          )}
           alignEnd={false}
           controlClassName="@xl:w-[20rem]"
         >
@@ -146,19 +142,6 @@ export const OpenCodeCliSettings: React.FC = () => {
             <Icon name="folder" className="h-4 w-4" />
           </Button>
         </SettingsFieldRow>
-
-        <div className="py-1.5">
-          <div className="typography-micro text-muted-foreground/70">
-            {t('settings.openchamber.opencodeCli.tipPrefix')}
-            {' '}
-            <span className="font-mono">OPENCODE_BINARY</span>
-            {' '}
-            {t('settings.openchamber.opencodeCli.tipMiddle')}
-            {' '}
-            <span className="font-mono">~/.config/openchamber/settings.json</span>
-            {'.'}
-          </div>
-        </div>
 
         <SettingsInset className={SETTINGS_OPTION_STACK_CLASS}>
           <SettingsCheckboxRow

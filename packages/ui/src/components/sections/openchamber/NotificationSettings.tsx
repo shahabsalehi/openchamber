@@ -466,6 +466,13 @@ export const NotificationSettings: React.FC = () => {
                 void handleToggleChange(checked);
               }}
               label={t('settings.notifications.page.delivery.enableLabel')}
+              info={
+                isBrowser
+                  ? t('settings.notifications.page.delivery.browserPermissionHint')
+                  : isVSCode
+                    ? t('settings.notifications.page.delivery.vscodeHint')
+                    : undefined
+              }
               ariaLabel={t('settings.notifications.page.delivery.enableAria')}
             />
 
@@ -497,9 +504,6 @@ export const NotificationSettings: React.FC = () => {
 
           {isBrowser && (
             <div className="mt-1">
-              <p className="typography-meta text-muted-foreground/70">
-                {t('settings.notifications.page.delivery.browserPermissionHint')}
-              </p>
               {notificationPermission === 'denied' && (
                 <p className="typography-meta text-[var(--status-error)] mt-1">
                   {t('settings.notifications.page.delivery.permissionDenied')}
@@ -510,13 +514,6 @@ export const NotificationSettings: React.FC = () => {
                   {t('settings.notifications.page.delivery.permissionGrantedButDisabled')}
                 </p>
               )}
-            </div>
-          )}
-          {isVSCode && (
-            <div className="mt-1">
-              <p className="typography-meta text-muted-foreground/70">
-                {t('settings.notifications.page.delivery.vscodeHint')}
-              </p>
             </div>
           )}
         </SettingsSection>
@@ -625,11 +622,8 @@ export const NotificationSettings: React.FC = () => {
                 }
               }}
               label={t('settings.notifications.page.push.enableLabel')}
-              description={
-                !pushSupported
-                  ? t('settings.notifications.page.push.unsupportedHint')
-                  : t('settings.notifications.page.push.supportedHint')
-              }
+              description={!pushSupported ? t('settings.notifications.page.push.unsupportedHint') : undefined}
+              info={pushSupported ? t('settings.notifications.page.push.supportedHint') : undefined}
               ariaLabel={t('settings.notifications.page.push.enableAria')}
               labelAccessory={
                 pushBusy ? (

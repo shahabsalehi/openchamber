@@ -2,6 +2,7 @@ import React from 'react';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
 import { SettingsSection, SETTINGS_CUSTOM_TRIGGER_CLASS } from '@/components/sections/shared/SettingsSection';
+import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
@@ -14,7 +15,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { toast } from '@/components/ui';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Icon } from "@/components/icon/Icon";
 import type { IconName } from "@/components/icon/icons";
 import { reloadOpenCodeConfiguration } from '@/stores/useAgentsStore';
@@ -624,14 +624,7 @@ export const ProvidersPage: React.FC = () => {
                   <div className="py-1.5">
                     <label className="typography-ui-label text-foreground flex items-center gap-1.5">
                       {t('settings.providers.page.auth.apiKeyLabel')}
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-                        </TooltipTrigger>
-                        <TooltipContent sideOffset={8} className="max-w-xs">
-                          {t('settings.providers.page.auth.apiKeyTooltip')}
-                        </TooltipContent>
-                      </Tooltip>
+                      <SettingsInfoHint>{t('settings.providers.page.auth.apiKeyTooltip')}</SettingsInfoHint>
                     </label>
                     <div className="flex flex-col @xl:flex-row @xl:items-center gap-2 mt-1.5">
                       <Input
@@ -807,7 +800,7 @@ export const ProvidersPage: React.FC = () => {
               <div className="flex items-center gap-1.5 py-1.5">
                 <Icon name="check" className="w-4 h-4 text-[var(--status-success)] shrink-0" />
                 <span className="typography-ui-label text-foreground">{t('settings.providers.page.auth.connected')}</span>
-                <span className="typography-meta text-muted-foreground ml-1">{t('settings.providers.page.auth.useReconnectHint')}</span>
+                <SettingsInfoHint>{t('settings.providers.page.auth.useReconnectHint')}</SettingsInfoHint>
               </div>
             ) : authLoading ? (
               <div className="py-1.5 typography-meta text-muted-foreground">{t('settings.providers.page.auth.loadingMethods')}</div>
@@ -816,14 +809,7 @@ export const ProvidersPage: React.FC = () => {
                 <div className="py-1.5">
                   <label className="typography-ui-label text-foreground flex items-center gap-1.5">
                     {t('settings.providers.page.auth.apiKeyLabel')}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-                      </TooltipTrigger>
-                      <TooltipContent sideOffset={8} className="max-w-xs">
-                        {t('settings.providers.page.auth.apiKeyTooltip')}
-                      </TooltipContent>
-                    </Tooltip>
+                    <SettingsInfoHint>{t('settings.providers.page.auth.apiKeyTooltip')}</SettingsInfoHint>
                   </label>
                   <div className="flex flex-col @xl:flex-row @xl:items-center gap-2 mt-1.5">
                     <Input

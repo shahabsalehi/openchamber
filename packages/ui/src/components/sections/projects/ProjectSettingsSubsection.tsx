@@ -6,6 +6,8 @@ export { PROJECT_SETTINGS_CONTROL_WIDTH } from './projectSettingsConstants';
 type ProjectSettingsSubsectionProps = {
   title: string;
   description?: string;
+  /** Helper text hidden behind an info icon next to the title. */
+  info?: React.ReactNode;
   settingsItem?: string;
   titleAccessory?: React.ReactNode;
   headerAction?: React.ReactNode;
@@ -19,6 +21,7 @@ type ProjectSettingsSubsectionProps = {
 export const ProjectSettingsSubsection: React.FC<ProjectSettingsSubsectionProps> = ({
   title,
   description,
+  info,
   settingsItem,
   titleAccessory,
   headerAction,
@@ -31,6 +34,7 @@ export const ProjectSettingsSubsection: React.FC<ProjectSettingsSubsectionProps>
     <SettingsSection
       title={title}
       description={description}
+      info={info}
       settingsItem={settingsItem}
       titleAccessory={titleAccessory}
       headerAction={headerAction}

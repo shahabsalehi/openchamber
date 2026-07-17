@@ -2,8 +2,6 @@ import React from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Icon } from "@/components/icon/Icon";
 import {
   fetchMagicPromptOverrides,
   getDefaultMagicPromptTemplate,
@@ -17,6 +15,7 @@ import { useMagicPromptsStore } from '@/stores/useMagicPromptsStore';
 import { useI18n } from '@/lib/i18n';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
 import { SettingsSection } from '@/components/sections/shared/SettingsSection';
+import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 
 type PromptBlock = {
   id: MagicPromptId;
@@ -322,14 +321,7 @@ export const MagicPromptsPage: React.FC = () => {
     <SettingsPageLayout
       title={tUnsafe(pageConfig.titleKey)}
       titleAccessory={(
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-          </TooltipTrigger>
-          <TooltipContent sideOffset={8} className="max-w-xs">
-            {tUnsafe(pageConfig.descriptionKey)}
-          </TooltipContent>
-        </Tooltip>
+        <SettingsInfoHint contentClassName="max-w-xs">{tUnsafe(pageConfig.descriptionKey)}</SettingsInfoHint>
       )}
       headerEnd={(
         <Button
@@ -360,16 +352,7 @@ export const MagicPromptsPage: React.FC = () => {
           <SettingsSection
             key={block.id}
             title={tUnsafe(block.titleKey)}
-            titleAccessory={(
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent sideOffset={8} className="max-w-xs">
-                  {definition.description}
-                </TooltipContent>
-              </Tooltip>
-            )}
+            info={definition.description}
             description={
               definition.placeholders && definition.placeholders.length > 0
                 ? `${t('settings.magicPrompts.page.placeholdersLabel')} ${definition.placeholders.map((item) => `{{${item.key}}}`).join(', ')}`

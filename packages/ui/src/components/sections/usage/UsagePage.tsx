@@ -11,7 +11,6 @@ import {
 } from '@/components/ui/collapsible';
 import type { UsageWindows, QuotaProviderId } from '@/types';
 import { getAllModelFamilies, getDisplayModelName, sortModelFamilies, groupModelsByFamilyWithGetter } from '@/lib/quota/model-families';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Icon } from "@/components/icon/Icon";
 import { useI18n } from '@/lib/i18n';
 import { formatTimeForPreference } from '@/lib/timeFormat';
@@ -170,16 +169,7 @@ export const UsagePage: React.FC = () => {
           onChange={handleDropdownToggle}
           label={t('settings.usage.page.options.showInHeader')}
           ariaLabel={t('settings.usage.page.options.showInHeaderAria')}
-          labelAccessory={(
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-              </TooltipTrigger>
-              <TooltipContent sideOffset={8} className="max-w-xs">
-                {t('settings.usage.page.options.showInHeaderTooltip')}
-              </TooltipContent>
-            </Tooltip>
-          )}
+          info={t('settings.usage.page.options.showInHeaderTooltip')}
         />
       </SettingsSection>
 

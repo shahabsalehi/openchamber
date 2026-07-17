@@ -16,6 +16,7 @@ import {
   SETTINGS_FIELD_LABEL_CLASS,
   SETTINGS_SELECT_SIZE,
 } from '@/components/sections/shared/SettingsSection';
+import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 import {
   Select,
   SelectContent,
@@ -535,7 +536,7 @@ const SkillsInstalledPage: React.FC = () => {
             {isNewSkill && (
               <SettingsFieldRow
                 label={t('settings.skills.page.field.skillNameLocation')}
-                description={t('settings.skills.page.field.skillNameHint')}
+                info={t('settings.skills.page.field.skillNameHint')}
               >
                 <Input
                   value={draftName}
@@ -584,7 +585,7 @@ const SkillsInstalledPage: React.FC = () => {
                   {t('settings.common.field.description')} <span className="text-[var(--status-error)]">*</span>
                 </>
               )}
-              description={t('settings.skills.page.field.descriptionHint')}
+              info={t('settings.skills.page.field.descriptionHint')}
               controlClassName="w-full max-w-none"
             >
               <Textarea
@@ -756,9 +757,14 @@ const SkillsInstalledPage: React.FC = () => {
           ) : (
             <div className="space-y-4 flex-1 min-h-0 flex flex-col pt-2">
               <div className="space-y-2 flex-shrink-0">
-                <label className={SETTINGS_FIELD_LABEL_CLASS}>
-                  {t('settings.skills.page.fileDialog.field.filePath')}
-                </label>
+                <div className="flex items-center gap-1">
+                  <label className={SETTINGS_FIELD_LABEL_CLASS}>
+                    {t('settings.skills.page.fileDialog.field.filePath')}
+                  </label>
+                  {!editingFilePath && (
+                    <SettingsInfoHint>{t('settings.skills.page.fileDialog.field.filePathHint')}</SettingsInfoHint>
+                  )}
+                </div>
                 <Input
                   value={newFileName}
                   onChange={(e) => setNewFileName(e.target.value)}
@@ -766,11 +772,6 @@ const SkillsInstalledPage: React.FC = () => {
                   className="text-foreground placeholder:text-muted-foreground focus-visible:ring-[var(--primary-base)]"
                   disabled={editingFilePath !== null}
                 />
-                {!editingFilePath && (
-                  <p className="typography-micro text-muted-foreground">
-                    {t('settings.skills.page.fileDialog.field.filePathHint')}
-                  </p>
-                )}
               </div>
               <div className="space-y-2 flex-1 min-h-0 flex flex-col">
                 <label className={`${SETTINGS_FIELD_LABEL_CLASS} flex-shrink-0`}>

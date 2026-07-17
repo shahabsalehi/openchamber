@@ -412,6 +412,7 @@ export const settingsDict = {
   'settings.remoteInstances.page.logsDialog.selectedInstanceFallback': '選択したインスタンス',
   'settings.remoteInstances.page.patternDialog.descriptionWithHost': '{host} には具体的な接続先が必要です。',
   'settings.remoteInstances.page.patternDialog.description': '接続先を入力してください。',
+  'settings.common.infoAria': '詳細情報',
   'settings.common.actions.cancel': 'キャンセル',
   'settings.common.actions.create': '作成',
   'settings.common.actions.delete': '削除',

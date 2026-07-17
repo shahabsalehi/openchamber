@@ -1,7 +1,6 @@
 import React from 'react';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import type { ThemeMode } from '@/types/theme';
 import { useUIStore } from '@/stores/useUIStore';
@@ -52,6 +51,7 @@ import {
     SETTINGS_FIELDS_STACK_CLASS,
     SETTINGS_OPTION_STACK_CLASS,
 } from '@/components/sections/shared/SettingsSection';
+import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 
 interface Option<T extends string> {
     id: T;
@@ -796,7 +796,6 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                                     selected={themeMode === option.value}
                                                     onSelect={() => setThemeMode(option.value)}
                                                     label={tUnsafe(option.labelKey)}
-                                                    description={tUnsafe(option.descriptionKey)}
                                                     ariaLabel={tUnsafe(option.labelKey)}
                                                 />
                                             ))}
@@ -886,20 +885,9 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                                 <Icon name="restart" className={cn('h-3.5 w-3.5', themesReloading && 'animate-spin')} />
                                                 {themesReloading ? t('settings.openchamber.visual.actions.reloadingThemes') : t('settings.openchamber.visual.actions.reloadThemes')}
                                             </button>
-                                            <Tooltip>
-                                                <TooltipTrigger asChild>
-                                                    <button
-                                                        type="button"
-                                                        className="flex items-center justify-center rounded-md p-1 text-muted-foreground/70 hover:text-foreground"
-                                                        aria-label={t('settings.openchamber.visual.field.themeImportInfoAria')}
-                                                    >
-                                                        <Icon name="information" className="h-3.5 w-3.5" />
-                                                    </button>
-                                                </TooltipTrigger>
-                                                <TooltipContent sideOffset={8}>
-                                                    {t('settings.openchamber.visual.field.themeImportInfoTooltip')}
-                                                </TooltipContent>
-                                            </Tooltip>
+                                            <SettingsInfoHint>
+                                                {t('settings.openchamber.visual.field.themeImportInfoTooltip')}
+                                            </SettingsInfoHint>
                                         </div>
                                     </div>
                                 </SettingsTwoColumn>
@@ -911,7 +899,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                             onChange={setVibrancyChecked}
                                             disabled={vibrancyRestarting}
                                             label={t('settings.openchamber.visual.field.macVibrancy')}
-                                            description={t('settings.openchamber.visual.field.macVibrancyHint')}
+                                            info={t('settings.openchamber.visual.field.macVibrancyHint')}
                                             ariaLabel={t('settings.openchamber.visual.field.macVibrancy')}
                                         />
                                         {vibrancyChecked !== macVibrancyEnabled && (
@@ -940,7 +928,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                             checked={dockBadgeEnabled}
                                             onChange={setDockBadgeEnabled}
                                             label={t('settings.openchamber.visual.field.dockBadge')}
-                                            description={t('settings.openchamber.visual.field.dockBadgeHint')}
+                                            info={t('settings.openchamber.visual.field.dockBadgeHint')}
                                             ariaLabel={t('settings.openchamber.visual.field.dockBadge')}
                                         />
                                     </SettingsInset>
@@ -953,8 +941,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                 <SettingsTwoColumn>
                                     <SettingsStackedField
                                         label={t('settings.appearance.language.label')}
-                                        description={t('settings.appearance.language.description')}
-                                        descriptionPlacement="after"
+                                        info={t('settings.appearance.language.description')}
                                         settingsItem="appearance.language"
                                     >
                                         <Select value={locale} onValueChange={(value) => setLocale(value as Locale)}>
@@ -1020,7 +1007,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                             {showPwaInstallNameSetting && (
                                 <SettingsFieldRow
                                     label={t('settings.openchamber.visual.field.installAppName')}
-                                    description={t('settings.openchamber.visual.field.installAppNameHint')}
+                                    info={t('settings.openchamber.visual.field.installAppNameHint')}
                                     settingsItem="appearance.pwa-install-name"
                                     alignEnd={false}
                                     controlClassName={SETTINGS_CONTROL_CLUSTER_CLASS}
@@ -1108,7 +1095,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                             {showMobileKeyboardModeSetting && (
                                 <SettingsFieldRow
                                     label={t('settings.openchamber.visual.field.mobileKeyboardMode')}
-                                    description={t('settings.openchamber.visual.field.mobileKeyboardModeHint')}
+                                    info={t('settings.openchamber.visual.field.mobileKeyboardModeHint')}
                                     settingsItem="appearance.mobile-keyboard-mode"
                                     alignEnd={false}
                                     controlClassName={SETTINGS_CONTROL_CLUSTER_CLASS}
@@ -1349,19 +1336,8 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                 )}
                                 {shouldShow('inputBarOffset') && (
                                     <SettingsStackedField
-                                        label={(
-                                            <span className="inline-flex items-center gap-1.5">
-                                                {t('settings.openchamber.visual.field.inputBarOffset')}
-                                                <Tooltip>
-                                                    <TooltipTrigger asChild>
-                                                        <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-                                                    </TooltipTrigger>
-                                                    <TooltipContent sideOffset={8} className="max-w-xs">
-                                                        {t('settings.openchamber.visual.field.inputBarOffsetTooltip')}
-                                                    </TooltipContent>
-                                                </Tooltip>
-                                            </span>
-                                        )}
+                                        label={t('settings.openchamber.visual.field.inputBarOffset')}
+                                        info={t('settings.openchamber.visual.field.inputBarOffsetTooltip')}
                                         settingsItem="appearance.input-bar-offset"
                                         controlClassName="w-full"
                                     >
@@ -1431,16 +1407,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                     label={t('settings.openchamber.visual.field.terminalQuickKeys')}
                                     ariaLabel={t('settings.openchamber.visual.field.terminalQuickKeysAria')}
                                     settingsItem="appearance.terminal-quick-keys"
-                                    labelAccessory={(
-                                        <Tooltip>
-                                            <TooltipTrigger asChild>
-                                                <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-                                            </TooltipTrigger>
-                                            <TooltipContent sideOffset={8} className="max-w-xs">
-                                                {t('settings.openchamber.visual.field.terminalQuickKeysTooltip')}
-                                            </TooltipContent>
-                                        </Tooltip>
-                                    )}
+                                    info={t('settings.openchamber.visual.field.terminalQuickKeysTooltip')}
                                 />
                             )}
                         </div>
@@ -1725,16 +1692,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                 {shouldShow('sessionGoal') && !isVSCode && (
                                     <SettingsSection
                                         title={t('settings.openchamber.visual.goal.sectionTitle')}
-                                        titleAccessory={(
-                                            <Tooltip>
-                                                <TooltipTrigger asChild>
-                                                    <Icon name="information" className="h-3.5 w-3.5 cursor-help text-muted-foreground/60" />
-                                                </TooltipTrigger>
-                                                <TooltipContent sideOffset={8} className="max-w-sm">
-                                                    {t('settings.openchamber.visual.goal.description')}
-                                                </TooltipContent>
-                                            </Tooltip>
-                                        )}
+                                        info={t('settings.openchamber.visual.goal.description')}
                                         contentClassName={SETTINGS_OPTION_STACK_CLASS}
                                     >
                                         <SettingsCheckboxRow
@@ -1845,16 +1803,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                         label={t('settings.openchamber.visual.field.showSplitAssistantMessageActions')}
                                         ariaLabel={t('settings.openchamber.visual.field.showSplitAssistantMessageActionsAria')}
                                         settingsItem="chat.inline-assistant-actions"
-                                        labelAccessory={(
-                                            <Tooltip>
-                                                <TooltipTrigger asChild>
-                                                    <Icon name="information" className="h-3.5 w-3.5 cursor-help text-muted-foreground/60" />
-                                                </TooltipTrigger>
-                                                <TooltipContent sideOffset={8} className="max-w-xs">
-                                                    {t('settings.openchamber.visual.field.showSplitAssistantMessageActionsTooltip')}
-                                                </TooltipContent>
-                                            </Tooltip>
-                                        )}
+                                        info={t('settings.openchamber.visual.field.showSplitAssistantMessageActionsTooltip')}
                                     />
                                 )}
 
@@ -1956,7 +1905,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                             checked={reportUsage}
                             onChange={handleReportUsageChange}
                             label={t('settings.openchamber.visual.field.sendAnonymousUsageReports')}
-                            description={t('settings.openchamber.visual.field.sendAnonymousUsageReportsHint')}
+                            info={t('settings.openchamber.visual.field.sendAnonymousUsageReportsHint')}
                             ariaLabel={t('settings.openchamber.visual.field.sendAnonymousUsageReportsAria')}
                             settingsItem="appearance.usage-reports"
                         />

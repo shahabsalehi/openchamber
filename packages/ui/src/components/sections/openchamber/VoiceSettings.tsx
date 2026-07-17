@@ -12,7 +12,6 @@ import {
 import { Radio } from '@/components/ui/radio';
 import { Button } from '@/components/ui/button';
 import { NumberInput } from '@/components/ui/number-input';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Icon } from "@/components/icon/Icon";
 import {
     SettingsSection,
@@ -26,6 +25,7 @@ import {
     SETTINGS_FIELD_LABEL_CLASS,
     SETTINGS_HELPER_CLASS,
 } from '@/components/sections/shared/SettingsSection';
+import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 import { browserVoiceService } from '@/lib/voice/browserVoiceService';
 import { cn } from '@/lib/utils';
 import { runtimeFetch } from '@/lib/runtime-fetch';
@@ -799,24 +799,15 @@ export const VoiceSettings: React.FC = () => {
                 {showMessageTTSButtons && (
                     <>
                         <SettingsControlGroup
-                            title={(
-                                <span className="flex items-center gap-1.5">
-                                    {t('settings.voice.page.field.provider')}
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <Icon name="information" className="h-3.5 w-3.5 cursor-help text-muted-foreground/60" />
-                                        </TooltipTrigger>
-                                        <TooltipContent sideOffset={8} className="max-w-xs">
-                                            <ul className="space-y-1">
-                                                <li><strong>{t('settings.voice.page.provider.browser')}</strong> {t('settings.voice.page.tooltip.browser')}</li>
-                                                <li><strong>{t('settings.voice.page.provider.local')}</strong> {t('settings.voice.page.tooltip.localTts')}</li>
-                                                <li><strong>{t('settings.voice.page.provider.openai')}</strong> {t('settings.voice.page.tooltip.openai')}</li>
-                                                <li><strong>{t('settings.voice.page.provider.custom')}</strong> {t('settings.voice.page.tooltip.custom')}</li>
-                                                <li><strong>{t('settings.voice.page.provider.say')}</strong> {t('settings.voice.page.tooltip.say')}</li>
-                                            </ul>
-                                        </TooltipContent>
-                                    </Tooltip>
-                                </span>
+                            title={t('settings.voice.page.field.provider')}
+                            info={(
+                                <ul className="space-y-1">
+                                    <li><strong>{t('settings.voice.page.provider.browser')}</strong> {t('settings.voice.page.tooltip.browser')}</li>
+                                    <li><strong>{t('settings.voice.page.provider.local')}</strong> {t('settings.voice.page.tooltip.localTts')}</li>
+                                    <li><strong>{t('settings.voice.page.provider.openai')}</strong> {t('settings.voice.page.tooltip.openai')}</li>
+                                    <li><strong>{t('settings.voice.page.provider.custom')}</strong> {t('settings.voice.page.tooltip.custom')}</li>
+                                    <li><strong>{t('settings.voice.page.provider.say')}</strong> {t('settings.voice.page.tooltip.say')}</li>
+                                </ul>
                             )}
                         >
                             <SettingsChipGroup
@@ -882,11 +873,11 @@ export const VoiceSettings: React.FC = () => {
                             {voiceProvider === 'openai-compatible' && (
                                 <div className="space-y-3">
                                     <div className="space-y-1.5">
-                                        <span className={cn(SETTINGS_FIELD_LABEL_CLASS, !openaiCompatibleUrl.trim() && "text-[var(--status-error)]")}>
-                                            {t('settings.voice.page.field.serverUrl')}
-                                        </span>
-                                        <span className={SETTINGS_HELPER_CLASS}>
-                                            {t('settings.voice.page.field.serverUrlHint')}
+                                        <span className="flex items-center gap-1.5">
+                                            <span className={cn(SETTINGS_FIELD_LABEL_CLASS, !openaiCompatibleUrl.trim() && "text-[var(--status-error)]")}>
+                                                {t('settings.voice.page.field.serverUrl')}
+                                            </span>
+                                            <SettingsInfoHint>{t('settings.voice.page.field.serverUrlHint')}</SettingsInfoHint>
                                         </span>
                                         <div className={cn('relative', SETTINGS_CONTROL_CLUSTER_CLASS)}>
                                             <input
@@ -944,9 +935,9 @@ export const VoiceSettings: React.FC = () => {
                                         </div>
                                     </div>
                                     <div className="space-y-1.5">
-                                        <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.voice.page.field.voice')}</span>
-                                        <span className={SETTINGS_HELPER_CLASS}>
-                                            {t('settings.voice.page.field.voiceIdentifierHint')}
+                                        <span className="flex items-center gap-1.5">
+                                            <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.voice.page.field.voice')}</span>
+                                            <SettingsInfoHint>{t('settings.voice.page.field.voiceIdentifierHint')}</SettingsInfoHint>
                                         </span>
                                         <div className={cn('flex items-center gap-2', SETTINGS_CONTROL_CLUSTER_CLASS)}>
                                             <div className="relative min-w-0 flex-1">
@@ -1113,21 +1104,12 @@ export const VoiceSettings: React.FC = () => {
                 {dictationEnabled && (
                     <>
                         <SettingsControlGroup
-                            title={(
-                                <span className="flex items-center gap-1.5">
-                                    {t('settings.voice.page.field.provider')}
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <Icon name="information" className="h-3.5 w-3.5 cursor-help text-muted-foreground/60" />
-                                        </TooltipTrigger>
-                                        <TooltipContent sideOffset={8} className="max-w-xs">
-                                            <ul className="space-y-1">
-                                                <li><strong>{t('settings.voice.page.provider.local')}</strong> {t('settings.voice.page.tooltip.sttLocal')}</li>
-                                                <li><strong>{t('settings.voice.page.provider.server')}</strong> {t('settings.voice.page.tooltip.sttServer')}</li>
-                                            </ul>
-                                        </TooltipContent>
-                                    </Tooltip>
-                                </span>
+                            title={t('settings.voice.page.field.provider')}
+                            info={(
+                                <ul className="space-y-1">
+                                    <li><strong>{t('settings.voice.page.provider.local')}</strong> {t('settings.voice.page.tooltip.sttLocal')}</li>
+                                    <li><strong>{t('settings.voice.page.provider.server')}</strong> {t('settings.voice.page.tooltip.sttServer')}</li>
+                                </ul>
                             )}
                         >
                             <SettingsChipGroup
@@ -1152,11 +1134,11 @@ export const VoiceSettings: React.FC = () => {
                         {sttProvider === 'openai-compatible' && (
                             <div className="space-y-3">
                                 <div className="space-y-1.5">
-                                    <span className={cn(SETTINGS_FIELD_LABEL_CLASS, !sttServerUrl.trim() && "text-[var(--status-error)]")}>
-                                        {t('settings.voice.page.field.serverUrl')}
-                                    </span>
-                                    <span className={SETTINGS_HELPER_CLASS}>
-                                        {t('settings.voice.page.field.sttServerUrlHint')}
+                                    <span className="flex items-center gap-1.5">
+                                        <span className={cn(SETTINGS_FIELD_LABEL_CLASS, !sttServerUrl.trim() && "text-[var(--status-error)]")}>
+                                            {t('settings.voice.page.field.serverUrl')}
+                                        </span>
+                                        <SettingsInfoHint>{t('settings.voice.page.field.sttServerUrlHint')}</SettingsInfoHint>
                                     </span>
                                     <div className={cn('relative', SETTINGS_CONTROL_CLUSTER_CLASS)}>
                                         <input
@@ -1214,9 +1196,9 @@ export const VoiceSettings: React.FC = () => {
                                     </div>
                                 </div>
                                 <div className="space-y-1.5">
-                                    <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.voice.page.field.language')}</span>
-                                    <span className={SETTINGS_HELPER_CLASS}>
-                                        {t('settings.voice.page.field.sttLanguageHint')}
+                                    <span className="flex items-center gap-1.5">
+                                        <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.voice.page.field.language')}</span>
+                                        <SettingsInfoHint>{t('settings.voice.page.field.sttLanguageHint')}</SettingsInfoHint>
                                     </span>
                                     <div className="relative max-w-[8rem]">
                                         <input

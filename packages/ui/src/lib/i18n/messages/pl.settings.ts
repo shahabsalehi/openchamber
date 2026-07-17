@@ -173,6 +173,7 @@ export const settingsDict = {
   'settings.commands.sidebar.toast.renameFailed': 'Nie udało się zmienić nazwy polecenia',
   'settings.commands.sidebar.toast.resetFailed': 'Nie udało się zresetować polecenia',
   'settings.commands.sidebar.total': 'Suma: {count}',
+  'settings.common.infoAria': 'Więcej informacji',
   'settings.common.actions.cancel': 'Anuluj',
   'settings.common.actions.clear': 'Wyczyść',
   'settings.common.actions.copyAll': 'Kopiuj wszystko',

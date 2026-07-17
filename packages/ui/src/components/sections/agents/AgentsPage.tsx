@@ -11,7 +11,6 @@ import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { opencodeClient } from '@/lib/opencode/client';
 import { cn } from '@/lib/utils';
 import { ModelSelector } from './ModelSelector';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useI18n } from '@/lib/i18n';
 import { parseModelIdentifier } from '@/lib/modelIdentifier';
 import { useConfigStore } from '@/stores/useConfigStore';
@@ -745,19 +744,8 @@ export const AgentsPage: React.FC = () => {
 
         <SettingsStackedField
           settingsItem="agents.mode"
-          label={(
-            <div className="flex items-center gap-1.5">
-              <span>{t('settings.agents.page.field.mode')}</span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent sideOffset={8} className="max-w-xs">
-                  {t('settings.agents.page.field.modeTooltip')}
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          )}
+          label={t('settings.agents.page.field.mode')}
+          info={t('settings.agents.page.field.modeTooltip')}
         >
           <SettingsChipGroup
             aria-label={t('settings.agents.page.field.mode')}
@@ -797,20 +785,13 @@ export const AgentsPage: React.FC = () => {
 
         <SettingsFieldRow
           settingsItem="agents.variant"
-          label={(
-            <div className="flex items-center gap-1.5">
-              <span>{t('settings.agents.page.field.variant')}</span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent sideOffset={8} className="max-w-xs">
-                  {t('settings.agents.page.field.variantTooltip')}
-                </TooltipContent>
-              </Tooltip>
+          label={t('settings.agents.page.field.variant')}
+          info={(
+            <div className="space-y-1">
+              <p>{t('settings.agents.page.field.variantTooltip')}</p>
+              <p>{t('settings.agents.page.field.variantHint')}</p>
             </div>
           )}
-          description={t('settings.agents.page.field.variantHint')}
         >
           {shouldUseVariantSelect ? (
             <Select
@@ -857,20 +838,13 @@ export const AgentsPage: React.FC = () => {
 
         <SettingsFieldRow
           settingsItem="agents.temperature"
-          label={(
-            <div className="flex items-center gap-1.5">
-              <span>{t('settings.agents.page.field.temperature')}</span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent sideOffset={8} className="max-w-xs">
-                  {t('settings.agents.page.field.temperatureTooltip')}
-                </TooltipContent>
-              </Tooltip>
+          label={t('settings.agents.page.field.temperature')}
+          info={(
+            <div className="space-y-1">
+              <p>{t('settings.agents.page.field.temperatureTooltip')}</p>
+              <p>{t('settings.agents.page.field.temperatureRange')}</p>
             </div>
           )}
-          description={t('settings.agents.page.field.temperatureRange')}
         >
           <NumberInput
             value={temperature}
@@ -902,20 +876,13 @@ export const AgentsPage: React.FC = () => {
 
         <SettingsFieldRow
           settingsItem="agents.top-p"
-          label={(
-            <div className="flex items-center gap-1.5">
-              <span>{t('settings.agents.page.field.topP')}</span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent sideOffset={8} className="max-w-xs">
-                  {t('settings.agents.page.field.topPTooltip')}
-                </TooltipContent>
-              </Tooltip>
+          label={t('settings.agents.page.field.topP')}
+          info={(
+            <div className="space-y-1">
+              <p>{t('settings.agents.page.field.topPTooltip')}</p>
+              <p>{t('settings.agents.page.field.topPRange')}</p>
             </div>
           )}
-          description={t('settings.agents.page.field.topPRange')}
         >
           <NumberInput
             value={topP}

@@ -76,7 +76,7 @@ export const ProjectIdentityFields: React.FC<ProjectIdentityFieldsProps> = ({ fo
 
       <ProjectSettingsSubsection
         title={t('settings.projects.page.field.defaultModel')}
-        description={t('settings.projects.page.field.defaultModelDescription')}
+        info={t('settings.projects.page.field.defaultModelDescription')}
         settingsItem="projects.default-model"
       >
         <ModelSelector

@@ -387,7 +387,7 @@ export const DesktopNetworkSettings: React.FC = () => {
                     }}
                     disabled={isSavingLaunchAtLogin}
                     label={t('settings.openchamber.desktopNetwork.field.launchAtLogin')}
-                    description={t('settings.openchamber.desktopNetwork.field.launchAtLoginDescription')}
+                    info={t('settings.openchamber.desktopNetwork.field.launchAtLoginDescription')}
                     ariaLabel={t('settings.openchamber.desktopNetwork.field.launchAtLoginAria')}
                   />
                 ) : null}
@@ -402,7 +402,7 @@ export const DesktopNetworkSettings: React.FC = () => {
                     }}
                     disabled={isSavingMinimizeToTray}
                     label={t('settings.openchamber.desktopNetwork.field.minimizeToTray')}
-                    description={t('settings.openchamber.desktopNetwork.field.minimizeToTrayDescription')}
+                    info={t('settings.openchamber.desktopNetwork.field.minimizeToTrayDescription')}
                     ariaLabel={t('settings.openchamber.desktopNetwork.field.minimizeToTrayAria')}
                   />
                 ) : null}
@@ -417,7 +417,7 @@ export const DesktopNetworkSettings: React.FC = () => {
                     }}
                     disabled={isSavingKeepAwake}
                     label={t('settings.openchamber.desktopNetwork.field.keepAwake')}
-                    description={t('settings.openchamber.desktopNetwork.field.keepAwakeDescription')}
+                    info={t('settings.openchamber.desktopNetwork.field.keepAwakeDescription')}
                     ariaLabel={t('settings.openchamber.desktopNetwork.field.keepAwakeAria')}
                   />
                 ) : null}
@@ -431,7 +431,7 @@ export const DesktopNetworkSettings: React.FC = () => {
                   {t('settings.openchamber.desktopPassword.field.password')}
                 </label>
               )}
-              description={t('settings.openchamber.desktopPassword.field.passwordDescription')}
+              info={t('settings.openchamber.desktopPassword.field.passwordDescription')}
               alignEnd={false}
               controlClassName="flex-col items-stretch"
             >
@@ -455,9 +455,9 @@ export const DesktopNetworkSettings: React.FC = () => {
                 onChange={setDraftValue}
                 disabled={isLoading || isSaving}
                 label={t('settings.openchamber.desktopNetwork.field.allowLanAccess')}
+                info={t('settings.openchamber.desktopNetwork.field.allowLanAccessDescription')}
                 description={(
                   <>
-                    <span className="block">{t('settings.openchamber.desktopNetwork.field.allowLanAccessDescription')}</span>
                     <span className="block text-[var(--status-warning)]/85">
                       {t('settings.openchamber.desktopNetwork.field.warning')}
                     </span>

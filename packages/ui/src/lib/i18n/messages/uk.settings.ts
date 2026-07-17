@@ -379,6 +379,7 @@ export const settingsDict = {
   "settings.remoteInstances.page.logsDialog.selectedInstanceFallback": "Вибраний інстанс",
   "settings.remoteInstances.page.patternDialog.descriptionWithHost": "Для {host} потрібно вказати конкретне призначення.",
   "settings.remoteInstances.page.patternDialog.description": "Введіть призначення.",
+  "settings.common.infoAria": "Докладніше",
   "settings.common.actions.cancel": "Скасувати",
   "settings.common.actions.create": "Створити",
   "settings.common.actions.delete": "Видалити",

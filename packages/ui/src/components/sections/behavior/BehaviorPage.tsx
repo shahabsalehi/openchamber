@@ -4,7 +4,6 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui';
 import { useI18n, type I18nKey } from '@/lib/i18n';
 import { reportSettingsSaveState } from '@/lib/persistence';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   Select,
   SelectContent,
@@ -12,7 +11,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Icon } from "@/components/icon/Icon";
 import {
   getResponseStylePresetInstructions,
   isResponseStylePreset,
@@ -256,22 +254,15 @@ export const BehaviorPage: React.FC = () => {
     >
       <SettingsSection
         title={t('settings.behavior.page.section.systemPrompt')}
-        titleAccessory={(
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-            </TooltipTrigger>
-            <TooltipContent sideOffset={8} className="max-w-xs">
-              <div className="space-y-1">
-                <p className="font-medium text-foreground">
-                  {t('settings.behavior.page.warning.title')}
-                </p>
-                <p>
-                  {t('settings.behavior.page.warning.description', { path: AGENTS_MD_PATH })}
-                </p>
-              </div>
-            </TooltipContent>
-          </Tooltip>
+        info={(
+          <div className="space-y-1">
+            <p className="font-medium text-foreground">
+              {t('settings.behavior.page.warning.title')}
+            </p>
+            <p>
+              {t('settings.behavior.page.warning.description', { path: AGENTS_MD_PATH })}
+            </p>
+          </div>
         )}
         divider={false}
         settingsItem="behavior.system-prompt"
@@ -298,16 +289,7 @@ export const BehaviorPage: React.FC = () => {
 
       <SettingsSection
         title={t('settings.behavior.page.section.responseStyle')}
-        titleAccessory={(
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-            </TooltipTrigger>
-            <TooltipContent sideOffset={8} className="max-w-xs">
-              {t('settings.behavior.page.responseStyle.tooltip')}
-            </TooltipContent>
-          </Tooltip>
-        )}
+        info={t('settings.behavior.page.responseStyle.tooltip')}
         settingsItem="behavior.response-style"
         contentClassName="space-y-3"
       >

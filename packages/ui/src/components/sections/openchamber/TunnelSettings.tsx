@@ -17,6 +17,7 @@ import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
 import { formatTimeForPreference } from '@/lib/timeFormat';
 import { useUIStore, type TimeFormatPreference } from '@/stores/useUIStore';
 import { SettingsSection, SettingsGroupTitle, SETTINGS_SELECT_SIZE, SETTINGS_FIELD_LABEL_CLASS, SETTINGS_CALLOUT_TITLE_CLASS } from '@/components/sections/shared/SettingsSection';
+import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 
 type TunnelState =
   | 'checking'
@@ -1238,16 +1239,13 @@ export const TunnelSettings: React.FC = () => {
 
   return (
     <SettingsSection
-      description={(
-        <>
+      title={t('settings.openchamber.tunnel.title')}
+      info={(
+        <div className="space-y-1">
           <p>{t('settings.openchamber.tunnel.description')}</p>
-          <p className="mt-0 text-muted-foreground/60">
-            {t('settings.openchamber.tunnel.note.serverSideEnforced')}
-          </p>
-          <p className="mt-0 text-muted-foreground/60">
-            {t('settings.openchamber.tunnel.note.connectLinksOneTime')}
-          </p>
-        </>
+          <p>{t('settings.openchamber.tunnel.note.serverSideEnforced')}</p>
+          <p>{t('settings.openchamber.tunnel.note.connectLinksOneTime')}</p>
+        </div>
       )}
       divider={false}
     >
@@ -1636,20 +1634,9 @@ export const TunnelSettings: React.FC = () => {
 
               <div className="flex items-center gap-1.5">
                 <p className="typography-meta text-muted-foreground/80">{t('settings.openchamber.tunnel.note.tokensSavedPerTunnel')}</p>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      className="rounded p-0.5 text-muted-foreground/70 hover:text-foreground"
-                      aria-label={t('settings.openchamber.tunnel.field.managedRemoteTokenInfoAria')}
-                    >
-                      <Icon name="information" className="h-3.5 w-3.5" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent sideOffset={8} className="max-w-xs">
-                    {t('settings.openchamber.tunnel.tooltip.tokensSavedPath')}
-                  </TooltipContent>
-                </Tooltip>
+                <SettingsInfoHint>
+                  {t('settings.openchamber.tunnel.tooltip.tokensSavedPath')}
+                </SettingsInfoHint>
               </div>
 
               {!selectedPreset && managedRemoteValidationError && (

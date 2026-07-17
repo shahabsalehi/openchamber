@@ -15,6 +15,7 @@ import {
   SettingsStackedField,
   SETTINGS_SELECT_SIZE,
 } from '@/components/sections/shared/SettingsSection';
+import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 
 export const SnippetsPage: React.FC = () => {
   const { t } = useI18n();
@@ -167,9 +168,11 @@ export const SnippetsPage: React.FC = () => {
       </SettingsSection>
 
       <SettingsSection settingsItem="snippets.content">
-        <span className="typography-ui-label text-foreground">{t('settings.snippets.page.field.content')}</span>
+        <div className="flex items-center gap-1">
+          <span className="typography-ui-label text-foreground">{t('settings.snippets.page.field.content')}</span>
+          <SettingsInfoHint>{t('settings.snippets.page.hint')}</SettingsInfoHint>
+        </div>
         <Textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder={t('settings.snippets.page.field.contentPlaceholder')} rows={12} className="mt-1.5 w-full font-mono typography-meta min-h-[160px] max-h-[60vh] bg-transparent" />
-        <p className="mt-2 typography-meta text-muted-foreground">{t('settings.snippets.page.hint')}</p>
         <div className="pt-3">
           <Button onClick={handleSave} disabled={isSaving || !isDirty} size="xs" className="!font-normal">
             {isSaving ? t('settings.common.actions.saving') : t('settings.common.actions.saveChanges')}

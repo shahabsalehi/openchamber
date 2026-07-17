@@ -1,8 +1,6 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Icon } from "@/components/icon/Icon";
 import {
   SettingsSection,
   SettingsFieldRow,
@@ -165,16 +163,7 @@ export const KeyboardShortcutsSettings: React.FC = () => {
       settingsItem="shortcuts.keyboard-shortcuts"
       title={t('settings.openchamber.keyboardShortcuts.title')}
       divider={false}
-      titleAccessory={(
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-          </TooltipTrigger>
-          <TooltipContent sideOffset={8} className="max-w-xs">
-            {t('settings.openchamber.keyboardShortcuts.tooltip')}
-          </TooltipContent>
-        </Tooltip>
-      )}
+      info={t('settings.openchamber.keyboardShortcuts.tooltip')}
       headerAction={(
         <Button
           type="button"

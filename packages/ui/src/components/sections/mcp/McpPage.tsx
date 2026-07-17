@@ -33,6 +33,7 @@ import {
   SETTINGS_SELECT_SIZE,
   SETTINGS_FIELD_LABEL_CLASS,
 } from '@/components/sections/shared/SettingsSection';
+import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 import { MCP_OAUTH_CALLBACK_PATH, parseMcpOAuthCallbackContext, parseMcpOAuthCallbackStateKey } from '@/components/sections/mcp/mcpOAuth';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
@@ -1617,8 +1618,9 @@ export const McpPage: React.FC = () => {
                   <div className="space-y-4">
                     <div className="space-y-2">
                       <div className="flex flex-col gap-2 @xl:flex-row @xl:items-center @xl:gap-8">
-                        <div className="flex min-w-0 flex-col @xl:w-56 shrink-0">
+                        <div className="flex min-w-0 flex-row items-center gap-1 @xl:w-56 shrink-0">
                           <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.mcp.page.advanced.timeoutMs')}</span>
+                          <SettingsInfoHint>{t('settings.mcp.page.advanced.timeoutHint')}</SettingsInfoHint>
                         </div>
                         <div className="flex items-center gap-2">
                           <Input
@@ -1634,9 +1636,6 @@ export const McpPage: React.FC = () => {
                           />
                         </div>
                       </div>
-                      <p className="typography-micro text-muted-foreground sm:pl-64">
-                        {t('settings.mcp.page.advanced.timeoutHint')}
-                      </p>
                     </div>
 
                     <div>
@@ -1674,6 +1673,7 @@ export const McpPage: React.FC = () => {
                         onChange={setOauthEnabled}
                         label={t('settings.mcp.page.advanced.oauthAutoDetection')}
                         ariaLabel={t('settings.mcp.page.advanced.oauthAutoDetectionAria')}
+                        info={t('settings.mcp.page.advanced.oauthHint')}
                       />
 
                       <div className="grid gap-3 @xl:grid-cols-2">
@@ -1715,9 +1715,6 @@ export const McpPage: React.FC = () => {
                         />
                       </div>
 
-                      <p className="typography-micro text-muted-foreground">
-                        {t('settings.mcp.page.advanced.oauthHint')}
-                      </p>
                       {suggestedRedirectUri && (
                         <p className="typography-micro text-muted-foreground">
                           {t('settings.mcp.page.advanced.oauthCallbackHint')}

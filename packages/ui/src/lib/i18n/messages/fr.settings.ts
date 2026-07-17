@@ -302,6 +302,7 @@ export const settingsDict = {
   'settings.remoteInstances.page.logsDialog.selectedInstanceFallback': 'Instance sélectionnée',
   'settings.remoteInstances.page.patternDialog.descriptionWithHost': '{host} nécessite une destination concrète.',
   'settings.remoteInstances.page.patternDialog.description': 'Entrez la destination.',
+  'settings.common.infoAria': 'Plus d’informations',
   'settings.common.actions.cancel': 'Annuler',
   'settings.common.actions.create': 'Créer',
   'settings.common.actions.delete': 'Supprimer',

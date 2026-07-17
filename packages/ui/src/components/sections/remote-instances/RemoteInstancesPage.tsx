@@ -18,7 +18,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
 import {
@@ -28,6 +27,7 @@ import {
   SETTINGS_FIELD_LABEL_CLASS,
   SETTINGS_SELECT_SIZE,
 } from '@/components/sections/shared/SettingsSection';
+import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 import { useDesktopSshStore } from '@/stores/useDesktopSshStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { toast } from '@/components/ui';
@@ -193,14 +193,7 @@ const HintLabel: React.FC<{ label: string; hint: React.ReactNode }> = ({ label, 
   return (
     <span className={`inline-flex items-center gap-1 ${SETTINGS_FIELD_LABEL_CLASS}`}>
       <span>{label}</span>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-        </TooltipTrigger>
-        <TooltipContent sideOffset={8} className="max-w-xs">
-          <div className="typography-meta text-foreground">{hint}</div>
-        </TooltipContent>
-      </Tooltip>
+      <SettingsInfoHint contentClassName="max-w-xs">{hint}</SettingsInfoHint>
     </span>
   );
 };
@@ -1395,7 +1388,7 @@ export const RemoteInstancesPage: React.FC = () => {
         {clientAuth ? (
           <SettingsSection
             title={t('settings.remoteInstances.clientAuth.title')}
-            description={t('settings.remoteInstances.clientAuth.description')}
+            info={t('settings.remoteInstances.clientAuth.description')}
             divider={false}
             settingsItem="remote-instances.client-auth"
             contentClassName="space-y-3"
@@ -1492,7 +1485,7 @@ export const RemoteInstancesPage: React.FC = () => {
 
         {showInstanceManagement ? <SettingsSection
           title={t('settings.remoteInstances.direct.title')}
-          description={t('settings.remoteInstances.direct.description')}
+          info={t('settings.remoteInstances.direct.description')}
           settingsItem="remote-instances.direct-hosts"
           contentClassName="space-y-4"
           headerAction={(
@@ -1595,9 +1588,9 @@ export const RemoteInstancesPage: React.FC = () => {
                 <p className="px-1 typography-micro text-muted-foreground">{t('settings.remoteInstances.direct.note')}</p>
               </div>
               <div className="space-y-2">
-                <div>
+                <div className="flex items-center gap-1.5">
                   <SettingsGroupTitle>{t('settings.remoteInstances.direct.headers.title')}</SettingsGroupTitle>
-                  <p className="typography-meta text-muted-foreground">{t('settings.remoteInstances.direct.headers.description')}</p>
+                  <SettingsInfoHint>{t('settings.remoteInstances.direct.headers.description')}</SettingsInfoHint>
                 </div>
                 {directHeaders.map((header) => (
                   <div key={header.id} className="flex w-full gap-2">
@@ -1632,9 +1625,9 @@ export const RemoteInstancesPage: React.FC = () => {
               <Input className="h-8" value={directEditUrl} onChange={(event) => setDirectEditUrl(event.target.value)} placeholder={t('settings.remoteInstances.direct.field.urlPlaceholder')} disabled={directSaving} autoFocus />
               <Input className="h-8" value={directEditToken} onChange={(event) => setDirectEditToken(event.target.value)} placeholder={t('settings.remoteInstances.direct.field.tokenPlaceholder')} type="password" disabled={directSaving} />
               <div className="space-y-2">
-                <div>
+                <div className="flex items-center gap-1.5">
                   <SettingsGroupTitle>{t('settings.remoteInstances.direct.headers.title')}</SettingsGroupTitle>
-                  <p className="typography-meta text-muted-foreground">{t('settings.remoteInstances.direct.headers.description')}</p>
+                  <SettingsInfoHint>{t('settings.remoteInstances.direct.headers.description')}</SettingsInfoHint>
                 </div>
                 {directEditHeaders.map((header) => (
                   <div key={header.id} className="flex w-full gap-2">
@@ -1940,7 +1933,7 @@ export const RemoteInstancesPage: React.FC = () => {
 
       <SettingsSection
         title={t('settings.remoteInstances.page.section.actions')}
-        description={t('settings.remoteInstances.page.section.actionsDescription')}
+        info={t('settings.remoteInstances.page.section.actionsDescription')}
         divider={false}
         contentClassName="space-y-3"
       >
@@ -2013,7 +2006,7 @@ export const RemoteInstancesPage: React.FC = () => {
 
       <SettingsSection
         title={t('settings.remoteInstances.page.section.instance')}
-        description={t('settings.remoteInstances.page.section.instanceDescription')}
+        info={t('settings.remoteInstances.page.section.instanceDescription')}
         contentClassName="space-y-3"
       >
           <div className="flex flex-col gap-1.5 py-1.5 md:flex-row md:items-center md:gap-8">
@@ -2065,7 +2058,7 @@ export const RemoteInstancesPage: React.FC = () => {
 
       <SettingsSection
         title={t('settings.remoteInstances.page.section.remoteServer')}
-        description={t('settings.remoteInstances.page.section.remoteServerDescription')}
+        info={t('settings.remoteInstances.page.section.remoteServerDescription')}
         contentClassName="space-y-3"
       >
           <div className="flex flex-col gap-1.5 py-1.5 md:flex-row md:items-center md:gap-8">
@@ -2197,7 +2190,7 @@ export const RemoteInstancesPage: React.FC = () => {
 
       <SettingsSection
         title={t('settings.remoteInstances.page.section.mainTunnel')}
-        description={t('settings.remoteInstances.page.section.mainTunnelDescription')}
+        info={t('settings.remoteInstances.page.section.mainTunnelDescription')}
         contentClassName="space-y-3"
       >
           <div className="flex flex-col gap-1.5 py-1.5 md:flex-row md:items-center md:gap-8">
@@ -2295,7 +2288,7 @@ export const RemoteInstancesPage: React.FC = () => {
 
       <SettingsSection
         title={t('settings.remoteInstances.page.section.authentication')}
-        description={t('settings.remoteInstances.page.section.authenticationDescription')}
+        info={t('settings.remoteInstances.page.section.authenticationDescription')}
         contentClassName="space-y-3"
       >
           <div className="flex flex-col gap-1.5 py-1.5 md:flex-row md:items-center md:gap-8">
@@ -2347,7 +2340,7 @@ export const RemoteInstancesPage: React.FC = () => {
 
       <SettingsSection
         title={t('settings.remoteInstances.page.section.portForwards')}
-        description={t('settings.remoteInstances.page.section.portForwardsDescription')}
+        info={t('settings.remoteInstances.page.section.portForwardsDescription')}
         contentClassName="space-y-2"
       >
           {draft.portForwards.length === 0 ? (
@@ -2425,12 +2418,16 @@ export const RemoteInstancesPage: React.FC = () => {
                 </div>
                 <CollapsibleContent className="pt-2">
                   <div className="space-y-0 pb-2">
-                    <p className="typography-meta text-muted-foreground mb-3">{t(forwardTypeDescriptionKey(forward.type))}</p>
                     <div className="flex flex-col gap-1.5 py-1.5 md:flex-row md:items-center md:gap-8">
                       <div className="w-56 shrink-0">
                         <HintLabel
                           label={t('settings.remoteInstances.page.field.forwardType')}
-                          hint={t('settings.remoteInstances.page.field.forwardTypeHint')}
+                          hint={(
+                            <div className="space-y-1">
+                              <p>{t('settings.remoteInstances.page.field.forwardTypeHint')}</p>
+                              <p>{t(forwardTypeDescriptionKey(forward.type))}</p>
+                            </div>
+                          )}
                         />
                       </div>
                       <Select

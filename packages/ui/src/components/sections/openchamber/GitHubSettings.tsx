@@ -8,7 +8,6 @@ import { useDeviceInfo } from '@/lib/device';
 import { cn } from '@/lib/utils';
 import { openExternalUrl } from '@/lib/url';
 import { useI18n } from '@/lib/i18n';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { Icon } from "@/components/icon/Icon";
 import { SettingsSection, SettingsGroupTitle } from '@/components/sections/shared/SettingsSection';
@@ -276,16 +275,7 @@ export const GitHubSettings: React.FC = () => {
         title={t('settings.github.page.oauth.title')}
         divider={false}
         settingsItem="git.github-account"
-        titleAccessory={(
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-            </TooltipTrigger>
-            <TooltipContent sideOffset={8} className="max-w-xs">
-              {t('settings.github.page.tooltip.connectAccount')}
-            </TooltipContent>
-          </Tooltip>
-        )}
+        info={t('settings.github.page.tooltip.connectAccount')}
       >
       <div className="rounded-lg bg-[var(--surface-elevated)]/70 overflow-hidden flex flex-col">
         {connected ? (

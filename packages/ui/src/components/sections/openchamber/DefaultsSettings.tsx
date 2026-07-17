@@ -13,6 +13,7 @@ import {
   SETTINGS_SELECT_SIZE,
   SETTINGS_OPTION_STACK_CLASS,
 } from '@/components/sections/shared/SettingsSection';
+import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
@@ -365,13 +366,13 @@ export const DefaultsSettings: React.FC = () => {
           </SettingsInset>
 
           <div className="space-y-3 pt-6">
-            <div>
+            <div className="flex items-center gap-1.5">
               <SettingsGroupTitle>
                 {t('settings.openchamber.defaults.smallModel.title')}
               </SettingsGroupTitle>
-              <p className="typography-meta text-muted-foreground">
+              <SettingsInfoHint>
                 {t('settings.openchamber.defaults.smallModel.description')}
-              </p>
+              </SettingsInfoHint>
             </div>
 
             <SettingsCheckboxRow

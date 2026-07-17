@@ -15,6 +15,7 @@ import { KeyboardShortcutsSettings } from './KeyboardShortcutsSettings';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
 import { useDeviceInfo } from '@/lib/device';
 import { isDesktopLocalOriginActive, isDesktopShell, isVSCodeRuntime, isWebRuntime, usesFramelessElectronChrome } from '@/lib/desktop';
+import { isCapacitorApp } from '@/lib/platform';
 import { useI18n } from '@/lib/i18n';
 import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import type { OpenChamberSection } from './types';
@@ -52,7 +53,7 @@ export const OpenChamberPage: React.FC<OpenChamberPageProps> = ({ section }) => 
                 {showDesktopNetworkSettings && <DesktopNetworkSettings />}
                 {!isVSCode && <OpenCodeCliSettings />}
                 <SessionRetentionSettings />
-                <PasskeySettings />
+                {isWebRuntime() && !isDesktopShell() && !isVSCode && !isCapacitorApp() && <PasskeySettings />}
                 {showAbout && <AboutSettings />}
             </SettingsPageLayout>
         );
@@ -135,10 +136,13 @@ const GeneralSectionContent: React.FC = () => {
     const runtimeEndpointEpoch = useRuntimeEndpointEpoch();
     void runtimeEndpointEpoch;
     const showDesktopNetworkSettings = isDesktopShell() && (isDesktopLocalOriginActive() || usesFramelessElectronChrome());
+    // Passkeys only work against the browser's WebAuthn UI on the web surface —
+    // desktop shell, VS Code, and the Capacitor app never show the login screen.
+    const showPasskeySettings = isWebRuntime() && !isDesktopShell() && !isVSCode && !isCapacitorApp();
     return (
         <>
             {showDesktopNetworkSettings && <DesktopNetworkSettings />}
-            <PasskeySettings />
+            {showPasskeySettings && <PasskeySettings />}
             {!isVSCode && <OpenCodeCliSettings />}
             <OpenChamberVisualSettings visibleSettings={['messageTransport', 'reportUsage']} />
         </>

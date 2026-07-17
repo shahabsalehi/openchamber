@@ -2,8 +2,8 @@ import React from 'react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from '@/components/ui';
+import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 import { Icon } from "@/components/icon/Icon";
 import type { Session } from '@opencode-ai/sdk/v2';
 import { useProjectsStore } from '@/stores/useProjectsStore';
@@ -326,29 +326,19 @@ export const WorktreeSectionContent: React.FC<WorktreeSectionContentProps> = ({ 
   }, [sessionsKey, isGitRepoLocal, projectPath, refreshWorktrees]);
 
   const setupTooltip = (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-      </TooltipTrigger>
-      <TooltipContent sideOffset={8} className="max-w-xs">
-        {t('settings.openchamber.worktrees.setup.tooltipPrefix')}
-        {' '}
-        <code className="font-mono text-xs bg-sidebar-accent/50 px-1 rounded">$ROOT_PROJECT_PATH</code>
-        {' '}
-        {t('settings.openchamber.worktrees.setup.tooltipSuffix')}
-      </TooltipContent>
-    </Tooltip>
+    <SettingsInfoHint>
+      {t('settings.openchamber.worktrees.setup.tooltipPrefix')}
+      {' '}
+      <code className="font-mono text-xs bg-sidebar-accent/50 px-1 rounded">$ROOT_PROJECT_PATH</code>
+      {' '}
+      {t('settings.openchamber.worktrees.setup.tooltipSuffix')}
+    </SettingsInfoHint>
   );
 
   const listTooltip = (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-      </TooltipTrigger>
-      <TooltipContent sideOffset={8} className="max-w-xs">
-        {t('settings.openchamber.worktrees.list.tooltip')}
-      </TooltipContent>
-    </Tooltip>
+    <SettingsInfoHint>
+      {t('settings.openchamber.worktrees.list.tooltip')}
+    </SettingsInfoHint>
   );
 
   if (!projectPath) {

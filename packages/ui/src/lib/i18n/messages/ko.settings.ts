@@ -379,6 +379,7 @@ export const settingsDict = {
   'settings.remoteInstances.page.logsDialog.selectedInstanceFallback': '선택한 인스턴스',
   'settings.remoteInstances.page.patternDialog.descriptionWithHost': '{host}에는 구체적인 대상이 필요합니다.',
   'settings.remoteInstances.page.patternDialog.description': '대상을 입력하세요.',
+  'settings.common.infoAria': '자세한 정보',
   'settings.common.actions.cancel': '취소',
   'settings.common.actions.create': '생성',
   'settings.common.actions.delete': '삭제',

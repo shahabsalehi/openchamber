@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Radio } from '@/components/ui/radio';
 import { cn } from '@/lib/utils';
+import { SettingsInfoHint } from './SettingsInfoHint';
 
 /** Settings select trigger: full column width in stacked cells; capped in field rows via parent. */
 export const SETTINGS_SELECT_TRIGGER_CLASS = 'w-full min-w-40';
@@ -77,6 +78,8 @@ interface SettingsSectionProps {
   description?: React.ReactNode;
   /** Optional icon/badge next to the title. */
   titleAccessory?: React.ReactNode;
+  /** Helper text hidden behind an info icon next to the title. */
+  info?: React.ReactNode;
   /** Optional action aligned to the right of the header. */
   headerAction?: React.ReactNode;
   children: React.ReactNode;
@@ -98,6 +101,7 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
   title,
   description,
   titleAccessory,
+  info,
   headerAction,
   children,
   divider = true,
@@ -105,7 +109,7 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
   contentClassName,
   settingsItem,
 }) => {
-  const hasHeader = title != null || description != null || headerAction != null;
+  const hasHeader = title != null || description != null || headerAction != null || info != null;
 
   return (
     <section
@@ -127,6 +131,7 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
                   title
                 )}
                 {titleAccessory}
+                {info != null ? <SettingsInfoHint>{info}</SettingsInfoHint> : null}
               </div>
             ) : null}
             {description != null ? (
@@ -180,6 +185,8 @@ export const SettingsGroupTitle: React.FC<SettingsGroupTitleProps> = ({
 interface SettingsControlGroupProps {
   title?: React.ReactNode;
   description?: React.ReactNode;
+  /** Helper text hidden behind an info icon next to the group title. */
+  info?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
   contentClassName?: string;
@@ -190,6 +197,7 @@ interface SettingsControlGroupProps {
 export const SettingsControlGroup: React.FC<SettingsControlGroupProps> = ({
   title,
   description,
+  info,
   children,
   className,
   contentClassName,
@@ -197,9 +205,14 @@ export const SettingsControlGroup: React.FC<SettingsControlGroupProps> = ({
 }) => {
   return (
     <div data-settings-item={settingsItem} className={cn('space-y-1.5', className)}>
-      {title != null || description != null ? (
+      {title != null || description != null || info != null ? (
         <div className="space-y-0.5">
-          {title != null ? <SettingsGroupTitle>{title}</SettingsGroupTitle> : null}
+          {title != null ? (
+            <div className="flex items-center gap-1.5">
+              <SettingsGroupTitle>{title}</SettingsGroupTitle>
+              {info != null ? <SettingsInfoHint>{info}</SettingsInfoHint> : null}
+            </div>
+          ) : null}
           {description != null ? (
             <p className={SETTINGS_HELPER_CLASS}>{description}</p>
           ) : null}
@@ -213,6 +226,8 @@ export const SettingsControlGroup: React.FC<SettingsControlGroupProps> = ({
 interface SettingsStackedFieldProps {
   label: React.ReactNode;
   description?: React.ReactNode;
+  /** Helper text hidden behind an info icon next to the label. */
+  info?: React.ReactNode;
   /** Where helper text sits relative to the control. @default 'before' */
   descriptionPlacement?: 'before' | 'after';
   children: React.ReactNode;
@@ -228,6 +243,7 @@ interface SettingsStackedFieldProps {
 export const SettingsStackedField: React.FC<SettingsStackedFieldProps> = ({
   label,
   description,
+  info,
   descriptionPlacement = 'before',
   children,
   settingsItem,
@@ -242,7 +258,10 @@ export const SettingsStackedField: React.FC<SettingsStackedFieldProps> = ({
   return (
     <div data-settings-item={settingsItem} className={cn('space-y-1.5', className)}>
       <div className="space-y-0.5">
-        <div className={SETTINGS_FIELD_LABEL_CLASS}>{label}</div>
+        <div className="flex items-center gap-1.5">
+          <div className={SETTINGS_FIELD_LABEL_CLASS}>{label}</div>
+          {info != null ? <SettingsInfoHint>{info}</SettingsInfoHint> : null}
+        </div>
         {descriptionPlacement === 'before' ? descriptionNode : null}
       </div>
       <div className={cn('flex min-w-0 max-w-[24rem] items-center gap-2', controlClassName)}>{children}</div>
@@ -254,6 +273,8 @@ export const SettingsStackedField: React.FC<SettingsStackedFieldProps> = ({
 interface SettingsFieldRowProps {
   label: React.ReactNode;
   description?: React.ReactNode;
+  /** Helper text hidden behind an info icon next to the label. */
+  info?: React.ReactNode;
   children: React.ReactNode;
   settingsItem?: string;
   className?: string;
@@ -269,6 +290,7 @@ interface SettingsFieldRowProps {
 export const SettingsFieldRow: React.FC<SettingsFieldRowProps> = ({
   label,
   description,
+  info,
   children,
   settingsItem,
   className,
@@ -284,7 +306,10 @@ export const SettingsFieldRow: React.FC<SettingsFieldRowProps> = ({
       )}
     >
       <div className="min-w-0 @xl:w-56 @xl:shrink-0">
-        <div className={SETTINGS_FIELD_LABEL_CLASS}>{label}</div>
+        <div className="flex items-center gap-1.5">
+          <div className={SETTINGS_FIELD_LABEL_CLASS}>{label}</div>
+          {info != null ? <SettingsInfoHint>{info}</SettingsInfoHint> : null}
+        </div>
         {description != null ? (
           <p className={cn(SETTINGS_HELPER_CLASS, 'mt-0.5')}>{description}</p>
         ) : null}
@@ -334,6 +359,8 @@ interface SettingsCheckboxRowProps {
   settingsItem?: string;
   className?: string;
   labelAccessory?: React.ReactNode;
+  /** Helper text hidden behind an info icon next to the label. */
+  info?: React.ReactNode;
 }
 
 /** Shared checkbox setting row with keyboard support. */
@@ -347,6 +374,7 @@ export const SettingsCheckboxRow: React.FC<SettingsCheckboxRowProps> = ({
   settingsItem,
   className,
   labelAccessory,
+  info,
 }) => {
   const toggle = () => {
     if (!disabled) onChange(!checked);
@@ -385,6 +413,7 @@ export const SettingsCheckboxRow: React.FC<SettingsCheckboxRowProps> = ({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={SETTINGS_FIELD_LABEL_CLASS}>{label}</span>
           {labelAccessory}
+          {info != null ? <SettingsInfoHint>{info}</SettingsInfoHint> : null}
         </div>
         {hasDescription ? (
           <span className={SETTINGS_HELPER_CLASS}>{description}</span>

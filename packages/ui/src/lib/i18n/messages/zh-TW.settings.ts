@@ -376,6 +376,7 @@
   'settings.remoteInstances.page.logsDialog.selectedInstanceFallback': '所選執行個體',
   'settings.remoteInstances.page.patternDialog.descriptionWithHost': '{host} 需要一個具體目標地址。',
   'settings.remoteInstances.page.patternDialog.description': '輸入目標地址。',
+  'settings.common.infoAria': '更多資訊',
   'settings.common.actions.cancel': '取消',
   'settings.common.actions.create': '建立',
   'settings.common.actions.delete': '刪除',
