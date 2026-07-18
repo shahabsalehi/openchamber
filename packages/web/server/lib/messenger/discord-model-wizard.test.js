@@ -4,6 +4,7 @@ import {
   modelsOf,
   formatModelMeta,
   PAGE_SIZE,
+  PAGE_SIZE_WITH_BUTTON_NAV,
   createDiscordModelWizard,
 } from './discord-model-wizard.js';
 
@@ -82,6 +83,14 @@ describe('buildPagedOptions', () => {
     expect(options.length).toBe(5);
     expect(options.some((o) => o.label.includes('▶') || o.label.includes('◀'))).toBe(false);
   });
+
+  it('can fill all 25 select slots when in-select nav is disabled', () => {
+    const { options, totalPages, pageSize } = buildPagedOptions(items, 0, { includeNav: false });
+    expect(pageSize).toBe(PAGE_SIZE_WITH_BUTTON_NAV);
+    expect(totalPages).toBe(Math.ceil(60 / PAGE_SIZE_WITH_BUTTON_NAV));
+    expect(options.length).toBe(PAGE_SIZE_WITH_BUTTON_NAV);
+    expect(options.every((o) => o.value.startsWith('v'))).toBe(true);
+  });
 });
 
 describe('modelsOf', () => {
@@ -142,6 +151,24 @@ function lastSelectOptions(call) {
 function lastCustomId(call) {
   return call.body?.data?.components?.[0]?.components?.[0]?.custom_id;
 }
+function buttonLabels(call) {
+  const rows = call.body?.data?.components ?? [];
+  return rows
+    .flatMap((row) => row.components ?? [])
+    .filter((c) => c.type === 2)
+    .map((c) => c.label);
+}
+function buttonCustomIdByLabel(call, labelIncludes) {
+  const rows = call.body?.data?.components ?? [];
+  for (const row of rows) {
+    for (const c of row.components ?? []) {
+      if (c.type === 2 && String(c.label ?? '').includes(labelIncludes)) {
+        return c.custom_id;
+      }
+    }
+  }
+  return null;
+}
 
 describe('createDiscordModelWizard flow', () => {
   const state = { token: 'bot-token' };
@@ -160,23 +187,31 @@ describe('createDiscordModelWizard flow', () => {
     const provCustomId = lastCustomId(providerSelect);
     expect(wizard.ownsComponent(provCustomId)).toBe(true);
 
-    // pick the provider → first page of models (23 + "More ▶")
+    // pick the provider → first page of models (25) + Back / More buttons
     await wizard.handleComponent(state, { id: 'i2', token: 't2', data: { values: ['anthropic'] } }, provCustomId);
     const modelPage0 = calls.at(-1);
     const modelCustomId = lastCustomId(modelPage0);
     expect(lastSelectValues(modelPage0)).toContain('m0');
-    expect(lastSelectValues(modelPage0)).toContain('__openchamber_agent_next');
-    expect(lastSelectValues(modelPage0)).not.toContain(`m${PAGE_SIZE}`);
+    expect(lastSelectValues(modelPage0)).toHaveLength(PAGE_SIZE_WITH_BUTTON_NAV);
+    expect(lastSelectValues(modelPage0)).not.toContain(`m${PAGE_SIZE_WITH_BUTTON_NAV}`);
+    expect(buttonLabels(modelPage0)).toEqual(expect.arrayContaining(['← Back']));
+    expect(buttonLabels(modelPage0).some((l) => l.includes('More ▶'))).toBe(true);
+    const nextCustomId = buttonCustomIdByLabel(modelPage0, 'More ▶');
+    expect(wizard.ownsComponent(nextCustomId)).toBe(true);
 
-    // page forward → second page reveals models past the first 23
-    await wizard.handleComponent(state, { id: 'i3', token: 't3', data: { values: ['__openchamber_agent_next'] } }, modelCustomId);
-    expect(lastSelectValues(calls.at(-1))).toContain(`m${PAGE_SIZE}`);
-    expect(lastSelectValues(calls.at(-1))).toContain('__openchamber_agent_prev');
+    // page forward via button → second page reveals models past the first 25,
+    // and Back remains available while paginating
+    await wizard.handleComponent(state, { id: 'i3', token: 't3', data: {} }, nextCustomId);
+    const modelPage1 = calls.at(-1);
+    expect(lastSelectValues(modelPage1)).toContain(`m${PAGE_SIZE_WITH_BUTTON_NAV}`);
+    expect(buttonLabels(modelPage1)).toEqual(expect.arrayContaining(['← Back']));
+    expect(buttonLabels(modelPage1).some((l) => l.includes('Page'))).toBe(true);
 
     // pick a model with no variants → scope picker (conversation/project/system)
     await wizard.handleComponent(state, { id: 'i4', token: 't4', data: { values: ['m30'] } }, modelCustomId);
     const scopeSelect = calls.at(-1);
     expect(lastSelectValues(scopeSelect)).toEqual(['conversation', 'project', 'global']);
+    expect(buttonLabels(scopeSelect)).toContain('← Back');
     const scopeCustomId = lastCustomId(scopeSelect);
 
     // choose "this conversation" → surface override stored + resend button
@@ -188,6 +223,67 @@ describe('createDiscordModelWizard flow', () => {
     const button = final.body.data.components[0].components[0];
     expect(button.type).toBe(2);
     expect(wizard.ownsComponent(button.custom_id)).toBe(true);
+  });
+
+  it('lets users step back from model/effort/scope, including while paginating models', async () => {
+    const withVariants = [
+      {
+        id: 'gpt',
+        name: 'GPT',
+        models: Array.from({ length: 40 }, (_, i) => ({
+          id: `m${i}`,
+          name: `m${i}`,
+          variants: i === 30 ? { low: {}, high: {} } : undefined,
+        })),
+      },
+    ];
+    const { wizard, calls } = makeHarness(withVariants);
+    await wizard.start(state, { id: 'i1', token: 't1', channel_id: 'chan', application_id: 'app' });
+    const provCustomId = lastCustomId(calls.at(-1));
+
+    await wizard.handleComponent(state, { id: 'i2', token: 't2', data: { values: ['gpt'] } }, provCustomId);
+    const modelPage0 = calls.at(-1);
+    const nextCustomId = buttonCustomIdByLabel(modelPage0, 'More ▶');
+    await wizard.handleComponent(state, { id: 'i3', token: 't3', data: {} }, nextCustomId);
+    expect(calls.at(-1).body.data.content).toContain('Select a model');
+
+    // Back from a later model page returns to the provider menu (root has no Back).
+    const backFromModels = buttonCustomIdByLabel(calls.at(-1), '← Back');
+    await wizard.handleComponent(state, { id: 'i4', token: 't4', data: {} }, backFromModels);
+    expect(calls.at(-1).body.data.content).toContain('Select a provider');
+    expect(buttonLabels(calls.at(-1))).not.toContain('← Back');
+
+    // Re-enter provider → model → effort → scope, then walk back step by step.
+    await wizard.handleComponent(state, { id: 'i5', token: 't5', data: { values: ['gpt'] } }, provCustomId);
+    const modelCustomId = lastCustomId(calls.at(-1));
+    const nextAgain = buttonCustomIdByLabel(calls.at(-1), 'More ▶');
+    await wizard.handleComponent(state, { id: 'i6', token: 't6', data: {} }, nextAgain);
+    await wizard.handleComponent(state, { id: 'i7', token: 't7', data: { values: ['m30'] } }, modelCustomId);
+    expect(calls.at(-1).body.data.content).toContain('thinking effort');
+    expect(buttonLabels(calls.at(-1))).toContain('← Back');
+
+    await wizard.handleComponent(
+      state,
+      { id: 'i8', token: 't8', data: { values: ['high'] } },
+      lastCustomId(calls.at(-1)),
+    );
+    expect(calls.at(-1).body.data.content).toContain('Apply to');
+    expect(buttonLabels(calls.at(-1))).toContain('← Back');
+
+    await wizard.handleComponent(
+      state,
+      { id: 'i9', token: 't9', data: {} },
+      buttonCustomIdByLabel(calls.at(-1), '← Back'),
+    );
+    expect(calls.at(-1).body.data.content).toContain('thinking effort');
+
+    await wizard.handleComponent(
+      state,
+      { id: 'i10', token: 't10', data: {} },
+      buttonCustomIdByLabel(calls.at(-1), '← Back'),
+    );
+    expect(calls.at(-1).body.data.content).toContain('Select a model');
+    expect(buttonLabels(calls.at(-1))).toEqual(expect.arrayContaining(['← Back']));
   });
 
   it('asks for thinking effort when the model has variants, then scope', async () => {

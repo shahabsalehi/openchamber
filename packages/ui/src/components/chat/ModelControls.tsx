@@ -399,11 +399,17 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     const [mobileModelQuery, setMobileModelQuery] = React.useState('');
     const [expandedMobileModelKey, setExpandedMobileModelKey] = React.useState<string | null>(null);
     const [mobileVariantTarget, setMobileVariantTarget] = React.useState<MobileVariantTarget | null>(null);
-    const [mobileFocusedProviderId, setMobileFocusedProviderId] = React.useState<string | null>(null);
     const manualVariantSelectionRef = React.useRef(false);
     const closeMobilePanel = React.useCallback(() => setActiveMobilePanel(null), [setActiveMobilePanel]);
     const closeMobileTooltip = React.useCallback(() => setMobileTooltipOpen(null), []);
     const longPressTimerRef = React.useRef<NodeJS.Timeout | undefined>(undefined);
+    const [expandedMobileProviders, setExpandedMobileProviders] = React.useState<Set<string>>(() => {
+        const initial = new Set<string>();
+        if (currentProviderId) {
+            initial.add(currentProviderId);
+        }
+        return initial;
+    });
     // Use global state for model selector (allows Ctrl+M shortcut)
     const agentMenuOpen = isModelSelectorOpen;
     const setAgentMenuOpen = setModelSelectorOpen;
@@ -423,18 +429,30 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     const [modelPickerRenderVersion, setModelPickerRenderVersion] = React.useState(0);
 
     React.useEffect(() => {
+        if (activeMobilePanel === 'model') {
+            setExpandedMobileProviders(() => {
+                const initial = new Set<string>();
+                if (currentProviderId) {
+                    initial.add(currentProviderId);
+                }
+                return initial;
+            });
+        }
+    }, [activeMobilePanel, currentProviderId]);
+
+    React.useEffect(() => {
         if (activeMobilePanel === null) {
             setExpandedMobileModelKey(null);
-            setMobileFocusedProviderId(null);
-            setMobileModelQuery('');
         }
         if (activeMobilePanel !== 'variant') {
             setMobileVariantTarget(null);
         }
-        if (activeMobilePanel !== 'model' && activeMobilePanel !== 'variant') {
+    }, [activeMobilePanel]);
+
+    React.useEffect(() => {
+        if (activeMobilePanel !== 'model') {
             setMobileModelQuery('');
             setExpandedMobileModelKey(null);
-            setMobileFocusedProviderId(null);
         }
     }, [activeMobilePanel]);
 
@@ -1284,6 +1302,18 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         return name.charAt(0).toUpperCase() + name.slice(1);
     };
 
+    const toggleMobileProviderExpansion = React.useCallback((providerId: string) => {
+        setExpandedMobileProviders((prev) => {
+            const next = new Set(prev);
+            if (next.has(providerId)) {
+                next.delete(providerId);
+            } else {
+                next.add(providerId);
+            }
+            return next;
+        });
+    }, []);
+
     const handleLongPressStart = React.useCallback((type: 'model' | 'agent') => {
         if (longPressTimerRef.current) {
             clearTimeout(longPressTimerRef.current);
@@ -1767,85 +1797,41 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         };
 
         const hasResults = filteredFavorites.length > 0 || filteredRecents.length > 0 || filteredProviders.length > 0;
-        const isSearching = normalizedQuery.length > 0;
-        const focusedProvider = !isSearching && mobileFocusedProviderId
-            ? visibleProviders.find((provider) => provider.id === mobileFocusedProviderId) ?? null
-            : null;
-        const focusedProviderModels = focusedProvider
-            ? (Array.isArray(focusedProvider.models) ? focusedProvider.models : [])
-            : [];
-        const panelTitle = focusedProvider
-            ? (focusedProvider.name || focusedProvider.id)
-            : t('chat.modelControls.selectModel');
-
-        const handleProviderBack = () => {
-            setMobileFocusedProviderId(null);
-            setExpandedMobileModelKey(null);
-        };
-
-        const openProviderMenu = (providerId: string) => {
-            setMobileFocusedProviderId(providerId);
-            setExpandedMobileModelKey(null);
-        };
 
         return (
             <MobileOverlayPanel
                 open={activeMobilePanel === 'model'}
                 onClose={closeMobilePanel}
-                title={panelTitle}
-                renderHeader={focusedProvider ? ((closeButton) => (
-                    <div className="flex items-center justify-between px-3 py-2 border-b border-border/40">
-                        <button
-                            type="button"
-                            onClick={handleProviderBack}
-                            className="flex items-center gap-1 rounded-lg px-1.5 py-1 typography-meta text-muted-foreground hover:bg-interactive-hover"
-                        >
-                            <Icon name="arrow-go-back" className="size-4" />
-                            <span>{t('onboarding.common.actions.back')}</span>
-                        </button>
-                        <div className="flex min-w-0 items-center gap-1.5">
-                            <ProviderLogo providerId={focusedProvider.id} className="size-3.5 flex-shrink-0" />
-                            <h2 className="typography-ui-label font-semibold text-foreground truncate">
-                                {focusedProvider.name || focusedProvider.id}
-                            </h2>
-                        </div>
-                        {closeButton}
-                    </div>
-                )) : undefined}
+                title={t('chat.modelControls.selectModel')}
             >
                 <div className="flex flex-col gap-2">
-                    {!focusedProvider ? (
-                        <div>
-                            <div className="relative">
-                                <Icon name="search" className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-                                <Input
-                                    value={mobileModelQuery}
-                                    onChange={(event) => {
-                                        setMobileModelQuery(event.target.value);
+                    <div>
+                        <div className="relative">
+                            <Icon name="search" className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+                            <Input
+                                value={mobileModelQuery}
+                                onChange={(event) => {
+                                    setMobileModelQuery(event.target.value);
+                                    setExpandedMobileModelKey(null);
+                                }}
+                                        placeholder={t('chat.modelControls.searchProvidersOrModels')}
+                                className="pl-7 h-9 rounded-xl border-border/40 bg-[var(--surface-elevated)] typography-meta"
+                            />
+                            {mobileModelQuery && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setMobileModelQuery('');
                                         setExpandedMobileModelKey(null);
-                                        if (event.target.value.trim().length > 0) {
-                                            setMobileFocusedProviderId(null);
-                                        }
                                     }}
-                                    placeholder={t('chat.modelControls.searchProvidersOrModels')}
-                                    className="pl-7 h-9 rounded-xl border-border/40 bg-[var(--surface-elevated)] typography-meta"
-                                />
-                                {mobileModelQuery && (
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setMobileModelQuery('');
-                                            setExpandedMobileModelKey(null);
-                                        }}
-                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                                        aria-label={t('chat.modelControls.clearSearch')}
-                                    >
-                                        <Icon name="close-circle" className="size-4" />
-                                    </button>
-                                )}
-                            </div>
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                                    aria-label={t('chat.modelControls.clearSearch')}
+                                >
+                                    <Icon name="close-circle" className="size-4" />
+                                </button>
+                            )}
                         </div>
-                    ) : null}
+                    </div>
 
                     {!hasResults && (
                         <div className="px-3 py-8 text-center typography-meta text-muted-foreground">
@@ -1853,116 +1839,95 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                         </div>
                     )}
 
-                    {focusedProvider ? (
-                        focusedProviderModels.length > 0 ? (
-                            <div className="rounded-xl border border-border/40 bg-[var(--surface-elevated)] overflow-hidden">
-                                <div className="flex flex-col">
-                                    {focusedProviderModels.map((model: ProviderModel) => renderMobileModelRow({
-                                        model,
-                                        providerId: focusedProvider.id as string,
-                                        modelId: model.id as string,
-                                        showProviderLogo: false,
-                                    }))}
-                                </div>
+                    {/* Favorites Section for Mobile */}
+                    {filteredFavorites.length > 0 && (
+                        <div className="rounded-xl border border-border/40 bg-[var(--surface-elevated)] overflow-hidden">
+                            <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                                <Icon name="star-fill" className="size-3 inline-block mr-1.5 text-primary" />
+                                {t('chat.modelControls.favorites')}
                             </div>
-                        ) : (
-                            <div className="px-3 py-8 text-center typography-meta text-muted-foreground">
-                                {t('chat.modelControls.noProvidersOrModelsFound')}
+                            <div className="flex flex-col border-t border-border/30">
+                                {filteredFavorites.map(({ model, providerID, modelID }) => renderMobileModelRow({
+                                    model,
+                                    providerId: providerID,
+                                    modelId: modelID,
+                                    showProviderLogo: true,
+                                }))}
                             </div>
-                        )
-                    ) : (
-                        <>
-                            {/* Favorites Section for Mobile */}
-                            {filteredFavorites.length > 0 && (
-                                <div className="rounded-xl border border-border/40 bg-[var(--surface-elevated)] overflow-hidden">
-                                    <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                        <Icon name="star-fill" className="size-3 inline-block mr-1.5 text-primary" />
-                                        {t('chat.modelControls.favorites')}
-                                    </div>
-                                    <div className="flex flex-col border-t border-border/30">
-                                        {filteredFavorites.map(({ model, providerID, modelID }) => renderMobileModelRow({
-                                            model,
-                                            providerId: providerID,
-                                            modelId: modelID,
-                                            showProviderLogo: true,
-                                        }))}
-                                    </div>
-                                </div>
-                            )}
+                        </div>
+                    )}
 
-                            {/* Recent Section for Mobile */}
-                            {filteredRecents.length > 0 && (
-                                <div className="rounded-xl border border-border/40 bg-[var(--surface-elevated)] overflow-hidden">
-                                    <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                        <Icon name="time" className="size-3 inline-block mr-1.5" />
-                                        {t('chat.modelControls.recent')}
-                                    </div>
-                                    <div className="flex flex-col border-t border-border/30">
-                                        {filteredRecents.map(({ model, providerID, modelID }) => renderMobileModelRow({
-                                            model,
-                                            providerId: providerID,
-                                            modelId: modelID,
-                                            showProviderLogo: true,
-                                        }))}
-                                    </div>
-                                </div>
-                            )}
+                    {/* Recent Section for Mobile */}
+                    {filteredRecents.length > 0 && (
+                        <div className="rounded-xl border border-border/40 bg-[var(--surface-elevated)] overflow-hidden">
+                            <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                                <Icon name="time" className="size-3 inline-block mr-1.5" />
+                                {t('chat.modelControls.recent')}
+                            </div>
+                            <div className="flex flex-col border-t border-border/30">
+                                {filteredRecents.map(({ model, providerID, modelID }) => renderMobileModelRow({
+                                    model,
+                                    providerId: providerID,
+                                    modelId: modelID,
+                                    showProviderLogo: true,
+                                }))}
+                            </div>
+                        </div>
+                    )}
 
-                            {filteredProviders.map(({ provider, providerModels }) => {
-                                if (providerModels.length === 0) {
-                                    return null;
-                                }
+                    {filteredProviders.map(({ provider, providerModels }) => {
+                        if (providerModels.length === 0) {
+                            return null;
+                        }
 
-                                const isActiveProvider = provider.id === currentProviderId;
-                                const showInlineModels = isSearching;
+                        const isActiveProvider = provider.id === currentProviderId;
+                        const isExpanded = expandedMobileProviders.has(provider.id) || normalizedQuery.length > 0;
 
-                                return (
-                                    <div key={provider.id} className="rounded-xl border border-border/40 bg-[var(--surface-elevated)] overflow-hidden">
-                                        <button
-                                            type="button"
-                                            onClick={() => {
-                                                if (isSearching) {
-                                                    return;
-                                                }
-                                                openProviderMenu(provider.id);
-                                            }}
-                                            className="flex w-full items-center justify-between gap-1.5 px-2 py-1.5 text-left"
-                                            aria-expanded={showInlineModels}
-                                        >
-                                            <div className="flex items-center gap-2">
-                                                <ProviderLogo
-                                                    providerId={provider.id}
-                                                    className="size-3.5"
-                                                />
-                                                <span className="typography-meta font-medium text-foreground">
-                                                    {provider.name}
-                                                </span>
-                                                {isActiveProvider && (
-                                                    <span className="typography-micro text-primary/80">{t('chat.modelControls.current')}</span>
-                                                )}
-                                            </div>
-                                            {showInlineModels ? (
-                                                <Icon name="arrow-down-s" className="size-3 text-muted-foreground" />
-                                            ) : (
-                                                <Icon name="arrow-right-s" className="size-3 text-muted-foreground" />
-                                            )}
-                                        </button>
-
-                                        {showInlineModels && providerModels.length > 0 && (
-                                            <div className="flex flex-col border-t border-border/30">
-                                                {providerModels.map((model: ProviderModel) => renderMobileModelRow({
-                                                    model,
-                                                    providerId: provider.id as string,
-                                                    modelId: model.id as string,
-                                                    showProviderLogo: false,
-                                                }))}
-                                            </div>
+                         return (
+                             <div key={provider.id} className="rounded-xl border border-border/40 bg-[var(--surface-elevated)] overflow-hidden">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        if (normalizedQuery.length > 0) {
+                                            return;
+                                        }
+                                        toggleMobileProviderExpansion(provider.id);
+                                    }}
+                                    className="flex w-full items-center justify-between gap-1.5 px-2 py-1.5 text-left"
+                                    aria-expanded={isExpanded}
+                                >
+                                    <div className="flex items-center gap-2">
+                                        <ProviderLogo
+                                            providerId={provider.id}
+                                            className="size-3.5"
+                                        />
+                                        <span className="typography-meta font-medium text-foreground">
+                                            {provider.name}
+                                        </span>
+                                        {isActiveProvider && (
+                                            <span className="typography-micro text-primary/80">{t('chat.modelControls.current')}</span>
                                         )}
                                     </div>
-                                );
-                            })}
-                        </>
-                    )}
+                                    {isExpanded ? (
+                                        <Icon name="arrow-down-s" className="size-3 text-muted-foreground" />
+                                    ) : (
+                                        <Icon name="arrow-right-s" className="size-3 text-muted-foreground" />
+                                    )}
+                                </button>
+
+                                {isExpanded && providerModels.length > 0 && (
+                                    <div className="flex flex-col border-t border-border/30">
+                                        {providerModels.map((model: ProviderModel) => renderMobileModelRow({
+                                            model,
+                                            providerId: provider.id as string,
+                                            modelId: model.id as string,
+                                            showProviderLogo: false,
+                                        }))}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
                 </div>
             </MobileOverlayPanel>
         );
