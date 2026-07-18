@@ -13,12 +13,17 @@ import crypto from 'node:crypto';
  */
 
 export const WIZARD_TTL_MS = 10 * 60 * 1000;
-// Real choices per page. Up to two slots are reserved for prev/next navigation,
-// so the rendered menu never exceeds Discord's hard limit of 25 select options.
+// Discord string-select menus hard-cap at 25 options.
+export const DISCORD_SELECT_MAX = 25;
+// Default real choices per page when prev/next live inside the select
+// (up to two slots reserved for in-menu navigation).
 export const PAGE_SIZE = 23;
+// When page nav is moved to buttons, the select can use the full 25 slots.
+export const PAGE_SIZE_WITH_BUTTON_NAV = DISCORD_SELECT_MAX;
 
 export const PREV_VALUE = '__openchamber_agent_prev';
 export const NEXT_VALUE = '__openchamber_agent_next';
+export const BACK_VALUE = '__openchamber_agent_back';
 
 /**
  * Rewrite deprecated Otto Discord component ids / select values to the
@@ -52,29 +57,41 @@ export function normalizeLegacyDiscordSelectValue(value) {
  *
  * @param {Array<{label:string,value:string,description?:string}>} items
  * @param {number} page zero-based page index (clamped into range)
+ * @param {{ pageSize?: number, includeNav?: boolean }} [opts]
+ *   - `pageSize` defaults to {@link PAGE_SIZE} (23) when in-select nav is on,
+ *     or {@link PAGE_SIZE_WITH_BUTTON_NAV} (25) when `includeNav` is false.
+ *   - `includeNav` (default true) embeds ◀ Previous / More ▶ inside the select.
  * @returns {{ options: Array, page: number, totalPages: number }}
  */
-export function buildPagedOptions(items, page) {
+export function buildPagedOptions(items, page, opts = {}) {
+  const includeNav = opts.includeNav !== false;
+  const pageSize = Math.max(
+    1,
+    Math.min(
+      DISCORD_SELECT_MAX,
+      opts.pageSize ?? (includeNav ? PAGE_SIZE : PAGE_SIZE_WITH_BUTTON_NAV),
+    ),
+  );
   const total = Array.isArray(items) ? items.length : 0;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const safePage = Math.min(Math.max(0, page | 0), totalPages - 1);
-  const start = safePage * PAGE_SIZE;
-  const options = items.slice(start, start + PAGE_SIZE).map((o) => ({ ...o }));
-  if (safePage > 0) {
+  const start = safePage * pageSize;
+  const options = items.slice(start, start + pageSize).map((o) => ({ ...o }));
+  if (includeNav && safePage > 0) {
     options.unshift({
       label: '◀ Previous',
       value: PREV_VALUE,
       description: `Page ${safePage} of ${totalPages}`,
     });
   }
-  if (safePage < totalPages - 1) {
+  if (includeNav && safePage < totalPages - 1) {
     options.push({
       label: 'More ▶',
       value: NEXT_VALUE,
       description: `Page ${safePage + 2} of ${totalPages}`,
     });
   }
-  return { options, page: safePage, totalPages };
+  return { options, page: safePage, totalPages, pageSize };
 }
 
 /** A single-row string-select component. Options are clamped to Discord's 25 max. */

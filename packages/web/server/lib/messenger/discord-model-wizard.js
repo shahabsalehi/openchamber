@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import {
   WIZARD_TTL_MS,
   PAGE_SIZE,
+  PAGE_SIZE_WITH_BUTTON_NAV,
   PREV_VALUE,
   NEXT_VALUE,
   buildPagedOptions,
@@ -18,16 +19,19 @@ import {
  *   /model → (shows the current model + thinking-effort)
  *          → pick provider (⭐ Favourites pseudo-provider first when the UI has
  *            any favourite models)
- *          → pick model
+ *          → pick model (Back → providers; page nav via buttons)
  *          → pick thinking-effort (only when the model exposes reasoning
- *            variants; skipped otherwise)
- *          → pick scope (this conversation / this project / whole system)
+ *            variants; skipped otherwise; Back → models)
+ *          → pick scope (this conversation / this project / whole system;
+ *            Back → effort or models)
  *          → confirmation + a "Send last message" button that replays the
  *            conversation's last prompt under the freshly-chosen model.
  *
- * Discord string-select menus are capped at 25 options, so provider / model
- * lists are paged via the shared helpers. Wizard state is keyed by a short
- * random hash embedded in each component's `custom_id` and expires after
+ * Discord string-select menus are capped at 25 options. Provider lists keep
+ * in-select prev/next paging; model lists use the full 25 slots with Back /
+ * page buttons underneath so users can always return to the previous menu
+ * section even while paginating. Wizard state is keyed by a short random
+ * hash embedded in each component's `custom_id` and expires after
  * {@link WIZARD_TTL_MS}.
  *
  * Kept free of gateway/WebSocket plumbing so it can be unit-tested in
@@ -35,16 +39,25 @@ import {
  */
 
 // Re-exported for callers/tests that import the paging helpers from here.
-export { WIZARD_TTL_MS, PAGE_SIZE, buildPagedOptions };
+export { WIZARD_TTL_MS, PAGE_SIZE, PAGE_SIZE_WITH_BUTTON_NAV, buildPagedOptions };
 
 const PROVIDER_PREFIX = 'openchamber-agent-model-provider:';
 const MODEL_PREFIX = 'openchamber-agent-model-model:';
 const EFFORT_PREFIX = 'openchamber-agent-model-effort:';
 const SCOPE_PREFIX = 'openchamber-agent-model-scope:';
 const RESEND_PREFIX = 'openchamber-agent-model-resend:';
+const BACK_PREFIX = 'openchamber-agent-model-back:';
+const MODEL_PAGE_PREV_PREFIX = 'openchamber-agent-model-page-prev:';
+const MODEL_PAGE_NEXT_PREFIX = 'openchamber-agent-model-page-next:';
 
 const FAVORITES_ID = '__openchamber_agent_favorites';
 const EFFORT_NONE = '__openchamber_agent_effort_none';
+
+/** Wizard stages that support a Back button (provider select is the root). */
+const STAGE_PROVIDER = 'provider';
+const STAGE_MODEL = 'model';
+const STAGE_EFFORT = 'effort';
+const STAGE_SCOPE = 'scope';
 
 /** Normalise a provider's `models` (array or map) into a flat array. */
 export function modelsOf(provider) {
@@ -134,7 +147,10 @@ export function createDiscordModelWizard({ restCall, bridge }) {
         customId.startsWith(MODEL_PREFIX) ||
         customId.startsWith(EFFORT_PREFIX) ||
         customId.startsWith(SCOPE_PREFIX) ||
-        customId.startsWith(RESEND_PREFIX))
+        customId.startsWith(RESEND_PREFIX) ||
+        customId.startsWith(BACK_PREFIX) ||
+        customId.startsWith(MODEL_PAGE_PREV_PREFIX) ||
+        customId.startsWith(MODEL_PAGE_NEXT_PREFIX))
     );
   }
 
@@ -194,8 +210,28 @@ export function createDiscordModelWizard({ restCall, bridge }) {
   }
 
   function renderModelSelect(hash, models, page) {
-    const { options } = buildPagedOptions(modelOptions(models), page);
-    return stringSelect(`${MODEL_PREFIX}${hash}`, options, 'Select a model');
+    const { options, page: safePage, totalPages } = buildPagedOptions(modelOptions(models), page, {
+      includeNav: false,
+      pageSize: PAGE_SIZE_WITH_BUTTON_NAV,
+    });
+    const components = [stringSelect(`${MODEL_PREFIX}${hash}`, options, 'Select a model')];
+    const navButtons = [{ label: '← Back', customId: `${BACK_PREFIX}${hash}`, style: 2 }];
+    if (safePage > 0) {
+      navButtons.push({
+        label: `◀ Page ${safePage}/${totalPages}`,
+        customId: `${MODEL_PAGE_PREV_PREFIX}${hash}`,
+        style: 2,
+      });
+    }
+    if (safePage < totalPages - 1) {
+      navButtons.push({
+        label: `More ▶ (${safePage + 2}/${totalPages})`,
+        customId: `${MODEL_PAGE_NEXT_PREFIX}${hash}`,
+        style: 2,
+      });
+    }
+    components.push(buttonRow(navButtons));
+    return { components, page: safePage, totalPages };
   }
 
   function renderEffortSelect(hash, variants) {
@@ -203,7 +239,12 @@ export function createDiscordModelWizard({ restCall, bridge }) {
       { label: 'Default (no thinking effort)', value: EFFORT_NONE, description: 'Let the model decide' },
       ...variants.map((v) => ({ label: v, value: v, description: `Thinking effort: ${v}`.slice(0, 100) })),
     ];
-    return stringSelect(`${EFFORT_PREFIX}${hash}`, options, 'Select thinking effort');
+    return {
+      components: [
+        stringSelect(`${EFFORT_PREFIX}${hash}`, options, 'Select thinking effort'),
+        buttonRow([{ label: '← Back', customId: `${BACK_PREFIX}${hash}`, style: 2 }]),
+      ],
+    };
   }
 
   function renderScopeSelect(hash) {
@@ -212,7 +253,49 @@ export function createDiscordModelWizard({ restCall, bridge }) {
       { label: 'This project', value: 'project', description: "Default for this conversation's project" },
       { label: 'Whole system (default)', value: 'global', description: 'OpenChamber default model everywhere' },
     ];
-    return stringSelect(`${SCOPE_PREFIX}${hash}`, options, 'Apply to…');
+    return {
+      components: [
+        stringSelect(`${SCOPE_PREFIX}${hash}`, options, 'Apply to…'),
+        buttonRow([{ label: '← Back', customId: `${BACK_PREFIX}${hash}`, style: 2 }]),
+      ],
+    };
+  }
+
+  function renderProviderStep(hash, wizard) {
+    return {
+      content: '**Set model**\nSelect a provider:',
+      flags: 64,
+      components: [renderProviderSelect(hash, wizard.entries, wizard.providerPage ?? 0)],
+    };
+  }
+
+  function renderModelStep(hash, wizard) {
+    const { components } = renderModelSelect(hash, wizard.models, wizard.modelPage ?? 0);
+    return {
+      content: `**Set model**\nProvider: **${wizard.providerName}**\nSelect a model:`,
+      flags: 64,
+      components,
+    };
+  }
+
+  function renderEffortStep(hash, wizard) {
+    const variants = modelVariants(wizard, wizard.selectedProviderId, wizard.selectedModelLocal);
+    const { components } = renderEffortSelect(hash, variants);
+    return {
+      content: `**Set model**\nModel: \`${wizard.selectedModelId}\`\nSelect thinking effort:`,
+      flags: 64,
+      components,
+    };
+  }
+
+  function renderScopeStep(hash, wizard) {
+    const effortLine = wizard.selectedVariant ? ` · effort \`${wizard.selectedVariant}\`` : '';
+    const { components } = renderScopeSelect(hash);
+    return {
+      content: `**Set model**\nModel: \`${wizard.selectedModelId}\`${effortLine}\nApply to:`,
+      flags: 64,
+      components,
+    };
   }
 
   function currentLine(info) {
@@ -303,6 +386,8 @@ export function createDiscordModelWizard({ restCall, bridge }) {
       entries,
       providerPage: 0,
       modelPage: 0,
+      stage: STAGE_PROVIDER,
+      hadEffortStep: false,
     });
 
     await respond(state.token, interaction, {
@@ -330,9 +415,78 @@ export function createDiscordModelWizard({ restCall, bridge }) {
     if (customId.startsWith(SCOPE_PREFIX)) {
       return onScopeSelect(token, interaction, customId.slice(SCOPE_PREFIX.length));
     }
+    if (customId.startsWith(BACK_PREFIX)) {
+      return onBack(token, interaction, customId.slice(BACK_PREFIX.length));
+    }
+    if (customId.startsWith(MODEL_PAGE_PREV_PREFIX)) {
+      return onModelPage(token, interaction, customId.slice(MODEL_PAGE_PREV_PREFIX.length), -1);
+    }
+    if (customId.startsWith(MODEL_PAGE_NEXT_PREFIX)) {
+      return onModelPage(token, interaction, customId.slice(MODEL_PAGE_NEXT_PREFIX.length), 1);
+    }
     if (customId.startsWith(RESEND_PREFIX)) {
       return onResend(token, interaction, customId.slice(RESEND_PREFIX.length));
     }
+  }
+
+  async function onBack(token, interaction, hash) {
+    const wizard = getWizard(hash);
+    if (!wizard) return expired(token, interaction);
+
+    if (wizard.stage === STAGE_SCOPE) {
+      if (wizard.hadEffortStep) {
+        wizard.stage = STAGE_EFFORT;
+        wizard.selectedVariant = null;
+        setWizard(hash, wizard);
+        await respond(wizard.token, interaction, { type: 7, data: renderEffortStep(hash, wizard) });
+        return;
+      }
+      wizard.stage = STAGE_MODEL;
+      wizard.selectedModelId = null;
+      wizard.selectedProviderId = null;
+      wizard.selectedModelLocal = null;
+      wizard.selectedVariant = null;
+      setWizard(hash, wizard);
+      await respond(wizard.token, interaction, { type: 7, data: renderModelStep(hash, wizard) });
+      return;
+    }
+
+    if (wizard.stage === STAGE_EFFORT) {
+      wizard.stage = STAGE_MODEL;
+      wizard.selectedModelId = null;
+      wizard.selectedProviderId = null;
+      wizard.selectedModelLocal = null;
+      wizard.selectedVariant = null;
+      wizard.hadEffortStep = false;
+      setWizard(hash, wizard);
+      await respond(wizard.token, interaction, { type: 7, data: renderModelStep(hash, wizard) });
+      return;
+    }
+
+    // Model step (and any unexpected stage) → provider list. No back on the
+    // provider menu itself — that is the root of the wizard.
+    wizard.stage = STAGE_PROVIDER;
+    wizard.isFavorites = false;
+    wizard.providerId = null;
+    wizard.providerName = null;
+    wizard.models = null;
+    wizard.modelPage = 0;
+    wizard.selectedModelId = null;
+    wizard.selectedProviderId = null;
+    wizard.selectedModelLocal = null;
+    wizard.selectedVariant = null;
+    wizard.hadEffortStep = false;
+    setWizard(hash, wizard);
+    await respond(wizard.token, interaction, { type: 7, data: renderProviderStep(hash, wizard) });
+  }
+
+  async function onModelPage(token, interaction, hash, delta) {
+    const wizard = getWizard(hash);
+    if (!wizard) return expired(token, interaction);
+    wizard.modelPage = Math.max(0, (wizard.modelPage ?? 0) + delta);
+    wizard.stage = STAGE_MODEL;
+    setWizard(hash, wizard);
+    await respond(wizard.token, interaction, { type: 7, data: renderModelStep(hash, wizard) });
   }
 
   async function onProviderSelect(token, interaction, hash) {
@@ -343,14 +497,11 @@ export function createDiscordModelWizard({ restCall, bridge }) {
 
     if (value === PREV_VALUE || value === NEXT_VALUE) {
       wizard.providerPage = (wizard.providerPage ?? 0) + (value === NEXT_VALUE ? 1 : -1);
+      wizard.stage = STAGE_PROVIDER;
       setWizard(hash, wizard);
       await respond(wizard.token, interaction, {
         type: 7,
-        data: {
-          content: '**Set model**\nSelect a provider:',
-          flags: 64,
-          components: [renderProviderSelect(hash, wizard.entries, wizard.providerPage)],
-        },
+        data: renderProviderStep(hash, wizard),
       });
       return;
     }
@@ -395,15 +546,13 @@ export function createDiscordModelWizard({ restCall, bridge }) {
 
     wizard.models = models;
     wizard.modelPage = 0;
+    wizard.stage = STAGE_MODEL;
+    wizard.hadEffortStep = false;
     setWizard(hash, wizard);
 
     await respond(wizard.token, interaction, {
       type: 7,
-      data: {
-        content: `**Set model**\nProvider: **${wizard.providerName}**\nSelect a model:`,
-        flags: 64,
-        components: [renderModelSelect(hash, models, 0)],
-      },
+      data: renderModelStep(hash, wizard),
     });
   }
 
@@ -413,16 +562,15 @@ export function createDiscordModelWizard({ restCall, bridge }) {
     const value = interaction.data?.values?.[0];
     if (!value) return;
 
+    // Legacy in-select page nav (kept so older messages still page); new UI
+    // uses dedicated page buttons and keeps Back available on every page.
     if (value === PREV_VALUE || value === NEXT_VALUE) {
       wizard.modelPage = (wizard.modelPage ?? 0) + (value === NEXT_VALUE ? 1 : -1);
+      wizard.stage = STAGE_MODEL;
       setWizard(hash, wizard);
       await respond(wizard.token, interaction, {
         type: 7,
-        data: {
-          content: `**Set model**\nProvider: **${wizard.providerName}**\nSelect a model:`,
-          flags: 64,
-          components: [renderModelSelect(hash, wizard.models, wizard.modelPage)],
-        },
+        data: renderModelStep(hash, wizard),
       });
       return;
     }
@@ -440,19 +588,19 @@ export function createDiscordModelWizard({ restCall, bridge }) {
 
     const variants = modelVariants(wizard, providerId, localId);
     if (variants.length > 0) {
+      wizard.stage = STAGE_EFFORT;
+      wizard.hadEffortStep = true;
+      setWizard(hash, wizard);
       await respond(wizard.token, interaction, {
         type: 7,
-        data: {
-          content: `**Set model**\nModel: \`${modelId}\`\nSelect thinking effort:`,
-          flags: 64,
-          components: [renderEffortSelect(hash, variants)],
-        },
+        data: renderEffortStep(hash, wizard),
       });
       return;
     }
 
     // No reasoning variants — go straight to the scope picker.
     wizard.selectedVariant = null;
+    wizard.hadEffortStep = false;
     await promptScope(wizard, hash, interaction);
   }
 
@@ -462,19 +610,16 @@ export function createDiscordModelWizard({ restCall, bridge }) {
     const value = interaction.data?.values?.[0];
     if (!value) return;
     wizard.selectedVariant = value === EFFORT_NONE ? null : value;
+    wizard.hadEffortStep = true;
     await promptScope(wizard, hash, interaction);
   }
 
   async function promptScope(wizard, hash, interaction) {
+    wizard.stage = STAGE_SCOPE;
     setWizard(hash, wizard);
-    const effortLine = wizard.selectedVariant ? ` · effort \`${wizard.selectedVariant}\`` : '';
     await respond(wizard.token, interaction, {
       type: 7,
-      data: {
-        content: `**Set model**\nModel: \`${wizard.selectedModelId}\`${effortLine}\nApply to:`,
-        flags: 64,
-        components: [renderScopeSelect(hash)],
-      },
+      data: renderScopeStep(hash, wizard),
     });
   }
 
