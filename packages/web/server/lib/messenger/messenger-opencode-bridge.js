@@ -2514,6 +2514,7 @@ export function createMessengerOpencodeBridge({
       return;
     }
     if (dedupKey) ctx.sentPartIds.add(dedupKey);
+    if (partType === 'text') ctx.hasAssistantOutput = true;
   }
 
   async function handleGlobalEvent(normalized) {

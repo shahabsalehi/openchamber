@@ -61,6 +61,7 @@ function resolveDefaultDbPath() {
 }
 
 export function normalizeMessengerInterruptTimeoutMs(value) {
+  if (value == null || value === '') return MESSENGER_INTERRUPT_TIMEOUT_DEFAULT_MS;
   const numeric = typeof value === 'string' ? Number(value.trim()) : Number(value);
   if (!Number.isFinite(numeric)) return MESSENGER_INTERRUPT_TIMEOUT_DEFAULT_MS;
   return Math.min(

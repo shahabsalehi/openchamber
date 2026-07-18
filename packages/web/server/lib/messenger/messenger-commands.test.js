@@ -193,6 +193,53 @@ describe('/help includes verbosity and skill', () => {
   });
 });
 
+describe('P1 messenger commands', () => {
+  it('/diff delegates to the bridge git diff helper', async () => {
+    const gitDiff = vi.fn(async () => ({ ok: true, reply: '**Git diff**\n_Working tree is clean._' }));
+    const { result } = await run('/diff', {
+      binding: { projectPath: '/p' },
+      bridgeOps: { gitDiff },
+    });
+    expect(gitDiff).toHaveBeenCalledTimes(1);
+    expect(result.reply).toContain('**Git diff**');
+  });
+
+  it('/tunnel passes provider/mode arguments to the bridge tunnel helper', async () => {
+    const startTunnel = vi.fn(async () => ({
+      ok: true,
+      publicUrl: 'https://demo.trycloudflare.com',
+      provider: 'cloudflare',
+      mode: 'quick',
+      note: 'existing runtime',
+    }));
+    const { result } = await run('/tunnel cloudflare quick', { bridgeOps: { startTunnel } });
+    expect(startTunnel).toHaveBeenCalledWith({ args: 'cloudflare quick' });
+    expect(result.reply).toContain('https://demo.trycloudflare.com');
+  });
+
+  it('/login asks the bridge for provider auth guidance', async () => {
+    const loginInfo = vi.fn(async () => ({ ok: true, reply: '**Provider login: `anthropic`**' }));
+    const { result } = await run('/login anthropic', { bridgeOps: { loginInfo } });
+    expect(loginInfo).toHaveBeenCalledWith({ provider: 'anthropic' });
+    expect(result.reply).toContain('anthropic');
+  });
+
+  it('/usage and /credits use the same usage summary path', async () => {
+    const usageSummary = vi.fn(async () => ({ ok: true, reply: '**Session usage**\nTotal tokens: 10' }));
+    const usage = await run('/usage', {
+      binding: { sessionId: 'ses-1' },
+      bridgeOps: { usageSummary },
+    });
+    const credits = await run('/credits', {
+      binding: { sessionId: 'ses-1' },
+      bridgeOps: { usageSummary },
+    });
+    expect(usage.result.reply).toContain('**Session usage**');
+    expect(credits.result.reply).toContain('**Session usage**');
+    expect(usageSummary).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('/yolo (permission mode) command', () => {
   it('lists the modes and marks the effective one with no args', async () => {
     const { result, surfaceMutators } = await run('/yolo', {

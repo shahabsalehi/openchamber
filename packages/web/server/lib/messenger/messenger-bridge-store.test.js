@@ -3,7 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { MessengerBridgeStore } from './messenger-bridge-store.js';
+import {
+  MESSENGER_INTERRUPT_TIMEOUT_DEFAULT_MS,
+  MESSENGER_INTERRUPT_TIMEOUT_MAX_MS,
+  MESSENGER_INTERRUPT_TIMEOUT_MIN_MS,
+  MessengerBridgeStore,
+} from './messenger-bridge-store.js';
 
 describe('MessengerBridgeStore — permission mode persistence', () => {
   let dbPath;
@@ -75,5 +80,25 @@ describe('MessengerBridgeStore — permission mode persistence', () => {
     expect(store.getPermissionModeDefault('discord')).toBe('auto-edit');
     store.setPermissionModeDefault('discord', null);
     expect(store.getPermissionModeDefault('discord')).toBeNull();
+  });
+
+  it('round-trips the notify-on-complete setting', () => {
+    expect(store.getNotifyOnComplete('discord')).toBe(false);
+    store.setNotifyOnComplete('discord', true);
+    expect(store.getNotifyOnComplete('discord')).toBe(true);
+    store.setNotifyOnComplete('discord', false);
+    expect(store.getNotifyOnComplete('discord')).toBe(false);
+  });
+
+  it('normalizes and persists the interrupt timeout setting', () => {
+    expect(store.getInterruptTimeoutMs('discord')).toBe(MESSENGER_INTERRUPT_TIMEOUT_DEFAULT_MS);
+    store.setInterruptTimeoutMs('discord', 1234.6);
+    expect(store.getInterruptTimeoutMs('discord')).toBe(1235);
+    store.setInterruptTimeoutMs('discord', -1);
+    expect(store.getInterruptTimeoutMs('discord')).toBe(MESSENGER_INTERRUPT_TIMEOUT_MIN_MS);
+    store.setInterruptTimeoutMs('discord', 999999);
+    expect(store.getInterruptTimeoutMs('discord')).toBe(MESSENGER_INTERRUPT_TIMEOUT_MAX_MS);
+    store.setInterruptTimeoutMs('discord', MESSENGER_INTERRUPT_TIMEOUT_DEFAULT_MS);
+    expect(store.getInterruptTimeoutMs('discord')).toBe(MESSENGER_INTERRUPT_TIMEOUT_DEFAULT_MS);
   });
 });
