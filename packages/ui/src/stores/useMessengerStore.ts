@@ -11,6 +11,10 @@ export type MessengerVerbosity = 'quiet' | 'normal' | 'verbose';
 /** Tool permission mode for the OpenCode bridge (`/yolo` / `/permissions`). */
 export type MessengerPermissionMode = 'ask' | 'auto-edit' | 'yolo';
 
+export const MESSENGER_INTERRUPT_TIMEOUT_DEFAULT_MS = 8000;
+export const MESSENGER_INTERRUPT_TIMEOUT_MIN_MS = 1000;
+export const MESSENGER_INTERRUPT_TIMEOUT_MAX_MS = 60000;
+
 export interface MessengerConnection {
   type: MessengerType;
   enabled: boolean;
@@ -263,6 +267,9 @@ interface MessengerState {
    */
   bridgePermissionMode: Partial<Record<MessengerType, MessengerPermissionMode | null>>;
 
+  bridgeNotifyOnComplete: Partial<Record<MessengerType, boolean>>;
+  bridgeInterruptTimeoutMs: Partial<Record<MessengerType, number>>;
+
   addConnection: (type: MessengerType) => void;
   updateConnection: (type: MessengerType, updates: Partial<MessengerConnection>) => void;
   removeConnection: (type: MessengerType) => void;
@@ -282,6 +289,14 @@ interface MessengerState {
   setBridgePermissionMode: (
     type: MessengerType,
     mode: MessengerPermissionMode,
+  ) => Promise<boolean>;
+  setBridgeNotifyOnComplete: (
+    type: MessengerType,
+    enabled: boolean,
+  ) => Promise<boolean>;
+  setBridgeInterruptTimeoutMs: (
+    type: MessengerType,
+    timeoutMs: number,
   ) => Promise<boolean>;
   saveDiscordConfig: () => Promise<void>;
   startDiscordListener: () => Promise<boolean>;
@@ -370,6 +385,8 @@ export const useMessengerStore = create<MessengerState>()(
       bridgeStatus: { enabled: false, bindings: [], active: [] },
       bridgeVerbosity: {},
       bridgePermissionMode: {},
+      bridgeNotifyOnComplete: {},
+      bridgeInterruptTimeoutMs: {},
 
       addConnection: (type) => {
         const existing = get().connections.find((c) => c.type === type);
@@ -773,6 +790,8 @@ export const useMessengerStore = create<MessengerState>()(
             active?: MessengerState['bridgeStatus']['active'];
             verbosity?: Partial<Record<MessengerType, MessengerVerbosity | null>>;
             permissionMode?: Partial<Record<MessengerType, MessengerPermissionMode | null>>;
+            notifyOnComplete?: Partial<Record<MessengerType, boolean>>;
+            interruptTimeoutMs?: Partial<Record<MessengerType, number>>;
           }>('/api/messenger/bridge/status', { type, token });
           set({
             bridgeStatus: {
@@ -782,6 +801,8 @@ export const useMessengerStore = create<MessengerState>()(
             },
             bridgeVerbosity: data.verbosity ?? get().bridgeVerbosity,
             bridgePermissionMode: data.permissionMode ?? get().bridgePermissionMode,
+            bridgeNotifyOnComplete: data.notifyOnComplete ?? get().bridgeNotifyOnComplete,
+            bridgeInterruptTimeoutMs: data.interruptTimeoutMs ?? get().bridgeInterruptTimeoutMs,
           });
         } catch {
           // ignore
@@ -815,6 +836,48 @@ export const useMessengerStore = create<MessengerState>()(
             bridgePermissionMode: {
               ...get().bridgePermissionMode,
               [type]: data.mode ?? mode,
+            },
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+
+      setBridgeNotifyOnComplete: async (type, enabled) => {
+        try {
+          const data = await postJson<{ ok: boolean; enabled?: boolean }>(
+            '/api/messenger/bridge/notify-on-complete',
+            { type, enabled },
+          );
+          if (!data.ok) return false;
+          set({
+            bridgeNotifyOnComplete: {
+              ...get().bridgeNotifyOnComplete,
+              [type]: data.enabled ?? enabled,
+            },
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+
+      setBridgeInterruptTimeoutMs: async (type, timeoutMs) => {
+        const clamped = Math.min(
+          MESSENGER_INTERRUPT_TIMEOUT_MAX_MS,
+          Math.max(MESSENGER_INTERRUPT_TIMEOUT_MIN_MS, Math.round(timeoutMs)),
+        );
+        try {
+          const data = await postJson<{ ok: boolean; timeoutMs?: number }>(
+            '/api/messenger/bridge/interrupt-timeout',
+            { type, timeoutMs: clamped },
+          );
+          if (!data.ok) return false;
+          set({
+            bridgeInterruptTimeoutMs: {
+              ...get().bridgeInterruptTimeoutMs,
+              [type]: data.timeoutMs ?? clamped,
             },
           });
           return true;

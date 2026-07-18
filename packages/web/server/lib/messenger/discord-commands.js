@@ -46,6 +46,21 @@ export function buildSlashCommandDefinitions() {
   return [
     { name: 'help', description: 'List OpenChamber agent messenger commands' },
     { name: 'status', description: 'Show the session, project, model and agent for this conversation' },
+    {
+      name: 'add-project',
+      description: 'Register an existing project directory and bind this Discord channel',
+      options: [
+        { type: STRING_OPTION, name: 'path', description: 'Absolute project path, optionally followed by a label', required: true },
+      ],
+    },
+    {
+      name: 'create-new-project',
+      description: 'Create an OpenChamber project folder and Discord project channel',
+      options: [
+        { type: STRING_OPTION, name: 'name', description: 'Project name or absolute path', required: true },
+      ],
+    },
+    { name: 'remove-project', description: 'Unbind this Discord channel from its project without deleting files' },
     { name: 'abort', description: 'Stop the current OpenCode turn' },
     { name: 'new', description: 'Drop the current session and start fresh on the next message' },
     { name: 'undo', description: 'Revert one user message' },
@@ -60,6 +75,17 @@ export function buildSlashCommandDefinitions() {
     },
     { name: 'init', description: 'Run OpenCode init (creates/updates AGENTS.md)' },
     { name: 'review', description: 'Run the OpenCode review workflow' },
+    { name: 'diff', description: 'Show a reviewable git diff for this project/worktree' },
+    {
+      name: 'tunnel',
+      description: 'Expose OpenChamber through the configured tunnel provider',
+      options: [
+        { type: STRING_OPTION, name: 'args', description: 'Optional provider/mode, e.g. cloudflare quick', required: false },
+      ],
+    },
+    { name: 'login', description: 'Pick a provider auth method and open OpenCode login guidance' },
+    { name: 'usage', description: 'Show estimated token usage for this session' },
+    { name: 'credits', description: 'Alias for /usage — show session usage' },
     {
       name: 'shell',
       description: 'Run a shell command in the project and show its output',
@@ -111,7 +137,13 @@ export function buildSlashCommandDefinitions() {
         { type: STRING_OPTION, name: 'message', description: 'The message to queue', required: true },
       ],
     },
-    { name: 'clear-queue', description: 'Clear all queued messages for this conversation' },
+    {
+      name: 'clear-queue',
+      description: 'Clear all queued messages or one queued position',
+      options: [
+        { type: STRING_OPTION, name: 'position', description: 'Optional queue position to clear', required: false },
+      ],
+    },
     { name: 'mention-mode', description: 'Toggle mention-only mode for this channel' },
     {
       name: 'new-worktree',
@@ -120,7 +152,31 @@ export function buildSlashCommandDefinitions() {
         { type: STRING_OPTION, name: 'name', description: 'Worktree name (derived automatically when omitted)', required: false },
       ],
     },
+    { name: 'worktrees', description: 'List git worktrees for this channel project' },
+    {
+      name: 'toggle-worktrees',
+      description: 'Toggle auto-worktrees for new sessions in this project',
+      options: [
+        { type: STRING_OPTION, name: 'value', description: 'on or off (omit to toggle)', required: false },
+      ],
+    },
     { name: 'merge-worktree', description: 'Squash-merge this worktree into the default branch' },
+    {
+      name: 'mcp',
+      description: 'List MCP servers or enable/disable a configured server',
+      options: [
+        { type: STRING_OPTION, name: 'args', description: 'connect <name> or disconnect <name>', required: false },
+      ],
+    },
+    {
+      name: 'add-dir',
+      description: 'Check whether extra directory access grants are supported',
+      options: [
+        { type: STRING_OPTION, name: 'path', description: 'Absolute directory path', required: true },
+      ],
+    },
+    { name: 'context-usage', description: 'Show token/context usage for this session' },
+    { name: 'session-id', description: 'Show the current session id and Discord URL' },
     {
       name: 'schedule',
       description: 'Schedule a prompt: UTC ISO date or cron — list / delete <id> to manage',
@@ -128,6 +184,15 @@ export function buildSlashCommandDefinitions() {
         { type: STRING_OPTION, name: 'args', description: '<when> [model=p/m] [agent=name] <prompt> | list | delete <id>', required: false },
       ],
     },
+    {
+      name: 'queue-command',
+      description: 'Queue an OpenCode slash command after the current response',
+      options: [
+        { type: STRING_OPTION, name: 'command', description: 'OpenCode command name and optional args', required: true },
+      ],
+    },
+    { name: 'fork-subagent', description: 'Explain current subagent fork support' },
+    { name: 'restart-opencode-server', description: 'Reload/reconnect OpenChamber managed OpenCode server' },
   ].map((c) => ({ type: 1, ...c }));
 }
 

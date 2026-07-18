@@ -39,7 +39,25 @@ describe('buildSlashCommandDefinitions', () => {
   it('declares options only on the parameterised commands', () => {
     const withOptions = defs.filter((d) => Array.isArray(d.options) && d.options.length > 0);
     expect(withOptions.map((d) => d.name).sort()).toEqual(
-      ['btw', 'fork', 'new-worktree', 'queue', 'resume', 'schedule', 'session', 'shell', 'summary'].sort(),
+      [
+        'add-dir',
+        'add-project',
+        'btw',
+        'clear-queue',
+        'create-new-project',
+        'fork',
+        'mcp',
+        'new-worktree',
+        'queue',
+        'queue-command',
+        'resume',
+        'schedule',
+        'session',
+        'shell',
+        'summary',
+        'toggle-worktrees',
+        'tunnel',
+      ].sort(),
     );
     const summary = defs.find((d) => d.name === 'summary');
     expect(summary.options[0]).toMatchObject({ name: 'topic', required: false, type: 3 });

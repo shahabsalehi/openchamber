@@ -2,6 +2,7 @@ import WebSocket from 'ws';
 import crypto from 'node:crypto';
 import { createDiscordModelWizard } from './discord-model-wizard.js';
 import { createDiscordCommandWizards } from './discord-command-wizards.js';
+import { createDiscordGatewayProxyAgent } from './discord-proxy-agent.js';
 import { registerApplicationCommands } from './discord-commands.js';
 import { resolveDiscordMentions } from './messenger-attachments.js';
 import { parseLeadingCommand, COMMAND_HELP } from './messenger-commands.js';
@@ -432,7 +433,7 @@ function dispatchThreadDelete(state, data, bridge, reason = 'deleted') {
  */
 const KNOWN_SLASH_COMMANDS = new Set([
   'help', 'status', 'abort', 'new', 'undo', 'redo',
-  'compact', 'summary', 'init', 'review', 'shell',
+  'compact', 'summary', 'init', 'review', 'diff', 'tunnel', 'login', 'usage', 'credits', 'shell',
   'model', 'agent', 'verbosity', 'yolo', 'permissions', 'skill', 'sessions',
   'session', 'resume', 'fork', 'share', 'unshare',
   'btw', 'queue', 'clear-queue', 'mention-mode',
@@ -482,6 +483,10 @@ async function handleApplicationCommand(state, interaction, broadcastEvent, brid
     }
     if (cmdName === 'skill') {
       await state.commandWizards.startSkill(state, interaction);
+      return;
+    }
+    if (cmdName === 'login') {
+      await state.commandWizards.startLogin(state, interaction);
       return;
     }
     if (cmdName === 'yolo' || cmdName === 'permissions') {
@@ -833,7 +838,9 @@ function startSession(state, broadcastEvent, bridge) {
   if (state.stopRequested) return;
   let ws;
   try {
-    ws = new WebSocket(GATEWAY_URL);
+    ws = new WebSocket(GATEWAY_URL, {
+      agent: createDiscordGatewayProxyAgent({ targetUrl: GATEWAY_URL }),
+    });
   } catch (err) {
     state.lastError = err?.message ?? 'gateway connect failed';
     return scheduleReconnect(state, broadcastEvent, bridge);

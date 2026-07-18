@@ -59,6 +59,16 @@ describe('MessengerBridgeStore — permission mode persistence', () => {
     expect(pd.modelDefault).toBe('anthropic/sonnet');
   });
 
+  it('round-trips the project auto-worktree default without clobbering other defaults', () => {
+    store.setProjectDefaults({ projectPath: '/proj', projectLabel: 'Proj', autoWorktreeDefault: 1 });
+    expect(store.getProjectDefaults('/proj')?.autoWorktreeDefault).toBe(1);
+
+    store.setProjectDefaults({ projectPath: '/proj', agentDefault: 'build' });
+    const pd = store.getProjectDefaults('/proj');
+    expect(pd.autoWorktreeDefault).toBe(1);
+    expect(pd.agentDefault).toBe('build');
+  });
+
   it('round-trips the messenger-wide permission mode default', () => {
     expect(store.getPermissionModeDefault('discord')).toBeNull();
     store.setPermissionModeDefault('discord', 'auto-edit');

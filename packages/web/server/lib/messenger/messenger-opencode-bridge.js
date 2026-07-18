@@ -1,7 +1,11 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { MessengerBridgeStore } from './messenger-bridge-store.js';
+import {
+  MESSENGER_INTERRUPT_TIMEOUT_DEFAULT_MS,
+  normalizeMessengerInterruptTimeoutMs,
+  MessengerBridgeStore,
+} from './messenger-bridge-store.js';
 import {
   executeMessengerCommand,
   parseLeadingCommand,
@@ -31,12 +35,16 @@ import {
   computeTurnTokens,
 } from './messenger-render.js';
 import { processDiscordAttachments, composePromptText } from './messenger-attachments.js';
+import { buildSessionReferenceForId } from './session-reference.js';
+import { listMcpConfigs, updateMcpConfig } from '../opencode/mcp.js';
 import {
   createBridgeWorktree,
+  listBridgeWorktrees,
   mergeBridgeWorktree,
   sanitizeWorktreeName,
   MERGE_CONFLICT_PROMPT,
 } from './messenger-worktrees.js';
+import { buildMessengerGitDiffReply } from './messenger-git-diff.js';
 import parser from 'cron-parser';
 
 /**
@@ -522,6 +530,12 @@ export function createMessengerOpencodeBridge({
    */
   bootstrapProject = null,
   /**
+   * Optional project→messenger channel hook. Called after a project command
+   * registers a project so the Discord channel path reuses the same sync flow
+   * as Settings and the agent-facing create-project API.
+   */
+  autoCreateProjectChannel = null,
+  /**
    * Optional lookup function for reverse-mapping a session ID to a
    * messenger surface. Used by the permission.asked handler when the
    * session is not tracked locally (e.g. gateway bot handles inbound).
@@ -578,6 +592,15 @@ export function createMessengerOpencodeBridge({
    * timers after the Discord `/schedule` command mutates its tasks.
    */
   scheduledTasksRuntime = null,
+  /**
+   * Existing OpenChamber tunnel runtime. Discord `/tunnel` calls this so it
+   * uses the same provider/controller/settings path as the web UI and CLI.
+   */
+  startTunnelWithNormalizedRequest = null,
+  /**
+   * OpenChamber lifecycle hook used for best-effort config reloads.
+   */
+  refreshOpenCodeAfterConfigChange = null,
 }) {
   const bridgeStore = store ?? new MessengerBridgeStore();
 
@@ -652,8 +675,8 @@ export function createMessengerOpencodeBridge({
   // hold a message back or send it immediately.
   /** @type {Set<string>} */
   const busySessions = new Set();
-  // surfaceKey → queued messages, drained one-by-one on session.idle.
-  /** @type {Map<string, Array<{ text: string, from?: object, queuedAt: number }>>} */
+  // surfaceKey → queued prompts/commands, drained one-by-one on session.idle.
+  /** @type {Map<string, Array<{ kind?: 'prompt'|'command', text?: string, commandName?: string, args?: string, from?: object, queuedAt: number }>>} */
   const surfaceQueues = new Map();
   const MAX_QUEUE_LENGTH = 16;
 
@@ -669,13 +692,28 @@ export function createMessengerOpencodeBridge({
   // so its idle event can't clear `busySessions` out from under the new turn.
   /** @type {Map<string, () => Promise<unknown>>} */
   const pendingSupersede = new Map();
-  const SUPERSEDE_FALLBACK_MS = 8000;
   // After a turn is superseded, OpenCode may emit a trailing abort `session.error`
   // (e.g. "streaming response failed" / "provider not available") for the turn we
   // just cancelled. If it lands AFTER the stashed send already fired (so it's no
   // longer in `pendingSupersede`), suppress it within this grace window instead of
   // surfacing the teardown of a turn the user intentionally interrupted.
   const SUPERSEDE_ERROR_GRACE_MS = 6000;
+
+  function resolveInterruptTimeoutMs(type = 'discord') {
+    try {
+      return bridgeStore.getInterruptTimeoutMs?.(type) ?? MESSENGER_INTERRUPT_TIMEOUT_DEFAULT_MS;
+    } catch {
+      return MESSENGER_INTERRUPT_TIMEOUT_DEFAULT_MS;
+    }
+  }
+
+  function shouldNotifyOnComplete(type = 'discord') {
+    try {
+      return Boolean(bridgeStore.getNotifyOnComplete?.(type));
+    } catch {
+      return false;
+    }
+  }
 
   /** Run (and clear) a stashed superseding send for a session, if any. */
   function runSupersede(sessionId, ctx) {
@@ -703,12 +741,12 @@ export function createMessengerOpencodeBridge({
    * the aborted turn, run the stashed send anyway after a short grace period so
    * the user's new message is never stranded.
    */
-  function scheduleSupersedeFallback(sessionId) {
+  function scheduleSupersedeFallback(sessionId, type = 'discord') {
     const timer = setTimeout(() => {
       if (pendingSupersede.has(sessionId)) {
         runSupersede(sessionId, sessionContexts.get(sessionId));
       }
-    }, SUPERSEDE_FALLBACK_MS);
+    }, resolveInterruptTimeoutMs(type));
     timer.unref?.();
   }
 
@@ -1073,9 +1111,39 @@ export function createMessengerOpencodeBridge({
         id: p.id ?? p.name,
         name: p.name ?? p.id,
         models: Array.isArray(p.models)
-          ? p.models.map((m) => ({ id: m.id ?? m.name, name: m.name ?? m.id }))
+          ? p.models.map((m) => ({ id: m.id ?? m.name, name: m.name ?? m.id, limit: m.limit ?? null }))
           : [],
       }));
+    },
+    async listProviderAuthMethods() {
+      try {
+        const r = await opencodeFetch('/provider/auth');
+        if (!r.ok) return {};
+        const d = await r.json().catch(() => null);
+        const source = d && typeof d === 'object' && d.data && typeof d.data === 'object' ? d.data : d;
+        if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
+        const out = {};
+        for (const [providerId, methods] of Object.entries(source)) {
+          if (!Array.isArray(methods)) continue;
+          out[providerId] = methods.filter((method) => method && typeof method === 'object');
+        }
+        return out;
+      } catch {
+        return {};
+      }
+    },
+    async startProviderOAuth(providerId, methodIndex = 0) {
+      try {
+        const r = await opencodeFetch(`/provider/${encodeURIComponent(providerId)}/oauth/authorize`, {
+          method: 'POST',
+          body: JSON.stringify({ method: methodIndex }),
+        });
+        if (!r.ok) return { ok: false, error: `OpenCode ${r.status}: ${(await r.text()).slice(0, 200)}` };
+        const d = await r.json().catch(() => null);
+        return { ok: true, data: d?.data && typeof d.data === 'object' ? d.data : d };
+      } catch (e) {
+        return { ok: false, error: e?.message ?? 'OAuth start failed' };
+      }
     },
     async listAgents() {
       const r = await opencodeFetch('/agent');
@@ -1334,6 +1402,18 @@ export function createMessengerOpencodeBridge({
       }
     }
 
+    const projectDefaults = effectivePath ? bridgeStore.getProjectDefaults?.(effectivePath) : null;
+    if (projectDefaults?.autoWorktreeDefault) {
+      const worktreeName = sanitizeWorktreeName(`auto-${Date.now().toString(36)}`);
+      const created = await createBridgeWorktree({ projectPath: effectivePath, name: worktreeName });
+      if (!created.ok) {
+        throw new Error(`auto-worktree is enabled but worktree creation failed: ${created.error ?? 'unknown error'}`);
+      }
+      effectivePath = created.path;
+      effectiveLabel = `${effectiveLabel ?? path.basename(projectPath ?? effectivePath)} (${created.branch})`;
+      autoResolved = 'auto-worktree';
+    }
+
     // No explicit title — OpenCode auto-generates one from the first
     // message and the bridge renames the Discord thread to match.
     const sessionId = await createOpencodeSession({ projectPath: effectivePath });
@@ -1454,8 +1534,23 @@ export function createMessengerOpencodeBridge({
     if (!queue || queue.length === 0) return;
     const next = queue.shift();
     if (queue.length === 0) surfaceQueues.delete(key);
-    if (!next?.text) return;
     const who = next.from?.firstName || next.from?.username || 'queued';
+    if (next?.kind === 'command' && next.commandName) {
+      try {
+        await postToSurface(
+          ctx,
+          `» **${escapeMd(who)} queued command:** \`/${escapeMd(next.commandName)}${next.args ? ` ${escapeMd(next.args)}` : ''}\``,
+        );
+      } catch {
+        // cosmetic echo only
+      }
+      const result = await opencodeAdapter.sendOpencodeCommand(ctx.sessionId, next.commandName, next.args ?? '');
+      if (!result.ok) {
+        await postToSurface(ctx, `✗ Queued command failed: ${escapeMd(clipBlock(result.error ?? 'unknown error', 300))}`).catch(() => {});
+      }
+      return;
+    }
+    if (!next?.text) return;
     try {
       await postToSurface(ctx, `» **${escapeMd(who)}:** ${clipBlock(next.text, 500)}`);
     } catch {
@@ -2633,6 +2728,11 @@ export function createMessengerOpencodeBridge({
           // Best-effort — fall back to duration-only footer.
         }
         footer += '_';
+        const mentionUserId =
+          shouldNotifyOnComplete(ctx.type) && ctx.hasAssistantOutput && ctx.from?.id
+            ? String(ctx.from.id)
+            : '';
+        if (mentionUserId) footer = `<@${mentionUserId}> ${footer}`;
         void postToSurface(ctx, footer);
       })();
 
@@ -3130,6 +3230,116 @@ export function createMessengerOpencodeBridge({
     return '';
   }
 
+  function normalizeAuthMethodType(method) {
+    const raw = typeof method?.type === 'string' ? method.type : '';
+    const label = `${method?.name ?? ''} ${method?.label ?? ''}`.toLowerCase();
+    const merged = `${raw} ${label}`.toLowerCase();
+    if (merged.includes('oauth')) return 'oauth';
+    if (merged.includes('api')) return 'api';
+    return raw.toLowerCase();
+  }
+
+  function extractOAuthDetails(payload) {
+    const data = payload && typeof payload === 'object' && payload.data && typeof payload.data === 'object'
+      ? payload.data
+      : payload;
+    const record = data && typeof data === 'object' ? data : {};
+    return {
+      url: typeof record.url === 'string' ? record.url : typeof record.verificationUri === 'string' ? record.verificationUri : null,
+      instructions: typeof record.instructions === 'string' ? record.instructions : null,
+      userCode: typeof record.userCode === 'string' ? record.userCode : typeof record.code === 'string' ? record.code : null,
+    };
+  }
+
+  function formatOAuthReply(providerId, details) {
+    const lines = [`**Provider login: \`${escapeMd(providerId)}\`**`];
+    if (details.url) lines.push(`Open this URL: ${details.url}`);
+    if (details.userCode) lines.push(`Code: \`${escapeMd(details.userCode)}\``);
+    if (details.instructions) lines.push(escapeMd(details.instructions));
+    lines.push('_After completing OAuth, OpenCode stores the credential in its existing auth storage._');
+    return lines.join('\n');
+  }
+
+  function parseTunnelArgs(argsText, settings = {}) {
+    const tokens = String(argsText ?? '').trim().split(/\s+/).filter(Boolean);
+    const providers = new Set(['cloudflare', 'ngrok']);
+    const modes = new Set(['quick', 'managed-local', 'managed-remote']);
+    let provider = typeof settings?.tunnelProvider === 'string' && settings.tunnelProvider.trim()
+      ? settings.tunnelProvider.trim().toLowerCase()
+      : 'cloudflare';
+    let mode = typeof settings?.tunnelMode === 'string' && settings.tunnelMode.trim()
+      ? settings.tunnelMode.trim().toLowerCase()
+      : 'quick';
+    const unsupported = [];
+    for (const token of tokens) {
+      const lower = token.toLowerCase();
+      if (providers.has(lower)) {
+        provider = lower;
+      } else if (modes.has(lower)) {
+        mode = lower;
+      } else if (/^\d+$/.test(lower) || lower.includes(':')) {
+        unsupported.push(token);
+      } else {
+        return { ok: false, error: `unknown tunnel argument \`${token}\`. Use \`cloudflare\` or \`ngrok\`, plus \`quick\`, \`managed-local\` or \`managed-remote\`.` };
+      }
+    }
+    if (!providers.has(provider)) provider = 'cloudflare';
+    if (!modes.has(mode)) mode = 'quick';
+    if (unsupported.length > 0) {
+      return {
+        ok: false,
+        error: 'custom local ports are not supported by the current OpenChamber tunnel runtime; `/tunnel` exposes the running OpenChamber web server.',
+      };
+    }
+    return { ok: true, provider, mode };
+  }
+
+  function sumSessionUsage(messages) {
+    const totals = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0, turns: 0 };
+    for (const message of Array.isArray(messages) ? messages : []) {
+      const info = message?.info ?? message;
+      if (info?.role !== 'assistant') continue;
+      const tokens = info.tokens;
+      const total = computeTurnTokens(tokens);
+      if (total <= 0) continue;
+      totals.turns += 1;
+      totals.input += Number(tokens?.input ?? 0);
+      totals.output += Number(tokens?.output ?? 0);
+      totals.reasoning += Number(tokens?.reasoning ?? 0);
+      totals.cacheRead += Number(tokens?.cache?.read ?? 0);
+      totals.cacheWrite += Number(tokens?.cache?.write ?? 0);
+      totals.total += total;
+    }
+    return totals;
+  }
+
+  function findModelPricing(providersPayload, modelRef) {
+    if (!modelRef || !providersPayload?.all) return null;
+    const [providerId, ...modelParts] = modelRef.split('/');
+    const modelId = modelParts.join('/');
+    const provider = providersPayload.all.find((p) => p?.id === providerId);
+    const models = Array.isArray(provider?.models)
+      ? provider.models
+      : provider?.models && typeof provider.models === 'object'
+        ? Object.values(provider.models)
+        : [];
+    const model = models.find((m) => (m?.id ?? m?.name) === modelId);
+    const input = Number(model?.cost?.input);
+    const output = Number(model?.cost?.output);
+    if (!Number.isFinite(input) && !Number.isFinite(output)) return null;
+    return {
+      input: Number.isFinite(input) ? input : 0,
+      output: Number.isFinite(output) ? output : 0,
+    };
+  }
+
+  function estimateUsageCost(usage, pricing) {
+    if (!pricing) return null;
+    const cost = ((usage.input + usage.cacheWrite) / 1_000_000) * pricing.input
+      + ((usage.output + usage.reasoning) / 1_000_000) * pricing.output;
+    return Number.isFinite(cost) ? cost : null;
+  }
+
   async function executeSurfaceCommand({
     command,
     type,
@@ -3178,7 +3388,235 @@ export function createMessengerOpencodeBridge({
       return { ok: true, threadId: thread.threadId };
     };
 
+    const bindProjectToCurrentSurface = (project) => {
+      bridgeStore.bind({
+        type,
+        botTokenHash: hash,
+        targetKey: stableKey,
+        sessionId: stored?.sessionId ?? '',
+        projectPath: project.path,
+        projectLabel: project.label ?? path.basename(project.path),
+      });
+    };
+
+    const ensureDiscordProjectChannel = async (project) => {
+      if (typeof autoCreateProjectChannel !== 'function') {
+        return { ok: false, error: 'Discord project channel sync is not configured.' };
+      }
+      const surfaces = await autoCreateProjectChannel(project);
+      const discord = Array.isArray(surfaces)
+        ? surfaces.find((entry) => entry?.type === 'discord')
+        : null;
+      if (discord?.ok && discord.channelId) {
+        return {
+          ok: true,
+          channelId: String(discord.channelId),
+          channelName: discord.channelName ?? null,
+          created: Boolean(discord.created),
+        };
+      }
+      return { ok: false, error: discord?.error ?? 'Discord is not configured.' };
+    };
+
+    const removeProjectBindingForSurface = async () => {
+      const settings = typeof readSettings === 'function' ? await readSettings().catch(() => null) : null;
+      const discord = settings?.discord ?? {};
+      const bindings = Array.isArray(discord.projectBindings) ? discord.projectBindings : [];
+      const channelKeys = new Set([String(channelId), String(stableKey)]);
+      const projectPath = stored?.projectPath
+        ?? bindings.find((b) => channelKeys.has(String(b?.channelId)))?.projectPath
+        ?? null;
+      const removedBinding = bindings.find(
+        (b) =>
+          (projectPath && b?.projectPath === projectPath) ||
+          channelKeys.has(String(b?.channelId)),
+      );
+      if (!projectPath && !removedBinding) {
+        return { ok: false, error: 'this Discord channel is not bound to a project.' };
+      }
+      if (typeof persistSettings === 'function') {
+        const nextBindings = bindings.filter(
+          (b) =>
+            !(
+              (projectPath && b?.projectPath === projectPath) ||
+              channelKeys.has(String(b?.channelId))
+            ),
+        );
+        await persistSettings({
+          discord: {
+            ...discord,
+            projectBindings: nextBindings.length > 0 ? nextBindings : undefined,
+          },
+        }).catch(() => {});
+      }
+      for (const key of channelKeys) {
+        try {
+          bridgeStore.unbind({ type, botTokenHash: hash, targetKey: key });
+        } catch {
+          // best-effort
+        }
+      }
+      return {
+        ok: true,
+        projectPath: projectPath ?? removedBinding?.projectPath ?? null,
+        channelId: removedBinding?.channelId ?? channelId,
+      };
+    };
+
+    const resolveSurfaceProjectPath = async () => {
+      if (stored?.projectPath) return stored.projectPath;
+      const auto = await autoResolveProject({ type, token, channelId, threadId }).catch(() => null);
+      return auto?.projectPath ?? null;
+    };
+
     const bridgeOps = {
+      async addProject({ path: projectPath, label }) {
+        if (typeof bootstrapProject !== 'function') {
+          return { ok: false, error: 'project bootstrap is not wired into this server.' };
+        }
+        const result = await bootstrapProject({ action: 'path', path: projectPath, label });
+        if (!result?.ok || !result.project) {
+          return { ok: false, error: result?.error ?? 'project bootstrap failed' };
+        }
+        bindProjectToCurrentSurface(result.project);
+        const discord = await ensureDiscordProjectChannel(result.project).catch((err) => ({
+          ok: false,
+          error: err?.message ?? 'Discord channel sync failed',
+        }));
+        return { ok: true, project: result.project, discord };
+      },
+
+      async createNewProject({ value }) {
+        if (typeof bootstrapProject !== 'function') {
+          return { ok: false, error: 'project bootstrap is not wired into this server.' };
+        }
+        const raw = String(value ?? '').trim();
+        const isPath = path.isAbsolute(raw) || raw.includes('/') || raw.includes('\\');
+        const result = await bootstrapProject({
+          action: 'new',
+          path: isPath ? raw : undefined,
+          label: isPath ? undefined : raw,
+        });
+        if (!result?.ok || !result.project) {
+          return { ok: false, error: result?.error ?? 'project bootstrap failed' };
+        }
+        bindProjectToCurrentSurface(result.project);
+        const discord = await ensureDiscordProjectChannel(result.project).catch((err) => ({
+          ok: false,
+          error: err?.message ?? 'Discord channel sync failed',
+        }));
+        return { ok: true, project: result.project, discord };
+      },
+
+      async removeProjectBinding() {
+        return removeProjectBindingForSurface();
+      },
+
+      async gitDiff() {
+        let projectPath = stored?.projectPath ?? null;
+        if (!projectPath) {
+          const auto = await autoResolveProject({ type, token, channelId, threadId }).catch(() => null);
+          projectPath = auto?.projectPath ?? null;
+        }
+        return buildMessengerGitDiffReply({ projectPath });
+      },
+
+      async startTunnel({ args }) {
+        if (typeof startTunnelWithNormalizedRequest !== 'function') {
+          return { ok: false, error: 'tunnel runtime is not wired into this server.' };
+        }
+        const settings = typeof readSettings === 'function' ? await readSettings().catch(() => ({})) : {};
+        const parsed = parseTunnelArgs(args, settings);
+        if (!parsed.ok) return parsed;
+        try {
+          const result = await startTunnelWithNormalizedRequest({
+            provider: parsed.provider,
+            mode: parsed.mode,
+            intent: parsed.mode === 'quick' ? 'ephemeral-public' : 'persistent-public',
+            hostname: settings?.managedRemoteTunnelHostname || settings?.tunnelHostname || settings?.hostname || undefined,
+            token: settings?.managedRemoteTunnelToken || settings?.tunnelToken || undefined,
+            configPath: settings?.managedLocalTunnelConfigPath || undefined,
+          });
+          return {
+            ok: true,
+            publicUrl: result?.publicUrl ?? null,
+            provider: result?.provider ?? parsed.provider,
+            mode: result?.mode ?? parsed.mode,
+            note: 'Exposes the running OpenChamber web server using the existing tunnel settings.',
+          };
+        } catch (err) {
+          return { ok: false, error: err?.message ?? 'tunnel start failed' };
+        }
+      },
+
+      async loginInfo({ provider }) {
+        const providers = await opencodeAdapter.listProviders().catch(() => []);
+        const authMethods = await opencodeAdapter.listProviderAuthMethods().catch(() => ({}));
+        const providerId = typeof provider === 'string' && provider.trim() ? provider.trim() : null;
+        if (!providerId) {
+          const lines = [
+            '**Provider login**',
+            'Run `/login <provider>` or use Discord `/login` to pick from a dropdown.',
+            '',
+          ];
+          for (const p of providers.slice(0, 20)) {
+            const methods = authMethods[p.id] ?? [];
+            const hasOAuth = methods.some((m) => normalizeAuthMethodType(m) === 'oauth');
+            lines.push(`\`${p.id}\`${p.name && p.name !== p.id ? ` — ${p.name}` : ''}${hasOAuth ? ' · OAuth available' : ' · API key in Settings → Providers'}`);
+          }
+          if (providers.length === 0) lines.push('_No providers returned by OpenCode._');
+          return { ok: true, reply: lines.join('\n') };
+        }
+
+        const match =
+          providers.find((p) => p.id === providerId) ??
+          providers.find((p) => p.id?.toLowerCase() === providerId.toLowerCase()) ??
+          { id: providerId, name: providerId };
+        const methods = authMethods[match.id] ?? [];
+        const oauthIndex = methods.findIndex((m) => normalizeAuthMethodType(m) === 'oauth');
+        if (oauthIndex >= 0) {
+          const started = await opencodeAdapter.startProviderOAuth(match.id, oauthIndex);
+          if (!started.ok) return started;
+          const details = extractOAuthDetails(started.data);
+          if (!details.url && !details.instructions && !details.userCode) {
+            return { ok: false, error: 'OpenCode returned no OAuth URL, code, or instructions.' };
+          }
+          return { ok: true, reply: formatOAuthReply(match.id, details) };
+        }
+
+        return {
+          ok: true,
+          reply: [
+            `**Provider login: \`${escapeMd(match.id)}\`**`,
+            'This provider uses an API key flow.',
+            'Open OpenChamber Settings → Providers, select the provider, and save the API key there.',
+            '_Discord never asks you to paste provider secrets into chat._',
+          ].join('\n'),
+        };
+      },
+
+      async usageSummary() {
+        if (!stored?.sessionId) return { ok: false, error: 'no session bound to this conversation.' };
+        const messages = await opencodeAdapter.listMessages(stored.sessionId, stored?.projectPath ?? undefined);
+        const usage = sumSessionUsage(messages);
+        const lastTokens = extractLastAssistantTokens(messages);
+        const lastTotal = computeTurnTokens(lastTokens);
+        const liveModel = await fetchSessionModel(stored.sessionId, stored?.projectPath ?? null);
+        const providersPayload = await fetchProviders().catch(() => null);
+        const cost = estimateUsageCost(usage, findModelPricing(providersPayload, liveModel?.model ?? null));
+        const lines = [
+          '**Session usage**',
+          `Session: \`${stored.sessionId}\``,
+          liveModel?.model ? `Model: \`${liveModel.model}\`` : 'Model: unknown',
+          `Assistant turns with token data: ${usage.turns}`,
+          `Total tokens: ${usage.total.toLocaleString()}`,
+          `Last assistant turn: ${lastTotal.toLocaleString()} tokens`,
+          `Input/output/reasoning/cache: ${usage.input.toLocaleString()} / ${usage.output.toLocaleString()} / ${usage.reasoning.toLocaleString()} / ${(usage.cacheRead + usage.cacheWrite).toLocaleString()}`,
+          cost == null ? 'Estimated cost: unavailable' : `Estimated cost: $${cost.toFixed(cost < 0.01 ? 4 : 2)}`,
+        ];
+        return { ok: true, reply: lines.join('\n') };
+      },
+
       async startSession({ prompt }) {
         // Post a starter message in the channel, then run the normal inbound
         // pipeline anchored on it so the thread + session spin up exactly
@@ -3499,6 +3937,126 @@ export function createMessengerOpencodeBridge({
         const cleared = queue?.length ?? 0;
         surfaceQueues.delete(key);
         return cleared;
+      },
+
+      async listWorktrees() {
+        const projectPath = await resolveSurfaceProjectPath();
+        return listBridgeWorktrees({ projectPath });
+      },
+
+      async toggleAutoWorktrees({ enabled }) {
+        const projectPath = await resolveSurfaceProjectPath();
+        if (!projectPath) return { ok: false, error: 'no project bound to this conversation.' };
+        const current = bridgeStore.getProjectDefaults?.(projectPath)?.autoWorktreeDefault;
+        const next = enabled == null ? !Boolean(current) : Boolean(enabled);
+        bridgeStore.setProjectDefaults({
+          projectPath,
+          projectLabel: stored?.projectLabel ?? path.basename(projectPath),
+          autoWorktreeDefault: next ? 1 : 0,
+        });
+        return { ok: true, enabled: next };
+      },
+
+      async mcp({ action, name }) {
+        const projectPath = await resolveSurfaceProjectPath();
+        let configs = [];
+        try {
+          configs = listMcpConfigs(projectPath ?? undefined);
+        } catch (err) {
+          return { ok: false, error: err?.message ?? 'failed to read MCP config' };
+        }
+        if (action === 'list') {
+          return {
+            ok: true,
+            servers: configs.map((entry) => ({
+              name: entry.name,
+              status: entry.enabled === false ? 'disabled' : 'enabled',
+              scope: entry.scope ?? 'user',
+              type: entry.type,
+            })),
+          };
+        }
+        const target = configs.find((entry) => entry.name === name);
+        if (!target) return { ok: false, error: `MCP server "${name}" is not configured.` };
+        const enabled = action === 'connect';
+        try {
+          updateMcpConfig(name, { ...target, enabled }, projectPath ?? undefined);
+          await refreshOpenCodeAfterConfigChange?.(`mcp ${enabled ? 'enable' : 'disable'}`);
+          return { ok: true, enabled };
+        } catch (err) {
+          return { ok: false, error: err?.message ?? 'MCP config update failed' };
+        }
+      },
+
+      async contextUsage() {
+        if (!stored?.sessionId) return { ok: false, error: 'no session bound to this conversation.' };
+        const messages = await opencodeAdapter.listMessages(stored.sessionId, stored?.projectPath ?? undefined);
+        const tokens = extractLastAssistantTokens(messages);
+        const totalTokens = computeTurnTokens(tokens);
+        let contextLimit = null;
+        const modelRef =
+          stored?.modelOverride ?? projectDefaults?.modelDefault ?? globals.model ?? null;
+        if (modelRef && /^[^/]+\/.+$/.test(modelRef)) {
+          const [providerId, ...modelParts] = modelRef.split('/');
+          const modelId = modelParts.join('/');
+          const providers = await opencodeAdapter.listProviders().catch(() => []);
+          const provider = providers.find((entry) => entry.id === providerId || entry.name === providerId);
+          const model = provider?.models?.find((entry) => entry.id === modelId || entry.name === modelId);
+          if (typeof model?.limit?.context === 'number') contextLimit = model.limit.context;
+        }
+        return { ok: true, totalTokens, contextLimit };
+      },
+
+      async sessionReference() {
+        if (!stored?.sessionId) return { ok: false, error: 'no session bound to this conversation.' };
+        return buildSessionReferenceForId({
+          sessionId: stored.sessionId,
+          store: bridgeStore,
+          readSettings,
+          listProjects,
+          opencodeFetch,
+        });
+      },
+
+      async queueCommand({ name, args }) {
+        if (!stored?.sessionId) return { ok: false, error: 'no session bound to this conversation.' };
+        const busy = busySessions.has(stored.sessionId);
+        if (busy) {
+          const key = queueKeyFor(surface);
+          const queue = surfaceQueues.get(key) ?? [];
+          if (queue.length >= MAX_QUEUE_LENGTH) {
+            return { ok: false, error: `queue is full (${MAX_QUEUE_LENGTH} messages).` };
+          }
+          queue.push({ kind: 'command', commandName: name, args: args ?? '', from, queuedAt: Date.now() });
+          surfaceQueues.set(key, queue);
+          return { ok: true, queued: true, position: queue.length };
+        }
+        ensureSubscribed();
+        if (!sessionContexts.has(stored.sessionId)) {
+          sessionContexts.set(stored.sessionId, {
+            sessionId: stored.sessionId,
+            type,
+            token,
+            channelId,
+            threadId: threadId ?? null,
+            projectPath: stored?.projectPath ?? null,
+            sentPartIds: new Set(),
+            startedAt: Date.now(),
+            lastError: null,
+            verbosity: resolveVerbosity(surface),
+            from,
+            source: type,
+          });
+        }
+        return opencodeAdapter.sendOpencodeCommand(stored.sessionId, name, args ?? '');
+      },
+
+      async restartOpencodeServer() {
+        if (typeof refreshOpenCodeAfterConfigChange !== 'function') {
+          return { ok: false, error: 'OpenCode reload/reconnect is not wired into this server.' };
+        }
+        const result = await refreshOpenCodeAfterConfigChange('messenger command');
+        return { ok: true, restarted: Boolean(result?.reloaded), external: Boolean(result?.external) };
       },
 
       async toggleMentionMode() {
@@ -4064,6 +4622,8 @@ export function createMessengerOpencodeBridge({
       existingCtx.sentPartIds.clear();
       existingCtx.startedAt = Date.now();
       existingCtx.lastError = null;
+      existingCtx.from = from;
+      existingCtx.hasAssistantOutput = false;
       // Keep the resolved directory current — it's needed for the session.idle
       // footer and (critically) for replying to permission requests.
       if (effectiveProjectPath) existingCtx.projectPath = effectiveProjectPath;
@@ -4080,6 +4640,7 @@ export function createMessengerOpencodeBridge({
         lastError: null,
         verbosity: DEFAULT_VERBOSITY,
         from,
+        hasAssistantOutput: false,
         // Mark origin surface so we never echo user parts back to the
         // same messenger they came from (prevents duplication).
         source: type,
@@ -4240,7 +4801,7 @@ export function createMessengerOpencodeBridge({
         pendingSupersede.delete(sessionId);
         return sendPrompt();
       }
-      scheduleSupersedeFallback(sessionId);
+      scheduleSupersedeFallback(sessionId, type);
       return { ok: true, sessionId, threadId: effectiveThreadId, superseded: true };
     }
 
@@ -4914,6 +5475,8 @@ export function createMessengerOpencodeBridge({
     /** List configured OpenCode agents (for the Discord `/agent` picker). */
     listAgents: () => opencodeAdapter.listAgents(),
     fetchProviders,
+    listProviderAuthMethods: () => opencodeAdapter.listProviderAuthMethods(),
+    startProviderOAuth: (providerId, methodIndex) => opencodeAdapter.startProviderOAuth(providerId, methodIndex),
     getFavoriteModels,
     getSurfaceModelInfo,
     setSurfaceModel,

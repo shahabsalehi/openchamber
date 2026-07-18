@@ -1334,6 +1334,8 @@ async function main(options = {}) {
     // UI's Scheduled-tasks dialog manages, so both stay in sync.
     projectConfigRuntime,
     scheduledTasksRuntime,
+    startTunnelWithNormalizedRequest,
+    refreshOpenCodeAfterConfigChange,
     // Mirroring (parts, permissions, questions, todos, title fallback) rides
     // on the shared global event hub — start it when a listener starts so a
     // headless server doesn't depend on a browser client connecting first.
