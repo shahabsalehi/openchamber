@@ -271,7 +271,7 @@ This module provides OpenCode server integration utilities for the web server ru
   - `setupProxy(app)`
 
 ## Public exports (shutdown-runtime.js)
-- `createGracefulShutdownRuntime(dependencies)`: creates graceful shutdown runtime for managed OpenCode and web server teardown sequencing.
+- `createGracefulShutdownRuntime(dependencies)`: creates graceful shutdown runtime for sandbox cleanup, managed OpenCode, and web server teardown sequencing. Sandbox disposal is best-effort, clears the owned runtime reference in `finally`, and cannot block later teardown.
 - Returned API:
   - `gracefulShutdown(options?)`
 

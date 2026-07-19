@@ -88,6 +88,7 @@ import { createApnsRuntime } from './lib/notifications/apns-runtime.js';
 import { createNotificationTemplateRuntime } from './lib/notifications/template-runtime.js';
 import { createPermissionAutoAcceptRuntime } from './lib/permission-auto-accept/runtime.js';
 import { createGracefulShutdownRuntime } from './lib/opencode/shutdown-runtime.js';
+import { createSandboxRuntimeFromEnvironment } from './lib/sandbox/index.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createRemoteClientAuthRuntime } from './lib/client-auth/remote-clients.js';
 import { createClientPairingRuntime } from './lib/client-auth/pairing.js';
@@ -505,6 +506,7 @@ let runtimeManagedRemoteTunnelHostname = '';
 let terminalRuntime = null;
 let dictationRuntime = null;
 let messageStreamRuntime = null;
+let sandboxRuntime = null;
 const userProvidedOpenCodePassword = hmrStateRuntime.getUserProvidedOpenCodePassword(hmrState);
 const initialOpenCodeAuthState = hmrStateRuntime.resolveOpenCodeAuthFromState({
   hmrState,
@@ -1164,11 +1166,16 @@ const gracefulShutdownRuntime = createGracefulShutdownRuntime({
   },
   tunnelAuthController,
   scheduledTasksRuntime,
+  getSandboxRuntime: () => sandboxRuntime,
+  setSandboxRuntime: (value) => {
+    sandboxRuntime = value;
+  },
 });
 
 const gracefulShutdown = (...args) => gracefulShutdownRuntime.gracefulShutdown(...args);
 
 async function main(options = {}) {
+  sandboxRuntime = createSandboxRuntimeFromEnvironment();
   const port = Number.isFinite(options.port) && options.port >= 0 ? Math.trunc(options.port) : DEFAULT_PORT;
   const host = typeof options.host === 'string' && options.host.length > 0 ? options.host : undefined;
   const effectiveBindHost = host

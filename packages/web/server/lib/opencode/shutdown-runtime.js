@@ -12,6 +12,8 @@ export const createGracefulShutdownRuntime = (dependencies) => {
     sessionGoalRuntime,
     contextObligatoryRuntime,
     scheduledTasksRuntime,
+    getSandboxRuntime,
+    setSandboxRuntime,
     getHealthCheckInterval,
     clearHealthCheckInterval,
     getTerminalRuntime,
@@ -48,6 +50,17 @@ export const createGracefulShutdownRuntime = (dependencies) => {
     sessionGoalRuntime?.stop?.();
     contextObligatoryRuntime?.stop?.();
     scheduledTasksRuntime?.stop?.();
+
+    const sandboxRuntime = getSandboxRuntime();
+    if (sandboxRuntime) {
+      try {
+        await sandboxRuntime.dispose();
+      } catch {
+        console.warn('Sandbox cleanup failed during shutdown');
+      } finally {
+        setSandboxRuntime(null);
+      }
+    }
 
     const healthCheckInterval = getHealthCheckInterval();
     if (healthCheckInterval) {
