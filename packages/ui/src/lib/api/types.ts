@@ -1190,6 +1190,216 @@ export interface ClientAuthAPI {
   getPairingTransports(): Promise<{ local: string | null; lan: string | null; relayAvailable: boolean }>;
 }
 
+export type WebV2FailureCode =
+  | 'ABORTED'
+  | 'AUTH_REQUIRED'
+  | 'CAPABILITY_EXHAUSTED'
+  | 'CAPABILITY_INVALID'
+  | 'CAPABILITY_REVOKED'
+  | 'CLIENT_UNAVAILABLE'
+  | 'CONDITIONAL_FAILED'
+  | 'FORBIDDEN'
+  | 'INTEGRITY_ERROR'
+  | 'INTERNAL_ERROR'
+  | 'INVALID_INPUT'
+  | 'INVALID_RESPONSE'
+  | 'INVALID_TRANSITION'
+  | 'METHOD_NOT_ALLOWED'
+  | 'NETWORK_ERROR'
+  | 'NOT_FOUND'
+  | 'OPERATION_CONFLICT'
+  | 'PROVIDER_RESPONSE_INVALID'
+  | 'PROVIDER_RESPONSE_TOO_LARGE'
+  | 'PROVIDER_TIMEOUT'
+  | 'PROVIDER_UNAVAILABLE'
+  | 'REQUEST_TOO_LARGE'
+  | 'SCOPE_MISMATCH'
+  | 'STORAGE_FAILURE'
+  | 'VALIDATION_FAILED'
+  | 'VERSION_CONFLICT'
+  | 'WRITE_PENDING';
+
+export interface WebV2Failure extends Error {
+  readonly name: 'WebV2APIError';
+  readonly code: WebV2FailureCode;
+  readonly status: number | null;
+}
+
+export interface WebV2RequestOptions {
+  signal?: AbortSignal;
+}
+
+export interface WebV2OperationRequestOptions extends WebV2RequestOptions {
+  operationId?: string;
+}
+
+export interface WebV2ProjectRecord {
+  projectId: string;
+  name: string;
+  membershipState: 'pending' | 'active';
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface WebV2CreateProjectInput {
+  name: string;
+}
+
+export interface WebV2FileRecord {
+  path: string;
+  appVersion: number;
+  etag: string;
+  httpEtag: string;
+  r2Version: string;
+  size: number;
+  contentType: string;
+  contentSha256: string;
+  createdAt: number;
+  storageState: 'live' | 'cleanupPending' | 'deleted';
+}
+
+export interface WebV2DeletedFileRecord {
+  path: string;
+  appVersion: number;
+  cleanupPending: boolean;
+}
+
+export interface WebV2FileResponseMetadata {
+  httpEtag: string | null;
+  applicationVersion: number | null;
+  r2Etag: string | null;
+  r2Version: string | null;
+}
+
+export type WebV2FileReadResult =
+  | {
+      status: 200;
+      content: string;
+      contentType: string;
+      contentLength: number;
+      metadata: WebV2FileResponseMetadata;
+    }
+  | {
+      status: 304;
+      content: null;
+      metadata: WebV2FileResponseMetadata;
+    };
+
+export interface WebV2ReadFileOptions extends WebV2RequestOptions {
+  appVersion?: number;
+  ifMatch?: string;
+  ifNoneMatch?: string;
+}
+
+export interface WebV2WriteFileInput {
+  content: string;
+  expectedVersion?: number | null;
+  ifMatch?: string;
+  ifNoneMatch?: string;
+}
+
+export interface WebV2DeleteFileInput {
+  expectedVersion: number;
+  ifMatch?: string;
+}
+
+export interface WebV2SessionRecord {
+  sessionId: string;
+  title: string;
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface WebV2CreateSessionInput {
+  title: string;
+}
+
+export interface WebV2UpdateSessionInput {
+  title: string;
+  expectedRevision: number;
+}
+
+export interface WebV2CredentialMetadata {
+  credentialId: string;
+  name: string;
+  provider: 'openai';
+  generation: number;
+  status: 'active' | 'revoked';
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface WebV2CreateCredentialInput {
+  name: string;
+  provider: 'openai';
+  value: string;
+}
+
+export interface WebV2RotateCredentialInput {
+  expectedGeneration: number;
+  value: string;
+}
+
+export interface WebV2RevokeCredentialInput {
+  expectedGeneration: number;
+}
+
+export interface WebV2DeleteCredentialInput {
+  expectedGeneration: number;
+}
+
+export interface WebV2API {
+  listProjects(options?: WebV2RequestOptions): Promise<WebV2ProjectRecord[]>;
+  createProject(input: WebV2CreateProjectInput, options?: WebV2OperationRequestOptions): Promise<WebV2ProjectRecord>;
+  listFiles(projectId: string, options?: WebV2RequestOptions): Promise<WebV2FileRecord[]>;
+  readFile(projectId: string, filePath: string, options?: WebV2ReadFileOptions): Promise<WebV2FileReadResult>;
+  writeFile(
+    projectId: string,
+    filePath: string,
+    input: WebV2WriteFileInput,
+    options?: WebV2OperationRequestOptions,
+  ): Promise<WebV2FileRecord>;
+  deleteFile(
+    projectId: string,
+    filePath: string,
+    input: WebV2DeleteFileInput,
+    options?: WebV2OperationRequestOptions,
+  ): Promise<WebV2DeletedFileRecord>;
+  listSessions(projectId: string, options?: WebV2RequestOptions): Promise<WebV2SessionRecord[]>;
+  createSession(
+    projectId: string,
+    input: WebV2CreateSessionInput,
+    options?: WebV2RequestOptions,
+  ): Promise<WebV2SessionRecord>;
+  updateSession(
+    projectId: string,
+    sessionId: string,
+    input: WebV2UpdateSessionInput,
+    options?: WebV2RequestOptions,
+  ): Promise<WebV2SessionRecord>;
+  listCredentials(options?: WebV2RequestOptions): Promise<WebV2CredentialMetadata[]>;
+  createCredential(
+    input: WebV2CreateCredentialInput,
+    options?: WebV2RequestOptions,
+  ): Promise<WebV2CredentialMetadata>;
+  rotateCredential(
+    credentialId: string,
+    input: WebV2RotateCredentialInput,
+    options?: WebV2RequestOptions,
+  ): Promise<WebV2CredentialMetadata>;
+  revokeCredential(
+    credentialId: string,
+    input: WebV2RevokeCredentialInput,
+    options?: WebV2RequestOptions,
+  ): Promise<WebV2CredentialMetadata>;
+  deleteCredential(
+    credentialId: string,
+    input: WebV2DeleteCredentialInput,
+    options?: WebV2RequestOptions,
+  ): Promise<WebV2CredentialMetadata>;
+}
+
 export interface RuntimeAPIs {
   runtime: RuntimeDescriptor;
   terminal: TerminalAPI;
@@ -1202,6 +1412,7 @@ export interface RuntimeAPIs {
   push?: PushAPI;
   diagnostics?: DiagnosticsAPI;
   clientAuth?: ClientAuthAPI;
+  webV2?: WebV2API;
   tools: ToolsAPI;
   editor?: EditorAPI;
   vscode?: VSCodeAPI;

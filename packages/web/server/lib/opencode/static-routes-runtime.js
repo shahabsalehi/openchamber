@@ -1,4 +1,7 @@
 import { registerPwaManifestRoute } from './pwa-manifest-routes.js';
+import { resolveControlPlaneRequestAuth } from '../control-plane/routes.js';
+
+export const CONTROL_PLANE_CAPABILITY_SCRIPT = '<script>window.__OPENCHAMBER_SERVER_CAPABILITIES__=Object.freeze({"controlPlaneV2":true});</script>';
 
 export const createStaticRoutesRuntime = (dependencies) => {
   const {
@@ -23,11 +26,41 @@ export const createStaticRoutesRuntime = (dependencies) => {
     return path.join(__dirname, '..', 'dist');
   };
 
-  const registerStaticRoutes = (app) => {
+  const registerStaticRoutes = (app, {
+    controlPlaneEnabled = false,
+    uiAuthController = null,
+  } = {}) => {
     const distPath = resolveDistPath();
 
     if (fs.existsSync(distPath)) {
       console.log(`Serving static files from ${distPath}`);
+      const indexPath = path.join(distPath, 'index.html');
+      const sendMainIndex = async (req, res) => {
+        if (!controlPlaneEnabled || uiAuthController?.enabled !== true) {
+          return res.sendFile(indexPath);
+        }
+        const auth = await resolveControlPlaneRequestAuth(req, res, uiAuthController);
+        if (!auth.ok) {
+          return res.sendFile(indexPath);
+        }
+        let html;
+        try {
+          html = await fs.promises.readFile(indexPath, 'utf8');
+        } catch {
+          return res.status(500).type('text/plain').send('Static files could not be served.');
+        }
+        const marker = '</head>';
+        const markerIndex = html.indexOf(marker);
+        if (markerIndex < 0) {
+          return res.sendFile(indexPath);
+        }
+        const injected = `${html.slice(0, markerIndex)}${CONTROL_PLANE_CAPABILITY_SCRIPT}${html.slice(markerIndex)}`;
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(200).type('html').send(injected);
+      };
+
+      app.get('/', sendMainIndex);
+      app.get('/index.html', sendMainIndex);
       app.use(express.static(distPath, {
         setHeaders(res, filePath) {
           // Service workers should never be long-cached; iOS is especially sensitive.
@@ -47,9 +80,7 @@ export const createStaticRoutesRuntime = (dependencies) => {
         normalizePwaOrientation,
       });
 
-      app.get(/^(?!\/api|.*\.(js|css|svg|png|jpg|jpeg|gif|ico|woff|woff2|ttf|eot|map)).*$/, (_req, res) => {
-        res.sendFile(path.join(distPath, 'index.html'));
-      });
+      app.get(/^(?!\/api|.*\.(js|css|svg|png|jpg|jpeg|gif|ico|woff|woff2|ttf|eot|map)).*$/, sendMainIndex);
       return;
     }
 
@@ -60,7 +91,7 @@ export const createStaticRoutesRuntime = (dependencies) => {
   };
 
   const registerApiOnlyFallbackRoutes = (app) => {
-    app.get(/^(?!\/api|\/auth|\/health|.*\.(js|css|svg|png|jpg|jpeg|gif|ico|woff|woff2|ttf|eot|map)).*$/, (req, res) => {
+    app.get(/^(?!\/api|\/auth|\/health|.*\.(js|css|svg|png|jpg|jpeg|gif|ico|woff|woff2|ttf|eot|map)).*$/, (_req, res) => {
       const command = 'openchamber connect-url --help';
       res.status(200).format({
         html: () => {

@@ -1,8 +1,10 @@
 import type { I18nKey } from './en';
 import { settingsDict } from './pl.settings';
+import { workspaceMessages } from './workspace';
 
 export const dict: Record<I18nKey, string> = {
   ...settingsDict,
+  ...workspaceMessages.pl,
   'terminalView.actions.attachSelection': 'Dołącz zaznaczone dane wyjściowe',
   'terminalView.actions.restart': 'Uruchom terminal ponownie',
   'chat.message.terminalContext': '{terminal}, wiersze {start}-{end}',

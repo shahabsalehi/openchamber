@@ -5,7 +5,16 @@
 `@openchamber/control-plane` is an independent Cloudflare Worker package.
 Versioned canonical scopes are SHA-256 hashed and routed through deterministic
 Durable Object names, so there is no singleton bottleneck: tenant/project scopes
-use `PROJECTS.getByName()` and tenant/user scopes use `VAULTS.getByName()`.
+use `PROJECTS.getByName()`, credential tenant/user scopes use
+`VAULTS.getByName()`, and project-catalog tenant/user scopes use
+`CATALOGS.getByName()`.
+
+SQLite in each `ProjectCatalogDurableObject` is authoritative for:
+
+- immutable verified tenant/user/hash scope binding;
+- server-generated opaque project IDs;
+- pending or active membership for that verified user; and
+- project-create operation IDs and canonical request fingerprints.
 
 SQLite in that `ProjectDurableObject` is authoritative for:
 
@@ -76,6 +85,17 @@ Its result extends `Principal` with application-owned `tenantId` and `userId`;
 all project scopes must belong to that tenant. Tenant/user authority never comes
 from a URL, route body, email address, or public identity header.
 
+The independently optional `workspace.authenticator` enables the verified
+catalog/workspace routes. Those routes authenticate and validate the verified
+principal before obtaining `CATALOGS`, and validate route/method/body/header
+inputs before obtaining a binding whenever no durable read is needed. Every
+subordinate file or session operation reads this verified tenant/user's catalog
+and requires an `active` membership before obtaining `PROJECTS`. The handler then
+constructs a one-project trusted RPC context from that catalog result. The
+verified principal's legacy `projectScopes` are not consulted and cannot bypass
+catalog membership. An absent catalog record and a pending record both deny
+subordinate access.
+
 ### Cloudflare Access adapter
 
 `createCloudflareAccessAuthenticator` reads only
@@ -105,7 +125,7 @@ Access failures.
 
 ## Public HTTP surface
 
-### Project metadata
+### Legacy project metadata
 
 `GET /v2/tenants/:tenantId/projects/:projectId`
 
@@ -179,6 +199,76 @@ the tombstone application version and whether physical cleanup remains pending.
 Unknown query parameters, duplicate `version`, malformed percent encoding,
 empty segments, `.`/`..`, backslashes, controls, and oversized file paths are
 rejected.
+
+## Verified project catalog and workspace HTTP surface
+
+These routes are disabled unless `workspace.authenticator` is configured. They
+derive tenant/user authority only from the validated `VerifiedPrincipal`; tenant
+and user identifiers are never URL or body fields.
+
+### Catalog collection
+
+`GET /v2/projects` returns every catalog record for the verified tenant/user in
+creation order. Records contain only `projectId`, `name`, `membershipState`, and
+timestamps. Both `pending` and `active` records are visible. A catalog storage
+failure remains `STORAGE_FAILURE`; it is never converted into an empty list.
+
+`POST /v2/projects` requires an opaque `X-Operation-Id` and accepts exactly:
+
+```json
+{ "name": "Project name" }
+```
+
+The server generates the opaque project ID. The operation fingerprint is a
+canonical versioned hash over the operation kind, verified tenant/user, operation
+ID, and validated name. The same operation and request replays the same project;
+reusing the operation ID for different input returns `OPERATION_CONFLICT`.
+
+Creation is an explicit cross-DO saga:
+
+1. `ProjectCatalogDurableObject.reserveProject` synchronously inserts a `pending`
+   membership in one SQLite transaction.
+2. The front Worker gets the exact deterministic Project DO and reads its
+   project record. If absent it creates revision 1; if present it accepts only
+   the exact tenant/project/name record.
+3. `activateProject` transactionally predicates the transition on project ID,
+   operation ID, fingerprint, and current `pending` state. `active` never
+   regresses.
+
+Initial completed creation returns `201`. A replay already active, or a replay
+that completes reconciliation, returns `200`. A Project DO or activation failure
+after reservation returns `202` with the still-pending record. Retrying the same
+operation resumes reconciliation. One unresolved record neither erases nor
+blocks unrelated catalog records.
+
+### Catalog-gated files
+
+- `GET /v2/projects/:projectId/files`
+- `GET|PUT|DELETE /v2/projects/:projectId/files/:nested/path`
+
+The item routes preserve all legacy file body, content-length, checksum,
+operation-ID, application-version, ETag, `If-Match`, `If-None-Match`, exact-key
+R2, streaming, cleanup, and integrity-error behavior. Early rejections cancel
+unread write bodies.
+
+`GET .../files` calls `ProjectDurableObject.listFiles`. Project SQLite is the
+list authority: every non-tombstoned manifest must resolve to its current live
+immutable version or the call fails with `INTEGRITY_ERROR`. Results contain only
+current `FileVersionRecord` metadata sorted by normalized logical path. The route
+does not enumerate R2; R2 remains byte authority and exact-key reads retain the
+existing missing/mismatched-object integrity checks.
+
+### Catalog-gated sessions
+
+- `GET|POST /v2/projects/:projectId/sessions`
+- `PUT /v2/projects/:projectId/sessions/:sessionId`
+
+Create accepts exactly `{ "title": "..." }` and creates the opaque session ID
+server-side. Update accepts exactly `{ "title": "...", "expectedRevision": N }`.
+Responses contain only session ID, title, optimistic revision, and timestamps.
+Execution/live/status/messages/permissions/model/agent/directory fields are
+rejected. Sessions are durable metadata only; there is deliberately no verified
+session deletion route.
 
 ## Verified credential and capability HTTP surface
 
@@ -438,7 +528,7 @@ and gateway service-key/BYOK modes are never silently substituted.
 - `getProject`, `putProject`;
 - `createSession`, `updateSession`, `getSession`, `listSessions`,
   `deleteSession`;
-- `writeFile`, streaming `readFile`, `listFileVersions`, `deleteFile`;
+- `writeFile`, streaming `readFile`, `listFiles`, `listFileVersions`, `deleteFile`;
 - `createSandboxLease`, `updateSandboxLease`, `getSandboxLease`,
   `listSandboxLeases`, `deleteSandboxLease`; and
 - `recoverProjectStorage`.
@@ -449,6 +539,11 @@ so SQL and cleanup helpers do not exist as string-named RPC properties.
 The production Durable Object class has no string- or symbol-keyed fault
 injection method. Package tests hold fault state in a module-local `WeakMap` and
 set it only against a local instance obtained through `runInDurableObject`.
+
+`ProjectCatalogDurableObject` exposes `reserveProject`, `activateProject`,
+`getProject`, and `listProjects`. Each call validates verified tenant/user scope,
+the deterministic catalog object name, and the immutable stored scope before
+reading or changing membership.
 
 ## SQLite schema and transaction rules
 
@@ -464,6 +559,9 @@ set it only against a local instance obtained through `runInDurableObject`.
 - `cleanup_jobs`: exact R2 key plus optional file-version reference and attempts.
 - `sandbox_leases`: optional session association, provider id/opaque handle,
   provider-neutral status, lifecycle revision, expiry, and cleanup state.
+- Catalog `catalog_scope`: immutable verified tenant/user/hash binding.
+- Catalog `catalog_projects`: opaque project ID, safe name, pending/active
+  membership, unique operation ID, canonical fingerprint, and timestamps.
 
 Schema initialization is the only work inside `blockConcurrencyWhile`.
 Mutation/query cursors are synchronously consumed. Related multi-row changes
@@ -485,6 +583,10 @@ paths are NFC-normalized metadata. Blob keys are:
 No raw tenant, project, path, principal, operation id, provider id, or provider
 handle appears in a key. R2 custom metadata contains only an opaque correlation
 id. Every cleanup/read/recovery action addresses one exact persisted key.
+
+Catalog objects use `catalog-v1-<sha256(canonical-tenant-user-scope)>`. The hash
+input is versioned and length-delimited. Catalog routing never uses a singleton,
+Durable Object namespace enumeration, or R2 listing.
 
 ## Write publication and recovery
 
@@ -596,12 +698,15 @@ A browser flow is deliberately narrow:
 
 The browser never calls a DO/R2 binding, sees ciphertext/plaintext after the
 write request, receives provider headers/URLs, or selects an upstream route.
+The independently disabled workspace caller can later list/create catalog
+projects and use only the catalog-active file/session routes through this same
+verified HTTP boundary; it never receives a Durable Object binding.
 
 The future sandbox flow uses the same pattern: a trusted orchestration service
 must verify tenant/user/project/session authority and request a narrowly scoped
 capability, while the sandbox receives at most that short-lived capability for
 the one fixed operation. It must not receive vault credentials, encryption or
-HMAC keys, provider endpoints, `PROJECTS`, or `VAULTS`. The existing
+HMAC keys, provider endpoints, `PROJECTS`, `VAULTS`, or `CATALOGS`. The existing
 provider-neutral sandbox lease records remain unchanged; the milestone-1
 OpenSandbox adapter continues to own ephemeral lifecycle calls.
 
@@ -612,8 +717,9 @@ discovery, deployment/resource creation, and UI wiring.
 
 ## Wrangler bindings and migration
 
-`wrangler.jsonc` preserves migration `v1` for `ProjectDurableObject` and adds
-migration `v2` with SQLite `VaultDurableObject`. `PROJECTS`, `VAULTS`, and `FILES`
-are reflected in generated `worker-configuration.d.ts`. Secrets Store IDs are
-not committed; production secret bindings are deployment-owned as described
-above.
+`wrangler.jsonc` preserves migration `v1` for `ProjectDurableObject` and
+migration `v2` for `VaultDurableObject`, then adds migration `v3` with SQLite
+`ProjectCatalogDurableObject`. Existing classes and migrations are not renamed
+or rewritten. `PROJECTS`, `VAULTS`, `CATALOGS`, and `FILES` are reflected in
+generated `worker-configuration.d.ts`. Secrets Store IDs are not committed;
+production secret bindings are deployment-owned as described above.

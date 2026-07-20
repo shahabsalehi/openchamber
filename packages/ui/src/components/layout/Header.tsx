@@ -1763,12 +1763,16 @@ export const Header: React.FC<HeaderProps> = ({
         { id: 'diagram', label: t('layout.mainTab.diagram'), icon: 'file' },
       );
 
+      if (runtimeApis.webV2) {
+        base.push({ id: 'workspace', label: t('layout.mainTab.workspace'), icon: 'archive' });
+      }
+
       return base;
     }
 
     // Desktop: no tabs in header
     return [];
-  }, [isMobile, showPlanTab, t]);
+  }, [isMobile, runtimeApis.webV2, showPlanTab, t]);
 
   const shortcutLabel = React.useCallback((actionId: string) => {
     return formatShortcutForDisplay(getEffectiveShortcutCombo(actionId, shortcutOverrides));
@@ -2027,6 +2031,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   const desktopSidebarActions = (
     <>
+      {runtimeApis.webV2 ? <HeaderIconActionButton title={t('layout.mainTab.workspace')} ariaLabel={t('layout.mainTab.workspace')} onClick={() => setActiveMainTab('workspace')} pressed={activeMainTab === 'workspace'} Icon={'archive'} /> : null}
       {showPlanTab && (
         <Tooltip>
           <TooltipTrigger asChild>

@@ -14,8 +14,6 @@ declare global {
   }
 }
 
-window.__OPENCHAMBER_RUNTIME_APIS__ = createConfiguredWebAPIs();
-
 const isCoarsePointer = (): boolean => {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
     return false;
@@ -38,6 +36,9 @@ const detectHostedSurface = (): HostedSurface => {
 
 const hostedSurface = detectHostedSurface();
 window.__OPENCHAMBER_SURFACE__ = hostedSurface;
+window.__OPENCHAMBER_RUNTIME_APIS__ = createConfiguredWebAPIs(
+  hostedSurface === 'desktop' ? { surface: 'main-web' } : {},
+);
 
 type PrerenderingDocument = Document & {
   prerendering?: boolean;

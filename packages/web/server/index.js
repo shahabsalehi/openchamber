@@ -96,6 +96,9 @@ import { createPreviewProxyRuntime } from './lib/preview/proxy-runtime.js';
 import { attachRealtimeProxy } from './lib/realtime-proxy.js';
 import { createRelayService } from './lib/relay/service.js';
 import { createRelayHostLock } from './lib/relay/host-lock.js';
+import { resolveHostedWebControlPlaneConfig } from './lib/control-plane/config.js';
+import { createControlPlaneClient } from './lib/control-plane/client.js';
+import { isControlPlaneBffNamespacePath, registerControlPlaneRoutes } from './lib/control-plane/routes.js';
 import { createProxyMiddleware, responseInterceptor } from 'http-proxy-middleware';
 import webPush from 'web-push';
 
@@ -160,6 +163,9 @@ function shouldSkipCompression(req, res) {
   }
 
   const pathname = req.path || req.url || '';
+  if (isControlPlaneBffNamespacePath(pathname)) {
+    return true;
+  }
   if ((pathname === '/api' || pathname.startsWith('/api/')) && shouldSkipApiCompression()) {
     return true;
   }
@@ -957,6 +963,7 @@ const bootstrapRuntime = createBootstrapRuntime({
   registerTtsRoutes,
   registerNotificationRoutes,
   registerOpenChamberRoutes,
+  registerControlPlaneRoutes,
   express,
 });
 const tunnelWiringRuntime = createTunnelWiringRuntime({
@@ -1175,6 +1182,11 @@ const gracefulShutdownRuntime = createGracefulShutdownRuntime({
 const gracefulShutdown = (...args) => gracefulShutdownRuntime.gracefulShutdown(...args);
 
 async function main(options = {}) {
+  const runtimeName = process.env.OPENCHAMBER_RUNTIME || 'web';
+  const controlPlaneConfig = resolveHostedWebControlPlaneConfig(runtimeName, process.env);
+  const controlPlaneClient = controlPlaneConfig
+    ? createControlPlaneClient({ origin: controlPlaneConfig.origin })
+    : null;
   sandboxRuntime = createSandboxRuntimeFromEnvironment();
   const port = Number.isFinite(options.port) && options.port >= 0 ? Math.trunc(options.port) : DEFAULT_PORT;
   const host = typeof options.host === 'string' && options.host.length > 0 ? options.host : undefined;
@@ -1369,7 +1381,7 @@ async function main(options = {}) {
   const bootstrapResult = bootstrapRuntime.setupBaseRoutes(app, {
     process,
     openchamberVersion: OPENCHAMBER_VERSION,
-    runtimeName: process.env.OPENCHAMBER_RUNTIME || 'web',
+    runtimeName,
     serverStartedAt,
     gracefulShutdown,
     getHealthSnapshot: () => {
@@ -1464,6 +1476,7 @@ async function main(options = {}) {
     fetchFreeZenModels,
     getCachedZenModels,
     setAutoAcceptSession,
+    controlPlaneClient,
   });
   uiAuthController = bootstrapResult.uiAuthController;
   realtimeProxyRuntime = attachRealtimeProxy({
@@ -1608,6 +1621,7 @@ async function main(options = {}) {
     attachSignals,
     apiOnly,
     dictationModelsDir: path.join(OPENCHAMBER_USER_CONFIG_ROOT, 'speech-models'),
+    controlPlaneEnabled: controlPlaneClient !== null,
   });
   terminalRuntime = startupPipelineResult.terminalRuntime;
   dictationRuntime = startupPipelineResult.dictationRuntime;

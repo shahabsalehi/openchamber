@@ -18,6 +18,10 @@
       {
         "name": "VAULTS",
         "class_name": "VaultDurableObject"
+      },
+      {
+        "name": "CATALOGS",
+        "class_name": "ProjectCatalogDurableObject"
       }
     ]
   },
@@ -29,6 +33,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["VaultDurableObject"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["ProjectCatalogDurableObject"]
     }
   ]
 }

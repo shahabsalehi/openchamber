@@ -37,8 +37,13 @@ Examples:
 - `useDirectoryStore.ts`
 - `useFeatureFlagsStore.ts`
 - `useUpdateStore.ts`
+- `useWebV2WorkspaceStore.ts`
 
 These stores coordinate visible app state, navigation, selected tabs, dialogs, and lightweight feature flags.
+
+### Durable Web V2 workspace
+
+`useWebV2WorkspaceStore.ts` owns only the optional Web V2 durable-workspace vertical slice: durable project metadata, selected durable project, files and selected text/version metadata scoped by durable project, and non-running durable session metadata. It never reads or writes local project paths, directory state, OpenCode sessions/messages, sync/realtime state, or credentials. Requests are visible-demand-driven, abort/reset when the API capability or runtime identity changes, and preserve the last successful records after refresh failures.
 
 ### Session / project coordination stores
 

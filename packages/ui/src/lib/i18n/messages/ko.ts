@@ -1,8 +1,10 @@
 import type { I18nKey } from './en';
 import { settingsDict } from './ko.settings';
+import { workspaceMessages } from './workspace';
 
 export const dict: Record<I18nKey, string> = {
   ...settingsDict,
+  ...workspaceMessages.ko,
   'terminalView.actions.attachSelection': '선택한 출력 첨부',
   'terminalView.actions.restart': '터미널 다시 시작',
   'chat.message.terminalContext': '{terminal}, {start}-{end}행',

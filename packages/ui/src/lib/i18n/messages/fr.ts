@@ -1,7 +1,9 @@
 import { settingsDict } from './fr.settings';
+import { workspaceMessages } from './workspace';
 
 export const dict = {
   ...settingsDict,
+  ...workspaceMessages.fr,
   'terminalView.actions.attachSelection': 'Joindre la sortie sélectionnée',
   'terminalView.actions.restart': 'Redémarrer le terminal',
   'chat.message.terminalContext': '{terminal}, lignes {start}-{end}',

@@ -1,8 +1,10 @@
 # @openchamber/control-plane
 
 Private Cloudflare Worker package for OpenChamber's durable v2 control plane.
-The package has three independent authority boundaries:
+The package has four independent authority boundaries:
 
+- one deterministic SQLite `ProjectCatalogDurableObject` per verified
+  tenant/user for opaque project IDs and pending/active membership;
 - one deterministic SQLite `ProjectDurableObject` per tenant/project for project
   metadata, sessions, immutable file manifests, and provider-neutral sandbox
   lease coordination;
@@ -21,7 +23,9 @@ The default Worker remains reject-all. Existing deployments can continue to use
 `createControlPlaneHandler({ authenticator })` and the milestone-2 `Principal` /
 `PrincipalAuthenticator` contract unchanged.
 
-Milestone-3 routes require the optional `milestone3` composition with a
+Verified project/workspace routes require the independent optional `workspace`
+composition with a `VerifiedPrincipalAuthenticator`. Milestone-3 routes require
+the optional `milestone3` composition with a
 `VerifiedPrincipalAuthenticator`. A verified principal contains application-owned
 `tenantId`, `userId`, and exact `projectScopes`. The Cloudflare Access adapter:
 
@@ -50,7 +54,31 @@ Verified credential/capability routes are additive:
 - `DELETE /v2/capabilities/:jti`
 - `POST /v2/projects/:projectId/sessions/:sessionId/providers/openai/chat/completions`
 
-Tenant/user IDs never come from these route bodies. Credential values are
+Verified catalog/workspace routes are independently additive and disabled unless
+`workspace.authenticator` is configured:
+
+- `GET|POST /v2/projects`
+- `GET /v2/projects/:projectId/files`
+- `GET|PUT|DELETE /v2/projects/:projectId/files/:nested/path`
+- `GET|POST /v2/projects/:projectId/sessions`
+- `PUT /v2/projects/:projectId/sessions/:sessionId`
+
+`POST /v2/projects` accepts only `{ "name": "Project name" }` plus an
+`X-Operation-Id`; the server creates the opaque project ID. Creation reserves a
+visible pending catalog membership before reconciling the exact Project DO and
+predicate-activating membership. Initial success is `201`, an active replay is
+`200`, and unresolved pending work is `202`. Pending records remain visible in
+the catalog but cannot access files or sessions. Legacy `projectScopes` never
+bypass this catalog-active check.
+
+The verified file routes preserve the legacy byte/version/ETag/checksum and
+streaming contracts. Collection listing comes only from current, non-tombstoned
+Project SQLite manifests in normalized path order; it never enumerates R2.
+Verified sessions are metadata only: create IDs are server-generated and the
+HTTP surface accepts/returns only title, revision, ID, and timestamps. There is
+no verified session deletion route.
+
+Tenant/user IDs never come from verified route bodies. Credential values are
 write-only and limited to printable non-space ASCII suitable for the fixed
 provider bearer header. Credential responses and lists contain metadata only. A raw
 capability is returned exactly once in the mint response and is supplied to the

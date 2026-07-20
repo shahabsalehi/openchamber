@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { request as httpRequest } from 'node:http';
+import { Readable } from 'node:stream';
 import express from 'express';
 import path from 'path';
 
@@ -22,6 +24,29 @@ const closeServer = (server) => new Promise((resolve, reject) => {
     }
     resolve();
   });
+});
+
+const sendChunkedRequest = ({ port, path: requestPath }) => new Promise((resolve, reject) => {
+  const outbound = httpRequest({
+    hostname: '127.0.0.1',
+    port,
+    path: requestPath,
+    method: 'POST',
+  }, (response) => {
+    const chunks = [];
+    response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+    response.once('end', () => {
+      const text = Buffer.concat(chunks).toString('utf8');
+      resolve({
+        status: response.statusCode,
+        body: text.length > 0 ? JSON.parse(text) : null,
+      });
+    });
+  });
+  outbound.once('error', reject);
+  outbound.write('first chunk');
+  outbound.write('second chunk');
+  outbound.end();
 });
 
 describe('OpenCode proxy SSE forwarding', () => {
@@ -573,5 +598,175 @@ describe('OpenCode proxy SSE forwarding', () => {
 
     expect(response.status).toBe(504);
     await expect(response.json()).resolves.toMatchObject({ error: 'OpenCode upstream timed out' });
+  });
+
+  it('never forwards the reserved v2 control-plane namespace to OpenCode', async () => {
+    let upstreamRequests = 0;
+    let chunkedBodyDrained = false;
+    let resolveChunkedBody = () => undefined;
+    const chunkedBodyDrain = new Promise((resolve) => {
+      resolveChunkedBody = resolve;
+    });
+    const upstream = express();
+    upstream.use((_req, res) => {
+      upstreamRequests += 1;
+      res.json({ leaked: true });
+    });
+    upstreamServer = await listen(upstream);
+    const upstreamPort = upstreamServer.address().port;
+    const externalBaseUrl = `http://127.0.0.1:${upstreamPort}`;
+
+    const app = express();
+    app.use((req, _res, next) => {
+      if (req.headers['transfer-encoding'] === 'chunked') {
+        req.once('end', () => {
+          chunkedBodyDrained = true;
+          resolveChunkedBody();
+        });
+      }
+      next();
+    });
+    registerOpenCodeProxy(app, {
+      fs: {},
+      os: {},
+      path,
+      OPEN_CODE_READY_GRACE_MS: 0,
+      getRuntime: () => ({
+        openCodePort: upstreamPort,
+        openCodeBaseUrl: externalBaseUrl,
+        isOpenCodeReady: true,
+        openCodeNotReadySince: 0,
+        isRestartingOpenCode: false,
+      }),
+      getOpenCodeAuthHeaders: () => ({}),
+      buildOpenCodeUrl: (requestPath) => `${externalBaseUrl}${requestPath}`,
+      ensureOpenCodeApiPrefix: () => {},
+    });
+    proxyServer = await listen(app);
+    const proxyPort = proxyServer.address().port;
+
+    for (const requestPath of [
+      '/api/openchamber/v2',
+      '/api/openchamber/v2/',
+      '/api/openchamber/v2/projects',
+      '/api/openchamber/v2%2Funknown',
+      '/api/openchamber%2Fv2/unknown',
+      '/api/openchamber/%76%32/unknown',
+      '/api/%6Fpenchamber/v2/unknown',
+      '/api/openchamber%252Fv2/unknown',
+      '/api/OpenChamber/V2/unknown',
+      '/api/%4FpenChamber/V2/unknown',
+    ]) {
+      const response = await fetch(`http://127.0.0.1:${proxyPort}${requestPath}`, {
+        headers: {
+          Cookie: 'browser=secret',
+          Authorization: 'Bearer browser-secret',
+          'Cf-Access-Jwt-Assertion': 'assertion-secret',
+        },
+      });
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: { code: 'NOT_FOUND', message: 'The requested resource was not found.' },
+      });
+    }
+    const chunked = await sendChunkedRequest({
+      port: proxyPort,
+      path: '/api/openchamber/v2/projects',
+    });
+    await chunkedBodyDrain;
+    expect(chunked).toEqual({
+      status: 404,
+      body: { error: { code: 'NOT_FOUND', message: 'The requested resource was not found.' } },
+    });
+    expect(chunkedBodyDrained).toBe(true);
+    expect(upstreamRequests).toBe(0);
+  });
+
+  it.each([
+    ['not ready', { isOpenCodeReady: false, isRestartingOpenCode: false }],
+    ['restarting', { isOpenCodeReady: true, isRestartingOpenCode: true }],
+  ])('drains and rejects disabled v2 requests while OpenCode is %s', async (_label, runtimeState) => {
+    let prefixDetectionCalls = 0;
+    const apiMiddleware = [];
+    const app = {
+      get: (...args) => (args.length === 1 ? false : app),
+      set: () => app,
+      use: (mountPath, handler) => {
+        if (mountPath === '/api') apiMiddleware.push(handler);
+        return app;
+      },
+    };
+    registerOpenCodeProxy(app, {
+      fs: {},
+      os: {},
+      path,
+      OPEN_CODE_READY_GRACE_MS: 0,
+      getRuntime: () => ({
+        openCodePort: 3902,
+        openCodeBaseUrl: 'http://127.0.0.1:3902',
+        openCodeNotReadySince: 0,
+        ...runtimeState,
+      }),
+      getOpenCodeAuthHeaders: () => ({}),
+      buildOpenCodeUrl: (requestPath) => `http://127.0.0.1:3902${requestPath}`,
+      ensureOpenCodeApiPrefix: () => {
+        prefixDetectionCalls += 1;
+      },
+    });
+
+    for (const rawUrl of [
+      '/api/openchamber/v2/projects',
+      '/api/openchamber%2Fv2/unknown',
+    ]) {
+      const req = Readable.from([Buffer.from('first chunk'), Buffer.from('second chunk')]);
+      Object.assign(req, {
+        aborted: false,
+        originalUrl: rawUrl,
+        path: rawUrl.slice('/api'.length),
+        url: rawUrl.slice('/api'.length),
+        headers: { 'transfer-encoding': 'chunked' },
+      });
+      const drained = new Promise((resolve) => req.once('end', resolve));
+      const res = {
+        body: null,
+        destroyed: false,
+        headers: {},
+        headersSent: false,
+        statusCode: 0,
+        writableEnded: false,
+        setHeader(name, value) {
+          this.headers[name.toLowerCase()] = value;
+        },
+        status(statusCode) {
+          this.statusCode = statusCode;
+          return this;
+        },
+        json(body) {
+          this.body = body;
+          this.headersSent = true;
+          this.writableEnded = true;
+          return this;
+        },
+      };
+      let middlewareIndex = 0;
+      while (middlewareIndex < apiMiddleware.length) {
+        let nextCalled = false;
+        await apiMiddleware[middlewareIndex](req, res, () => {
+          nextCalled = true;
+        });
+        if (!nextCalled) break;
+        middlewareIndex += 1;
+      }
+
+      expect(res.statusCode).toBe(404);
+      expect(res.body).toEqual({
+        error: { code: 'NOT_FOUND', message: 'The requested resource was not found.' },
+      });
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(middlewareIndex).toBe(0);
+      await drained;
+      expect(req.readableEnded).toBe(true);
+    }
+    expect(prefixDetectionCalls).toBe(0);
   });
 });

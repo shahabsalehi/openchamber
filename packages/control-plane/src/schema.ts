@@ -171,3 +171,28 @@ export const VAULT_SCHEMA = `
   CREATE INDEX IF NOT EXISTS capabilities_by_expiry
     ON capabilities (expires_at);
 `
+
+export const PROJECT_CATALOG_SCHEMA = `
+  PRAGMA foreign_keys = ON;
+
+  CREATE TABLE IF NOT EXISTS catalog_scope (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    scope_hash TEXT NOT NULL,
+    bound_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS catalog_projects (
+    project_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    membership_state TEXT NOT NULL CHECK (membership_state IN ('pending', 'active')),
+    operation_id TEXT NOT NULL UNIQUE,
+    request_fingerprint TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS catalog_projects_by_creation
+    ON catalog_projects (created_at, project_id);
+`

@@ -6,6 +6,7 @@ import {
   shouldForwardProxyResponseHeader,
 } from '../../proxy-headers.js';
 import { createRealpathCache } from '../path-realpath-cache.js';
+import { isControlPlaneBffNamespacePath } from '../control-plane/routes.js';
 
 export const createDirectoryQueryCanonicalizer = ({ realpath, ...cacheOptions } = {}) => {
   const realpathCache = createRealpathCache({ fallbackOnError: true, realpath, ...cacheOptions });
@@ -48,6 +49,10 @@ export const normalizeForwardedDirectoryHeaders = (headers) => {
   }
   delete headers['x-opencode-directory-encoding'];
   return headers;
+};
+
+const discardRequestBody = (req) => {
+  if (!req?.readableEnded && typeof req?.resume === 'function') req.resume();
 };
 
 const waitForSseDrain = (res, signal) => new Promise((resolve) => {
@@ -543,6 +548,21 @@ export const registerOpenCodeProxy = (app, deps) => {
       next(error);
     }
   };
+
+  app.use('/api', (req, res, next) => {
+    const rawUrl = typeof req?.originalUrl === 'string' ? req.originalUrl : req?.url;
+    if (!isControlPlaneBffNamespacePath(rawUrl)) {
+      return next();
+    }
+    discardRequestBody(req);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(404).json({
+      error: {
+        code: 'NOT_FOUND',
+        message: 'The requested resource was not found.',
+      },
+    });
+  });
 
   // Ensure API prefix is detected before proxying
   app.use('/api', (_req, _res, next) => {

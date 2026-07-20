@@ -1,7 +1,9 @@
 import { createControlPlaneHandler, rejectingAuthenticator } from './handler'
 
 export type * from './contracts'
+export type * from './catalog-contracts'
 export { createControlPlaneHandler, type ControlPlaneHandlerOptions } from './handler'
+export type { VerifiedWorkspaceHandlerOptions } from './verified-workspace-handler'
 export type { Milestone3HandlerOptions } from './milestone3-handler'
 export {
   createAiGatewayRouting,
@@ -21,6 +23,7 @@ export {
 } from './provider-broker'
 export { ProjectDurableObject } from './project-durable-object'
 export { VaultDurableObject } from './vault-durable-object'
+export { ProjectCatalogDurableObject } from './project-catalog-durable-object'
 export type * from './vault-contracts'
 export {
   canonicalCapabilityClaims,
@@ -60,6 +63,9 @@ export type {
   VerifiedIdentityMapping,
 } from './identity'
 export {
+  catalogObjectName,
+  catalogScopeHash,
+  canonicalCatalogScope,
   canonicalProjectScope,
   canonicalVaultScope,
   fileObjectKey,

@@ -28,6 +28,7 @@ This module provides OpenCode server integration utilities for the web server ru
 - `packages/web/server/lib/opencode/opencode-resolution-runtime.js`: OpenCode binary resolution snapshot runtime for settings routes and diagnostics.
 - `packages/web/server/lib/opencode/tunnel-wiring-runtime.js`: tunnel service/routes composition runtime and active-port wiring for main server startup.
 - `packages/web/server/lib/opencode/startup-pipeline-runtime.js`: server startup tail orchestration runtime for terminal/proxy/static/start-listen flow.
+- `packages/web/server/lib/control-plane/`: fail-closed hosted v2 control-plane configuration, named BFF client/routes, response validation, and security boundary (outside the OpenCode module).
 - `packages/web/server/lib/opencode/server-utils-runtime.js`: shared server runtime utilities for OpenCode proxy wiring, OpenCode port/readiness helpers, and snapshot fetchers.
 - `packages/web/server/lib/opencode/openchamber-routes.js`: OpenChamber update and models metadata route registration.
 - `packages/web/server/lib/opencode/pwa-manifest-routes.js`: PWA manifest route registration with recent-session shortcut resolution and short-lived caching.
@@ -148,6 +149,7 @@ This module provides OpenCode server integration utilities for the web server ru
 - `createBootstrapRuntime(dependencies)`: creates runtime for base app route bootstrap and UI auth controller initialization.
 - Returned API:
   - `setupBaseRoutes(app, options)`
+- When a control-plane client is supplied, the runtime registers its exact routes after common request middleware but before the global `/api` UI-auth guard. The v2 routes perform their own origin-first dual auth gate and register nothing without a client.
 
 ## Public exports (network-runtime.js)
 - `createOpenCodeNetworkRuntime(dependencies)`: creates runtime for OpenCode network and URL concerns.
@@ -286,6 +288,7 @@ This module provides OpenCode server integration utilities for the web server ru
 - `createStaticRoutesRuntime(dependencies)`: creates runtime for static dist resolution and static route registration.
 - Returned API:
   - `registerStaticRoutes(app)`
+- The hosted main index and SPA fallback can receive the fixed `controlPlaneV2` boolean descriptor when explicitly enabled and authenticated. Disabled/non-qualifying HTML stays on `sendFile`; mobile, mini-chat, and API-only outputs are unchanged.
 
 ## Public exports (feature-routes-runtime.js)
 - `createFeatureRoutesRuntime(dependencies)`: creates runtime for main feature route registration orchestration.
@@ -306,6 +309,7 @@ This module provides OpenCode server integration utilities for the web server ru
 - `createStartupPipelineRuntime(dependencies)`: creates runtime for terminal wiring, proxy/bootstrap scheduling, static route registration, and server startup/listen flow.
 - Returned API:
   - `run(options)`
+- `run(options)` passes the already-resolved control-plane enabled state and `uiAuthController` explicitly to static registration; it performs no control-plane fetch or poll.
 
 ## Public exports (openchamber-routes.js)
 - `registerOpenChamberRoutes(app, dependencies)`: registers OpenChamber endpoints:

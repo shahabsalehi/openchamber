@@ -112,6 +112,26 @@ type FileVersionRow = SqlRow & {
   storage_state: string
 }
 
+type VisibleFileRow = SqlRow & {
+  logical_path: string
+  manifest_app_version: number
+  active_app_version: number | null
+  tombstoned: number
+  version_path: string | null
+  app_version: number | null
+  r2_key: string | null
+  correlation_id: string | null
+  operation_id: string | null
+  etag: string | null
+  http_etag: string | null
+  r2_version: string | null
+  size: number | null
+  content_type: string | null
+  content_sha256: string | null
+  created_at: number | null
+  storage_state: string | null
+}
+
 type WriteOperationState = 'reserved' | 'uploading' | 'uploaded' | 'published' | 'aborted'
 type WriteOperationRow = SqlRow & {
   operation_id: string
@@ -520,6 +540,24 @@ export class ProjectDurableObject
            FROM file_versions WHERE logical_path = ? ORDER BY app_version`,
         path,
       ).map((row) => this.#fileVersionRecord(row))
+    })
+  }
+
+  async listFiles(contextValue: ProjectRpcContext): Promise<RpcResult<FileVersionRecord[]>> {
+    return this.#withResult(async () => {
+      await this.#authorizeContext(contextValue)
+      return this.#query<VisibleFileRow>(
+        `SELECT m.logical_path, m.app_version AS manifest_app_version,
+                m.active_app_version, m.tombstoned,
+                v.logical_path AS version_path, v.app_version, v.r2_key, v.correlation_id,
+                v.operation_id, v.etag, v.http_etag, v.r2_version, v.size, v.content_type,
+                v.content_sha256, v.created_at, v.storage_state
+           FROM file_manifests AS m
+           LEFT JOIN file_versions AS v
+             ON v.logical_path = m.logical_path AND v.app_version = m.active_app_version
+          WHERE m.tombstoned = 0
+          ORDER BY m.logical_path`,
+      ).map((row) => this.#visibleFileRecord(row))
     })
   }
 
@@ -1290,6 +1328,49 @@ export class ProjectDurableObject
       contentSha256: row.content_sha256,
       createdAt: row.created_at,
       storageState: row.storage_state,
+    }
+  }
+
+  #visibleFileRecord(row: VisibleFileRow): FileVersionRecord {
+    try {
+      if (
+        row.tombstoned !== 0 ||
+        row.active_app_version === null ||
+        row.manifest_app_version !== row.active_app_version ||
+        row.version_path !== row.logical_path ||
+        row.app_version !== row.active_app_version ||
+        row.r2_key === null ||
+        row.correlation_id === null ||
+        row.operation_id === null ||
+        row.etag === null ||
+        row.http_etag === null ||
+        row.r2_version === null ||
+        row.size === null ||
+        row.content_type === null ||
+        row.content_sha256 === null ||
+        row.created_at === null ||
+        row.storage_state !== 'live' ||
+        normalizeFilePath(row.logical_path) !== row.logical_path
+      ) {
+        throw new ControlPlaneFault('INTEGRITY_ERROR')
+      }
+      return this.#fileVersionRecord({
+        logical_path: row.logical_path,
+        app_version: row.app_version,
+        r2_key: row.r2_key,
+        correlation_id: row.correlation_id,
+        operation_id: row.operation_id,
+        etag: row.etag,
+        http_etag: row.http_etag,
+        r2_version: row.r2_version,
+        size: row.size,
+        content_type: row.content_type,
+        content_sha256: row.content_sha256,
+        created_at: row.created_at,
+        storage_state: row.storage_state,
+      })
+    } catch {
+      throw new ControlPlaneFault('INTEGRITY_ERROR')
     }
   }
 

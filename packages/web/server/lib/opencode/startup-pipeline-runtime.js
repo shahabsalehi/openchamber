@@ -54,6 +54,7 @@ export const createStartupPipelineRuntime = (dependencies) => {
       attachSignals,
       apiOnly,
       dictationModelsDir,
+      controlPlaneEnabled,
     } = options;
 
     const terminalRuntime = createTerminalRuntime({
@@ -104,7 +105,10 @@ export const createStartupPipelineRuntime = (dependencies) => {
     if (apiOnly) {
       staticRoutesRuntime.registerApiOnlyFallbackRoutes(app);
     } else {
-      staticRoutesRuntime.registerStaticRoutes(app);
+      staticRoutesRuntime.registerStaticRoutes(app, {
+        controlPlaneEnabled,
+        uiAuthController,
+      });
     }
 
     const serverStartupRuntime = createServerStartupRuntime({

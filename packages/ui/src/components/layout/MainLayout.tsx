@@ -31,6 +31,7 @@ import { DiffView } from '@/components/views/DiffView';
 import { FilesView } from '@/components/views/FilesView';
 import { GitView } from '@/components/views/GitView';
 import { PlanView } from '@/components/views/PlanView';
+import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 
 // Keep TerminalView eager: the bottom dock reserves its height immediately, so
 // suspending here leaves a large blank panel on slower machines.
@@ -39,6 +40,7 @@ const DiagramView = lazyWithChunkRecovery(() => import('@/components/views/Diagr
 const SettingsView = lazyWithChunkRecovery(() => import('@/components/views/SettingsView').then(m => ({ default: m.SettingsView })));
 const SettingsWindow = lazyWithChunkRecovery(() => import('@/components/views/SettingsWindow').then(m => ({ default: m.SettingsWindow })));
 const MultiRunWindow = lazyWithChunkRecovery(() => import('@/components/views/MultiRunWindow').then(m => ({ default: m.MultiRunWindow })));
+const WebV2WorkspaceView = lazyWithChunkRecovery(() => import('@/components/views/WebV2WorkspaceView').then(m => ({ default: m.WebV2WorkspaceView })));
 
 export const MainLayout: React.FC = () => {
     const RIGHT_SIDEBAR_AUTO_CLOSE_WIDTH = 1140;
@@ -51,6 +53,7 @@ export const MainLayout: React.FC = () => {
     const setRightSidebarOpen = useUIStore((state) => state.setRightSidebarOpen);
     const setBottomTerminalOpen = useUIStore((state) => state.setBottomTerminalOpen);
     const activeMainTab = useUIStore((state) => state.activeMainTab);
+    const { webV2 } = useRuntimeAPIs();
     const setIsMobile = useUIStore((state) => state.setIsMobile);
     const isSessionSwitcherOpen = useUIStore((state) => state.isSessionSwitcherOpen);
     const isSettingsDialogOpen = useUIStore((state) => state.isSettingsDialogOpen);
@@ -258,6 +261,12 @@ export const MainLayout: React.FC = () => {
     }, []);
 
     React.useEffect(() => {
+        if (!webV2 && activeMainTab === 'workspace') {
+            useUIStore.getState().setActiveMainTab('chat');
+        }
+    }, [activeMainTab, webV2]);
+
+    React.useEffect(() => {
         if (typeof window === 'undefined') {
             return;
         }
@@ -374,10 +383,12 @@ export const MainLayout: React.FC = () => {
                 return <React.Suspense fallback={null}><ProjectContextPanel /></React.Suspense>;
             case 'diagram':
                 return <React.Suspense fallback={null}><DiagramView /></React.Suspense>;
+            case 'workspace':
+                return webV2 ? <React.Suspense fallback={null}><WebV2WorkspaceView /></React.Suspense> : null;
             default:
                 return null;
         }
-    }, [activeMainTab, mobileRightSidebarOpen]);
+    }, [activeMainTab, mobileRightSidebarOpen, webV2]);
 
     const isChatActive = activeMainTab === 'chat';
 

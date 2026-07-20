@@ -37,6 +37,7 @@ export interface SettingsRuntimeContext {
   isWeb: boolean;
   isDesktop: boolean;
   isMobile: boolean;
+  hasWebV2: boolean;
 }
 
 export interface SettingsPageMeta {

@@ -185,6 +185,7 @@ export interface ProjectDurableObjectRpc {
   deleteSession(context: ProjectRpcContext, input: DeleteSessionInput): Promise<RpcResult<SessionRecord>>
   writeFile(context: ProjectRpcContext, input: WriteFileInput): Promise<RpcResult<FileVersionRecord>>
   readFile(context: ProjectRpcContext, input: ReadFileInput): Promise<Response>
+  listFiles(context: ProjectRpcContext): Promise<RpcResult<FileVersionRecord[]>>
   listFileVersions(context: ProjectRpcContext, path: string): Promise<RpcResult<FileVersionRecord[]>>
   deleteFile(context: ProjectRpcContext, input: DeleteFileInput): Promise<RpcResult<DeletedFileRecord>>
   createSandboxLease(

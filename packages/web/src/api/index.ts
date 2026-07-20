@@ -16,9 +16,11 @@ import { createWebToolsAPI } from './tools';
 import { createWebPushAPI } from './push';
 import { createWebGitHubAPI } from './github';
 import { createWebClientAuthAPI } from './clientAuth';
+import { createWebV2API } from './webV2';
 
 export interface WebAPIsOptions {
   urls?: RuntimeUrlResolver;
+  enableWebV2?: boolean;
 }
 
 const createActiveRuntimeUrlResolver = (): RuntimeUrlResolver => ({
@@ -37,16 +39,17 @@ export const createWebAPIs = (options: WebAPIsOptions = {}): RuntimeAPIs => {
   const activeUrls = createActiveRuntimeUrlResolver();
 
   return {
-  runtime: { platform: 'web', isDesktop: false, isVSCode: false, label: 'web' },
-  terminal: createWebTerminalAPI(),
-  git: createWebGitAPI(),
-  files: createWebFilesAPI({ urls: activeUrls, getDirectory: () => useDirectoryStore.getState().currentDirectory }),
-  settings: createWebSettingsAPI(),
-  permissions: createWebPermissionsAPI(),
-  notifications: createWebNotificationsAPI(),
-  github: createWebGitHubAPI({ urls: activeUrls }),
-  push: createWebPushAPI(),
-  clientAuth: createWebClientAuthAPI(),
-  tools: createWebToolsAPI(),
+    runtime: { platform: 'web', isDesktop: false, isVSCode: false, label: 'web' },
+    terminal: createWebTerminalAPI(),
+    git: createWebGitAPI(),
+    files: createWebFilesAPI({ urls: activeUrls, getDirectory: () => useDirectoryStore.getState().currentDirectory }),
+    settings: createWebSettingsAPI(),
+    permissions: createWebPermissionsAPI(),
+    notifications: createWebNotificationsAPI(),
+    github: createWebGitHubAPI({ urls: activeUrls }),
+    push: createWebPushAPI(),
+    clientAuth: createWebClientAuthAPI(),
+    ...(options.enableWebV2 === true ? { webV2: createWebV2API() } : {}),
+    tools: createWebToolsAPI(),
   };
 };

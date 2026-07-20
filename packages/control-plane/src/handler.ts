@@ -6,6 +6,10 @@ import type {
 } from './contracts'
 import { ControlPlaneFault, errorResponse, faultCode, rpcResponse } from './errors'
 import { fetchMilestone3, type Milestone3HandlerOptions } from './milestone3-handler'
+import {
+  fetchVerifiedWorkspace,
+  type VerifiedWorkspaceHandlerOptions,
+} from './verified-workspace-handler'
 import { projectObjectName } from './routing'
 import {
   MAX_JSON_BODY_BYTES,
@@ -21,6 +25,7 @@ import {
 export interface ControlPlaneHandlerOptions {
   authenticator: PrincipalAuthenticator
   milestone3?: Milestone3HandlerOptions
+  workspace?: VerifiedWorkspaceHandlerOptions
 }
 
 export interface ControlPlaneHandler {
@@ -192,6 +197,10 @@ export function createControlPlaneHandler(
 ): ControlPlaneHandler {
   return {
     async fetch(request, env): Promise<Response> {
+      const workspaceResponse = await fetchVerifiedWorkspace(request, env, options.workspace)
+      if (workspaceResponse !== null) {
+        return workspaceResponse
+      }
       const milestone3Response = await fetchMilestone3(request, env, options.milestone3)
       if (milestone3Response !== null) {
         return milestone3Response

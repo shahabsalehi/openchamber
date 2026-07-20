@@ -1,10 +1,12 @@
 import type { ProjectScope } from './contracts'
+import type { CatalogScope } from './catalog-contracts'
 import type { VaultScope } from './vault-contracts'
 import { normalizeFilePath, validateIdentifier, validateOpaqueId, validateScope } from './validation'
 
 const SCOPE_PREFIX = 'openchamber-control-plane:project:v1'
 const FILE_KEY_PREFIX = 'ocp-v2/files/v1'
 const VAULT_SCOPE_PREFIX = 'openchamber-control-plane:vault:v1'
+const CATALOG_SCOPE_PREFIX = 'openchamber-control-plane:catalog:v1'
 
 function lengthDelimited(values: readonly string[]): string {
   return values.map((value) => `${value.length}:${value}`).join(':')
@@ -46,6 +48,22 @@ export async function vaultScopeHash(scope: VaultScope): Promise<string> {
 
 export async function vaultObjectName(scope: VaultScope): Promise<string> {
   return `vault-v1-${await vaultScopeHash(scope)}`
+}
+
+export function canonicalCatalogScope(scopeValue: CatalogScope): string {
+  const scope = {
+    tenantId: validateIdentifier(scopeValue.tenantId),
+    userId: validateIdentifier(scopeValue.userId),
+  }
+  return `${CATALOG_SCOPE_PREFIX}:${lengthDelimited([scope.tenantId, scope.userId])}`
+}
+
+export async function catalogScopeHash(scope: CatalogScope): Promise<string> {
+  return sha256Hex(canonicalCatalogScope(scope))
+}
+
+export async function catalogObjectName(scope: CatalogScope): Promise<string> {
+  return `catalog-v1-${await catalogScopeHash(scope)}`
 }
 
 export async function operationFingerprint(values: readonly string[]): Promise<string> {

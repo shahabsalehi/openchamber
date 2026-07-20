@@ -449,6 +449,14 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['github', 'account', 'oauth', 'prs', 'issues'],
   },
   {
+    id: 'providers.web-v2-credentials',
+    page: 'providers',
+    titleKey: 'settings.providers.webV2Credentials.title',
+    descriptionKey: 'settings.providers.webV2Credentials.info',
+    keywords: ['credential', 'credentials', 'api key', 'api keys', 'openai', 'rotate', 'revoke'],
+    isAvailable: (ctx) => ctx.hasWebV2,
+  },
+  {
     id: 'git.identities',
     page: 'git',
     titleKey: 'settings.gitIdentities.page.section.title',

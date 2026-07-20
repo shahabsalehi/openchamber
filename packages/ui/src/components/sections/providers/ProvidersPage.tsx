@@ -26,6 +26,8 @@ import { getCurrentIntlLocale, useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { opencodeClient } from '@/lib/opencode/client';
 import { shouldLoadAvailableProviders } from './providerAvailability';
+import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
+import { WebV2CredentialSettings } from './WebV2CredentialSettings';
 
 const formatCompactNumber = (value: number) => new Intl.NumberFormat(getCurrentIntlLocale(), {
   notation: 'compact',
@@ -147,6 +149,7 @@ const parseProvidersPayload = (payload: unknown): ProviderOption[] => {
 
 export const ProvidersPage: React.FC = () => {
   const { t } = useI18n();
+  const { webV2 } = useRuntimeAPIs();
   const providers = useConfigStore((state) => state.providers);
   const selectedProviderId = useConfigStore((state) => state.selectedProviderId);
   const setSelectedProvider = useConfigStore((state) => state.setSelectedProvider);
@@ -500,6 +503,13 @@ export const ProvidersPage: React.FC = () => {
   };
 
   if (!isAddMode && providers.length === 0) {
+    if (webV2) {
+      return (
+        <SettingsPageLayout title={t('settings.page.providers.title')} showSaveStatus={false}>
+          <WebV2CredentialSettings webV2={webV2} />
+        </SettingsPageLayout>
+      );
+    }
     return (
       <div className="flex h-full items-center justify-center">
         <div className="text-center text-muted-foreground">
@@ -742,6 +752,7 @@ export const ProvidersPage: React.FC = () => {
               )}
             </SettingsSection>
           )}
+          <WebV2CredentialSettings webV2={webV2} />
       </SettingsPageLayout>
     );
   }
@@ -1066,6 +1077,7 @@ export const ProvidersPage: React.FC = () => {
               </div>
             )}
       </SettingsSection>
+      <WebV2CredentialSettings webV2={webV2} />
     </SettingsPageLayout>
   );
 };

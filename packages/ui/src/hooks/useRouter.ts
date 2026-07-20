@@ -6,6 +6,7 @@ import type { RouteState, AppRouteState } from '@/lib/router';
 import type { MainTab } from '@/stores/useUIStore';
 import { resolveSettingsSlug } from '@/lib/settings/metadata';
 import { isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
+import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 
 /**
  * Check if running in VS Code webview context.
@@ -38,6 +39,7 @@ function isVSCodeContext(): boolean {
  *   "Open subtask" clicks.
  */
 export function useRouter(): void {
+  const { webV2 } = useRuntimeAPIs();
   const isVSCode = React.useMemo(() => isVSCodeContext(), []);
   // Captured once at mount: the iframe's embedded-ness never changes during
   // its lifetime (a parent src swap is a full reload).
@@ -90,7 +92,7 @@ export function useRouter(): void {
 
         // 3. Apply tab
         if (route.tab) {
-          setActiveMainTab(route.tab);
+          setActiveMainTab(route.tab === 'workspace' && !webV2 ? 'chat' : route.tab);
         }
 
         // 4. Apply diff file (only if going to diff tab)
@@ -101,7 +103,7 @@ export function useRouter(): void {
         isApplyingRouteRef.current = false;
       }
     },
-    [setCurrentSession, setActiveMainTab, setSettingsDialogOpen, setSettingsPage, navigateToDiff]
+    [setCurrentSession, setActiveMainTab, setSettingsDialogOpen, setSettingsPage, navigateToDiff, webV2]
   );
 
   /**

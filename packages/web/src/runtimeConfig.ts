@@ -20,15 +20,47 @@ declare global {
     __OPENCHAMBER_CLIENT_TOKEN__?: string;
     __OPENCHAMBER_RUNTIME_HEADERS__?: Record<string, string>;
     __OPENCHAMBER_LOCAL_ORIGIN__?: string;
+    __OPENCHAMBER_SERVER_CAPABILITIES__?: unknown;
   }
 }
+
+interface ConfiguredWebAPIsOptions {
+  surface?: 'main-web';
+}
+
+export const hasWebV2ServerCapability = (value: unknown): boolean => {
+  try {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== 1 || keys[0] !== 'controlPlaneV2') return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, 'controlPlaneV2');
+    return descriptor !== undefined && 'value' in descriptor && descriptor.value === true;
+  } catch {
+    return false;
+  }
+};
+
+const isElectronRuntime = (): boolean => {
+  try {
+    const electron = (window as typeof window & {
+      __OPENCHAMBER_ELECTRON__?: unknown;
+    }).__OPENCHAMBER_ELECTRON__;
+    if (typeof electron !== 'object' || electron === null || Array.isArray(electron)) return false;
+    const descriptor = Object.getOwnPropertyDescriptor(electron, 'runtime');
+    return descriptor !== undefined && 'value' in descriptor && descriptor.value === 'electron';
+  } catch {
+    return true;
+  }
+};
 
 // Resolved once the desktop relay-host restore (if any) has picked a transport.
 // Immediately-resolved everywhere else. See createConfiguredWebAPIs.
 let desktopRelayRestoreReady: Promise<void> = Promise.resolve();
 export const getDesktopRelayRestoreReady = (): Promise<void> => desktopRelayRestoreReady;
 
-export const createConfiguredWebAPIs = () => {
+export const createConfiguredWebAPIs = (options: ConfiguredWebAPIsOptions = {}) => {
   const apiBaseUrl = typeof window.__OPENCHAMBER_API_BASE_URL__ === 'string'
     ? window.__OPENCHAMBER_API_BASE_URL__.trim()
     : '';
@@ -66,5 +98,8 @@ export const createConfiguredWebAPIs = () => {
     // Never hold the app hostage: a stuck probe/tunnel gives up to the UI.
     new Promise<void>((resolve) => { window.setTimeout(resolve, 10_000); }),
   ]);
-  return createWebAPIs({ urls });
+  const enableWebV2 = options.surface === 'main-web'
+    && !isElectronRuntime()
+    && hasWebV2ServerCapability(window.__OPENCHAMBER_SERVER_CAPABILITIES__);
+  return createWebAPIs({ urls, enableWebV2 });
 };

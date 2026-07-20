@@ -109,8 +109,23 @@ OPENCODE_HOST=https://myhost:4096 OPENCODE_SKIP_START=true openchamber
 | `OPENCHAMBER_SKIP_API_COMPRESSION` | Set to `true` to disable gzip compression for `/api/*` responses |
 | `OPENCHAMBER_COMPRESS_API` | Set to `true` to force `/api/*` compression, or `false` to disable it. Desktop runtime disables API compression by default to reduce local sidecar CPU use |
 | `OPENCHAMBER_TERMINAL_SHELL` | Preferred terminal shell executable used by the `Auto` setting before platform defaults |
+| `OPENCHAMBER_CONTROL_PLANE_URL` | Optional server-owned canonical HTTPS origin for the hosted v2 control-plane BFF. Absent means fully disabled. |
 
 </details>
+
+### Optional hosted v2 control plane
+
+The v2 control-plane BFF is disabled by default. Enable it only with one byte-for-byte canonical HTTPS origin, without a trailing slash:
+
+```bash
+OPENCHAMBER_CONTROL_PLANE_URL=https://control.example openchamber --ui-password your-password
+```
+
+Invalid values fail hosted web startup. Electron desktop and other non-web runtimes ignore this variable and never register the BFF. HTTP URLs, credentials in the URL, whitespace, explicit default ports, paths, query strings, fragments, and non-canonical spellings are rejected. The server does not probe or poll the control plane at startup.
+
+When enabled, the server exposes only named project, text-file, session-metadata, and metadata-only credential operations under `/api/openchamber/v2`. It is not a generic proxy. Every operation requires existing OpenChamber UI authentication plus one opaque `Cf-Access-Jwt-Assertion`; URL auth tokens are not accepted. Browser requests are same-origin checked before UI auth is consumed, redirects are rejected, file and response bodies are bounded, and browser cookies/authorization/forwarding headers are never copied upstream.
+
+Only an authenticated hosted main web shell can receive the non-secret `controlPlaneV2: true` capability. The configured origin, Access assertion, auth tokens, identities, projects, credentials, and file contents are never injected. Mobile, mini-chat, Electron, Capacitor, VS Code, and API-only output do not receive the descriptor. Removing `OPENCHAMBER_CONTROL_PLANE_URL` removes the BFF routes and injection and performs no v2 control-plane network work.
 
 <details>
 <summary>Bind managed OpenCode to LAN / Tailscale</summary>

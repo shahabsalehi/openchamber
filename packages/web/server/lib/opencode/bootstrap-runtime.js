@@ -7,6 +7,7 @@ export const createBootstrapRuntime = (dependencies) => {
     registerTtsRoutes,
     registerNotificationRoutes,
     registerOpenChamberRoutes,
+    registerControlPlaneRoutes,
     express,
   } = dependencies;
 
@@ -59,6 +60,7 @@ export const createBootstrapRuntime = (dependencies) => {
       fetchFreeZenModels,
       getCachedZenModels,
       setAutoAcceptSession,
+      controlPlaneClient,
     } = options;
 
     const uiAuthController = createUiAuth({
@@ -84,6 +86,13 @@ export const createBootstrapRuntime = (dependencies) => {
     });
 
     registerCommonRequestMiddleware(app, { express, verboseRequestLogs });
+
+    if (runtimeName === 'web' && controlPlaneClient) {
+      registerControlPlaneRoutes(app, {
+        client: controlPlaneClient,
+        uiAuthController,
+      });
+    }
 
     registerAuthAndAccessRoutes(app, {
       express,

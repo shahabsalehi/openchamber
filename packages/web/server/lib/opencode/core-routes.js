@@ -1,3 +1,5 @@
+import { isControlPlaneBffNamespacePath } from '../control-plane/routes.js';
+
 const parseLoopbackUrl = (rawUrl) => {
   if (typeof rawUrl !== 'string') {
     return null;
@@ -1046,6 +1048,9 @@ export const registerCommonRequestMiddleware = (app, dependencies) => {
   const { express, verboseRequestLogs = false } = dependencies;
 
   app.use((req, res, next) => {
+    if (isControlPlaneBffNamespacePath(req.originalUrl || req.url || req.path)) {
+      return next();
+    }
     if (req.path.startsWith('/api/behavior')) {
       const contentLength = parseInt(req.headers['content-length'] || '0', 10);
       if (contentLength > 1024 * 1024) {
@@ -1086,7 +1091,12 @@ export const registerCommonRequestMiddleware = (app, dependencies) => {
     }
   });
 
-  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+  app.use((req, res, next) => {
+    if (isControlPlaneBffNamespacePath(req.originalUrl || req.url || req.path)) {
+      return next();
+    }
+    return express.urlencoded({ extended: true, limit: '50mb' })(req, res, next);
+  });
 
   app.use((req, _res, next) => {
     if (verboseRequestLogs) {

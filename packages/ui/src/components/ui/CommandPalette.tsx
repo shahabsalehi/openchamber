@@ -91,7 +91,7 @@ export const CommandPalette: React.FC = () => {
   const projects = useProjectsStore((s) => s.projects);
   const effectiveDirectory = useEffectiveDirectory();
   const searchFiles = useFileSearchStore((s) => s.searchFiles);
-  const { files: filesApi, git: gitApi } = useRuntimeAPIs();
+  const { files: filesApi, git: gitApi, webV2 } = useRuntimeAPIs();
   const ensureGitStatus = useGitStore((s) => s.ensureStatus);
   const { isMobile } = useDeviceInfo();
 
@@ -267,8 +267,8 @@ export const CommandPalette: React.FC = () => {
   // ---------------------------------------------------------------------------
   const settingsRuntimeCtx = React.useMemo<SettingsRuntimeContext>(() => {
     const isDesktop = isDesktopShell();
-    return { isVSCode: isVSCodeRuntime(), isWeb: !isDesktop && isWebRuntime(), isDesktop, isMobile };
-  }, [isMobile]);
+    return { isVSCode: isVSCodeRuntime(), isWeb: !isDesktop && isWebRuntime(), isDesktop, isMobile, hasWebV2: Boolean(webV2) };
+  }, [isMobile, webV2]);
 
   const settingsEntries = React.useMemo<CommandEntry[]>(() => {
     return SETTINGS_PAGE_METADATA
