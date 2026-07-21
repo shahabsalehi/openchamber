@@ -214,7 +214,77 @@ describe('sandbox bridge', () => {
       const bridge = createBridge(p);
       const result = await bridge.resume(claimFields({ kind: 'resume' }));
       expect(result.status).toBe('running');
+      expect(result.expiresAt).toBe(null);
       expect(p.lifecycle.resume).toHaveBeenCalledWith('sandbox-1');
+    });
+
+    it('rejects mismatched pause and resume handles', async () => {
+      const lifecycle = {
+        pause: mock(async () => ({
+          handle: 'different-sandbox',
+          status: 'paused',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          expiresAt: null,
+        })),
+        resume: mock(async () => ({
+          handle: 'different-sandbox',
+          status: 'running',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          expiresAt: '2026-01-01T01:00:00.000Z',
+        })),
+      };
+      const bridge = createBridge(createBridgeProvider({ lifecycle }));
+
+      await expect(bridge.pause(claimFields())).rejects.toMatchObject({
+        code: SANDBOX_ERROR_CODES.RESPONSE_INVALID,
+      });
+      await expect(bridge.resume(claimFields({ kind: 'resume' }))).rejects.toMatchObject({
+        code: SANDBOX_ERROR_CODES.RESPONSE_INVALID,
+      });
+    });
+
+    it('returns only normalized resume status and expiry', async () => {
+      const lifecycle = {
+        ...createBridgeProvider().lifecycle,
+        resume: mock(async (handle) => ({
+          handle,
+          status: 'running',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          expiresAt: '2026-01-01T01:00:00.000Z',
+          endpoint: 'https://must-not-escape.example',
+          headers: { Authorization: 'resume-secret' },
+        })),
+      };
+      const bridge = createBridge(createBridgeProvider({ lifecycle }));
+
+      const result = await bridge.resume(claimFields({ kind: 'resume' }));
+      expect(result).toEqual({
+        operationId: 'op-0000000001',
+        leaseId: 'lease-00000001',
+        generation: 1,
+        claimFence: 1,
+        status: 'running',
+        expiresAt: '2026-01-01T01:00:00.000Z',
+      });
+      expect(JSON.stringify(result)).not.toContain('must-not-escape');
+      expect(JSON.stringify(result)).not.toContain('resume-secret');
+    });
+
+    it('rejects malformed resume expiry after the provider mutation', async () => {
+      const lifecycle = {
+        ...createBridgeProvider().lifecycle,
+        resume: mock(async (handle) => ({
+          handle,
+          status: 'running',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          expiresAt: 'not-an-expiry',
+        })),
+      };
+      const bridge = createBridge(createBridgeProvider({ lifecycle }));
+
+      await expect(bridge.resume(claimFields({ kind: 'resume' }))).rejects.toMatchObject({
+        code: SANDBOX_ERROR_CODES.RESPONSE_INVALID,
+      });
     });
 
     it('rejects lifecycle operations when lifecycle is null', async () => {
@@ -929,6 +999,20 @@ describe('sandbox bridge', () => {
       await expect(bridge.hydrate(hydrateInput(), controller.signal)).rejects.toMatchObject({
         code: SANDBOX_ERROR_CODES.REQUEST_TIMEOUT,
       });
+    });
+
+    it('rejects destroy before provider dispatch when already aborted', async () => {
+      const p = createBridgeProvider();
+      const bridge = createBridge(p);
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(
+        bridge.destroy(claimFields({ kind: 'destroy' }), controller.signal),
+      ).rejects.toMatchObject({
+        code: SANDBOX_ERROR_CODES.REQUEST_TIMEOUT,
+      });
+      expect(p.destroy).not.toHaveBeenCalled();
     });
   });
 

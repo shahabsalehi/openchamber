@@ -64,7 +64,7 @@ describe('WebV2WorkspaceView', () => {
 
     expect(Object.values(state.actions).every((action) => action.enabled === false)).toBe(true);
     expect(state.showReadinessNotice).toBe(true);
-    expect(state.statusLabelKey).toBe('workspace.runtime.status.running');
+    expect(state.statusLabelKey).toBe('workspace.runtime.status.ready');
   });
 
   test('blocks actions and shows recovery guidance for unknown outcomes and active operations', () => {
@@ -72,13 +72,20 @@ describe('WebV2WorkspaceView', () => {
     const active = panelState({ status: status({ activeOperation: { operationId: 'operation_0001', kind: 'pause', state: 'inProgress' } }), pendingOperation: 'pause' });
 
     expect(unknown.showOutcomeUnknownWarning).toBe(true);
+    expect(unknown.statusLabelKey).toBe('workspace.runtime.status.recovering');
     expect(Object.values(unknown.actions).every((action) => action.enabled === false)).toBe(true);
     expect(Object.values(active.actions).every((action) => action.enabled === false)).toBe(true);
   });
 
   test('keeps status semantics explicit across lifecycle states', () => {
+    expect(panelState({ status: status({ status: 'pending' }) }).statusLabelKey).toBe('workspace.runtime.status.starting');
+    expect(panelState({ status: status({ status: 'running' }) }).statusLabelKey).toBe('workspace.runtime.status.ready');
+    expect(panelState({ status: status({ status: 'stopping' }) }).statusLabelKey).toBe('workspace.runtime.status.stopping');
+    expect(panelState({ status: status({ status: 'resuming' }) }).statusLabelKey).toBe('workspace.runtime.status.recovering');
+    expect(panelState({ status: status({ status: 'unknown' }) }).statusLabelKey).toBe('workspace.runtime.status.recovering');
     expect(panelState({ status: status({ status: 'paused' }) }).statusLabelKey).toBe('workspace.runtime.status.paused');
     expect(panelState({ status: status({ status: 'terminated', exists: false }) }).statusLabelKey).toBe('workspace.runtime.status.terminated');
     expect(panelState({ status: status({ status: 'failed' }) }).statusLabelKey).toBe('workspace.runtime.status.failed');
+    expect(panelState({ statusFailed: true }).statusLabelKey).toBe('workspace.runtime.status.retryable');
   });
 });

@@ -46,20 +46,23 @@ const statusLabelKey = (
   statusLoading: boolean,
   statusFailed: boolean,
 ): I18nKey => {
-  if (statusFailed) return 'workspace.runtime.status.refreshFailed';
+  if (statusFailed) return 'workspace.runtime.status.retryable';
   if (!statusResolved || status === null) {
     return statusLoading ? 'workspace.runtime.status.loading' : 'workspace.runtime.status.unresolved';
   }
+  if (status.outcomeUnknown || status.checkpoint?.state === 'outcomeUnknown') {
+    return 'workspace.runtime.status.recovering';
+  }
   switch (status.status) {
-    case 'pending': return 'workspace.runtime.status.pending';
-    case 'running': return 'workspace.runtime.status.running';
+    case 'pending': return 'workspace.runtime.status.starting';
+    case 'running': return 'workspace.runtime.status.ready';
     case 'pausing': return 'workspace.runtime.status.pausing';
     case 'paused': return 'workspace.runtime.status.paused';
-    case 'resuming': return 'workspace.runtime.status.resuming';
+    case 'resuming': return 'workspace.runtime.status.recovering';
     case 'stopping': return 'workspace.runtime.status.stopping';
     case 'terminated': return 'workspace.runtime.status.terminated';
     case 'failed': return 'workspace.runtime.status.failed';
-    case 'unknown': return 'workspace.runtime.status.unknown';
+    case 'unknown': return 'workspace.runtime.status.recovering';
   }
 };
 

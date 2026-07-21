@@ -30,6 +30,9 @@ bundle import. Composition does not make provider operations remotely callable.
   provider factory.
 - `runtime.js`: bounded in-memory lease lifecycle, authoritative inspection,
   and cleanup orchestration.
+- `coordinator.js`: disabled, unwired lifecycle composition for local milestone-6
+  acceptance with injected durable authority, snapshot, publication, runtime,
+  and bridge contracts.
 - `validation.js`: provider-neutral input and safe response validation.
 - `errors.js`: stable sanitized error taxonomy.
 - `providers/opensandbox.js`: all OpenSandbox-specific configuration, REST
@@ -529,3 +532,167 @@ The bridge factory, `createSandboxBridge`, and error codes are exported from
   not implemented.
 - The bridge does not expose provider handles, endpoint headers, passwords, or
   bridge credentials. The final BFF must respect these boundaries.
+
+## Lifecycle coordinator (milestone 6, disabled acceptance only)
+
+### Scope and non-wiring
+
+`coordinator.js` composes the production-shaped lifecycle sequence for focused
+Node acceptance tests. It is deliberately not imported by `index.js`,
+`factory.js`, the server entrypoint, or any BFF route. The production
+`sandboxRuntimeEnabled` gate remains `false`; adding this module does not expose
+a capability, start a dispatcher, contact a control plane, or enable real
+OpenSandbox create. The current OpenSandbox adapter still has
+`supportsRealCreate: false`.
+
+The coordinator is constructed per project with injected dependencies. Its
+authority client is already project-scoped; no project ID, authority map, or
+global singleton is created here. `operationId` is only correlation within that
+project-scoped coordinator and is not treated as globally unique. The Node
+module does not import the workerd Durable Object implementation. A private
+production authority transport remains deferred.
+
+The injected contracts are:
+
+- `authority.claimSandboxRuntimeOperation`,
+  `authority.beginSandboxRuntimeEffect`, and
+  `authority.completeSandboxRuntimeOperation`, preserving the Project DO's
+  exact operation/generation/revision/claim-fence sequence;
+- process-local `runtime.create`, `runtime.list`, and `runtime.destroy`;
+- the real bridge operations for hydration, checkpoint capture, lifecycle, and
+  exact OpenCode supervision;
+- `snapshotSource.read`, which must return `{ complete: true, revision, files }`;
+- `checkpointPublisher.publish`, which atomically and idempotently publishes by
+  `operationId` and `expectedWorkspaceRevision` and confirms with
+  `{ published: true }`; and
+- a fixed sandbox create input (or an injected resolver evaluated during start
+  preflight).
+
+All dependencies are injected fakes in acceptance tests. The fake authoritative
+snapshot is quiescent while read; these tests do not prove a production
+concurrent-edit snapshot protocol. Before cloning or retaining entries,
+coordinator preflight requires the exact complete snapshot shape, a valid
+revision, at most 8192 files, at most 1 MiB of UTF-8 content per file, and at
+most 64 MiB of aggregate UTF-8 content. Path normalization and traversal
+rejection remain the real bridge's final authority rather than a second
+coordinator implementation.
+
+### Fencing and dispatch
+
+Every accepted operation follows claim, optional preflight, begin, one lifecycle
+effect, then completion. A provider mutation is never run before a successful
+begin response for the same operation, target generation, lifecycle revision,
+and claim fence. Claim and begin are not retried. A rejected replay/no-op claim
+is ignored without dispatch; an unconfirmed claim or begin is left for the
+Project DO's existing stale-claim recovery. The coordinator never infers that a
+provider effect may be repeated.
+
+Completion transport ambiguity is the only retried authority call. Every retry
+uses a parsed copy of one pre-serialized, byte-identical completion payload until
+the completion deadline. It never changes `outcome`, provider identity, or
+supervision and never repeats the provider effect.
+
+### Bounded scheduler and deadlines
+
+Each coordinator instance owns one FIFO scheduler. Construction requires
+`maxConcurrent`, `maxQueued`, `operationDeadlineMs`, and
+`completionTimeoutMs`. Queued and running duplicates of one operation ID share
+one Promise flight. Queue overflow returns fixed backpressure before claim, so
+an at-least-once caller must redeliver the same operation ID; no new operation
+ID should be invented for scheduler pressure.
+
+`operationDeadlineMs + completionTimeoutMs` must be strictly less than the
+Project DO's 30-second stale-effect recovery boundary. The operation deadline
+is stage-aware: expiry before begin performs no provider mutation, while expiry
+after begin is completed according to whether absence/failure is known or the
+mutation may have committed. A provider call that ignores abort and settles
+late keeps its concurrency slot until it settles. This intentionally trades one
+bounded stuck slot for no detached, unbounded provider work.
+
+The coordinator has no production heartbeat. Heartbeat/lease extension, a
+durable dispatcher, and cross-process scheduler ownership remain deferred.
+Every bridge operation receives the operation deadline signal, including remote
+destroy. Existing process-local runtime methods do not accept caller signals and
+are not widened by this milestone. Production therefore remains blocked: the
+configured provider request timeout must fit inside the coordinator operation
+deadline until runtime/provider calls have a cancellable or heartbeat-backed
+production design.
+
+### Lifecycle effects
+
+- **Start (`ensure` or explicit `replace`)**: claim; read and validate a complete
+  authoritative snapshot before begin; begin; call `runtime.create` exactly
+  once; hydrate; start OpenCode with bridge-owned process-local credentials; and
+  complete with the provider record plus supervision. Create is never retried.
+  Any post-create failure attempts confirmed runtime destroy/not-found. Confirmed
+  absence completes `failed`; otherwise the known handle is included only in an
+  `outcomeUnknown` completion so the Project DO can record durable orphan work.
+- **Pause**: claim and begin; stop the exact supervised OpenCode command when a
+  tuple exists; call bridge pause; require the normalized matching provider
+  response to be paused; and complete with provider and supervision both null.
+- **Resume**: claim and begin; call bridge resume; require a normalized matching
+  running response and a null or future expiry; start OpenCode with new
+  process-local credentials; and complete with the adopted provider identity,
+  refreshed expiry, and new supervision. Resume performs no hidden hydration.
+- **Destroy**: claim and begin; attempt exact OpenCode stop but attempt sandbox
+  destruction even if stop fails. A locally owned handle uses `runtime.destroy`;
+  only local `SANDBOX_NOT_FOUND` falls back to bridge destroy. A non-local handle
+  uses bridge destroy with the operation deadline signal. Success requires
+  authoritative destroyed/not-found.
+- **Checkpoint**: claim and begin; capture one bounded complete bridge snapshot;
+  atomically/idempotently publish it using the operation ID and expected
+  workspace revision; then complete. Capture failure and explicit CAS rejection
+  are `failed`; publication timeout, transport ambiguity, or malformed success
+  are `outcomeUnknown`.
+
+Pause and destroy never checkpoint implicitly. Product policy must reserve and
+await an explicit checkpoint operation before pause or destroy whenever the
+workspace must be preserved. Redelivery reuses the same checkpoint operation ID
+and relies on the publisher's idempotent key and expected-revision CAS.
+
+### Failure classification and diagnostics
+
+`failed` is used only when the target's absence or failure is known.
+`outcomeUnknown` is used when a mutating provider call or checkpoint publication
+may have committed, including operation deadline, abort, network/5xx,
+malformed-success, or completion-transport ambiguity. A late start handle is
+never adopted locally after ambiguity; it is carried only to durable orphan
+recording.
+
+Diagnostics are optional and failure-isolated. Events contain exactly:
+
+```js
+{
+  type: 'sandbox.lifecycle',
+  operationId,
+  phase,
+  effect,
+  outcome,
+  code,
+}
+```
+
+The diagnostic contract is exact. `phase` is `queued`, `claimed`, `begun`,
+`effect`, or `completion`. `effect` is `null`, `start`, `stop`, `resume`,
+`destroy`, or `checkpoint`. `outcome` is `null`, `succeeded`, `failed`,
+`outcomeUnknown`, `backpressured`, or `ignored`. `code` is `null` or a value
+from the fixed safe coordinator, sandbox, or control-plane code allowlist. The
+internal dispatch result remains `outcome: 'backpressure'`, while its diagnostic
+uses `outcome: 'backpressured'`. An accepted queue/progress/success event uses
+null outcome or code where no failure exists. Any event outside these enums is
+discarded. Raw errors, stacks, statuses, provider IDs, handles, URLs, commands,
+paths, snapshots, file content, credentials, and supervision are never included.
+
+Bridge pause and resume now normalize provider lifecycle records and reject a
+returned handle that differs from the trusted claim handle. Resume exposes only
+the normalized status and expiry needed by the coordinator; provider extras are
+discarded. The declarations expose exact `BridgePauseInput`/
+`BridgePauseResult` and `BridgeResumeInput`/`BridgeResumeResult` contracts;
+resume alone contains `expiresAt: string | null`. Compatibility lifecycle names
+remain unions of those exact contracts. This correction remains inside the
+disabled bridge/coordinator boundary.
+
+Production orphan execution is not implemented here. The Project DO's durable
+orphan jobs are only recorded through fenced completion; a private trusted
+orphan executor, provider reconciliation, production heartbeat, private
+authority transport, and production rollout remain future milestones.

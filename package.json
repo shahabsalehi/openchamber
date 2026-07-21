@@ -70,6 +70,7 @@
     "vscode:package": "bun run --cwd packages/vscode package",
     "vscode:type-check": "bun run --cwd packages/vscode type-check",
     "docs:validate": "node scripts/docs/validate-docs.mjs",
+    "test:web-v2:acceptance": "bun run --cwd packages/control-plane test && bun run --cwd packages/web test -- server/lib/control-plane/config.test.js server/lib/control-plane/client.test.js server/lib/control-plane/routes.test.js server/lib/sandbox/factory.test.js server/lib/sandbox/runtime.test.js server/lib/sandbox/providers/opensandbox.test.js server/lib/sandbox/bridge.test.js server/lib/sandbox/coordinator.test.js server/lib/ui-auth/ui-auth.test.js server/lib/preview/proxy-runtime.test.js server/lib/realtime-proxy.test.js server/lib/terminal/runtime.test.js server/lib/terminal/terminal-ws-protocol.test.js server/lib/opencode/session-runtime.test.js && bun test --cwd packages/ui src/components/views/WebV2WorkspaceView.test.tsx",
     "dead-code": "bunx knip@5.80.0 --no-exit-code --include files,exports,nsExports,types,nsTypes,enumMembers,duplicates",
     "doctor": "node scripts/react-doctor.mjs",
     "icons:sprite": "node scripts/generate-file-type-sprite.mjs",

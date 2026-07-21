@@ -4,6 +4,7 @@ import { SANDBOX_ERROR_CODES, SandboxRuntimeError, sanitizeSandboxError } from '
 import {
   normalizeBridgeClaimFields,
   normalizeBridgeFileRecord,
+  normalizeProviderRecord,
 } from './validation.js';
 
 const FIXED_WORKSPACE_ROOT = '/workspace/project';
@@ -309,7 +310,15 @@ export const createSandboxBridge = ({
     assertBridgeEnabled(bridgeConfig);
     if (!hasLifecycle) throw operationInvalidError();
 
-    const record = await provider.lifecycle.pause(input.providerHandle);
+    let record;
+    try {
+      record = normalizeProviderRecord(await provider.lifecycle.pause(input.providerHandle));
+    } catch (error) {
+      throw sanitizeSandboxError(error);
+    }
+    if (record.handle !== input.providerHandle) {
+      throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+    }
     return Object.freeze({
       operationId: input.operationId,
       leaseId: input.leaseId,
@@ -325,13 +334,22 @@ export const createSandboxBridge = ({
     assertBridgeEnabled(bridgeConfig);
     if (!hasLifecycle) throw operationInvalidError();
 
-    const record = await provider.lifecycle.resume(input.providerHandle);
+    let record;
+    try {
+      record = normalizeProviderRecord(await provider.lifecycle.resume(input.providerHandle));
+    } catch (error) {
+      throw sanitizeSandboxError(error);
+    }
+    if (record.handle !== input.providerHandle) {
+      throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+    }
     return Object.freeze({
       operationId: input.operationId,
       leaseId: input.leaseId,
       generation: input.generation,
       claimFence: input.claimFence,
       status: record.status,
+      expiresAt: record.expiresAt,
     });
   };
 

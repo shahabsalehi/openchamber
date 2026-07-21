@@ -152,6 +152,9 @@ never passed through.
 
 See [DOCUMENTATION.md](./DOCUMENTATION.md) for schemas, canonical formats,
 revocation/replay behavior, browser flow, and partial-failure guarantees.
+See [MILESTONE_6_HANDOFF.md](./MILESTONE_6_HANDOFF.md) for the pre-deployment
+acceptance gate, operational boundaries, rollback plan, and infrastructure work
+that remains intentionally deferred.
 
 ## Local checks
 
@@ -163,6 +166,7 @@ bun run --cwd packages/control-plane lint
 bun run --cwd packages/control-plane test
 bun run --cwd packages/control-plane check:startup
 bun run --cwd packages/control-plane check
+bun run test:web-v2:acceptance
 bun run dead-code
 ```
 

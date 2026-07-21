@@ -221,6 +221,27 @@ describe('ui auth client credential seam', () => {
     };
     expect(await auth.ensureSessionToken(dictationWsReq, null)).toBe('client:device-1');
 
+    const terminalWsReq = {
+      method: 'GET',
+      path: '/api/terminal/ws',
+      url: `/api/terminal/ws?oc_url_token=${encodeURIComponent(urlToken)}`,
+      headers: { upgrade: 'websocket' },
+    };
+    expect(await auth.ensureSessionToken(terminalWsReq, null)).toBe('client:device-1');
+
+    const previewReq = {
+      method: 'GET',
+      path: '/api/preview/proxy/preview-target/index.html',
+      url: `/api/preview/proxy/preview-target/index.html?oc_url_token=${encodeURIComponent(urlToken)}`,
+      headers: { accept: 'text/html' },
+    };
+    const previewRes = createResponse();
+    let previewCalled = false;
+    await auth.requireAuth(previewReq, previewRes, () => {
+      previewCalled = true;
+    });
+    expect(previewCalled).toBe(true);
+
     const dictationHttpReq = {
       method: 'GET',
       path: '/api/dictation/ws',

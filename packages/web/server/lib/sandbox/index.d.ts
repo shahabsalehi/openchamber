@@ -8,7 +8,6 @@ import type {
   SandboxBridgeProvider,
   SandboxRuntime,
   SandboxRuntimeFactoryOptions,
-  SandboxStatus,
 } from './types.js';
 
 export type {
@@ -39,6 +38,10 @@ export type {
   BridgeCheckpointInput,
   BridgeFileRecord,
   BridgeCheckpointResult,
+  BridgePauseInput,
+  BridgePauseResult,
+  BridgeResumeInput,
+  BridgeResumeResult,
   BridgeLifecycleInput,
   BridgeLifecycleResult,
   BridgeDestroyInput,

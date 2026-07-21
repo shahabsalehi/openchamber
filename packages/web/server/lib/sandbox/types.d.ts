@@ -191,17 +191,34 @@ export interface BridgeCheckpointResult {
 
 // ── Bridge lifecycle ──
 
-export interface BridgeLifecycleInput extends BridgeClaimFields {
-  kind: 'pause' | 'resume';
+export interface BridgePauseInput extends BridgeClaimFields {
+  kind: 'pause';
 }
 
-export interface BridgeLifecycleResult {
+export interface BridgeResumeInput extends BridgeClaimFields {
+  kind: 'resume';
+}
+
+export type BridgeLifecycleInput = BridgePauseInput | BridgeResumeInput;
+
+export interface BridgePauseResult {
   operationId: string;
   leaseId: string;
   generation: number;
   claimFence: number;
   status: SandboxStatus;
 }
+
+export interface BridgeResumeResult {
+  operationId: string;
+  leaseId: string;
+  generation: number;
+  claimFence: number;
+  status: SandboxStatus;
+  expiresAt: string | null;
+}
+
+export type BridgeLifecycleResult = BridgePauseResult | BridgeResumeResult;
 
 // ── Bridge destroy ──
 
@@ -341,8 +358,8 @@ export interface SandboxBridgeConfig {
 export interface SandboxBridge {
   hydrate(input: BridgeHydrationInput, signal?: AbortSignal): Promise<BridgeHydrationResult>;
   checkpoint(input: BridgeCheckpointInput, signal?: AbortSignal): Promise<BridgeCheckpointResult>;
-  pause(input: BridgeLifecycleInput, signal?: AbortSignal): Promise<BridgeLifecycleResult>;
-  resume(input: BridgeLifecycleInput, signal?: AbortSignal): Promise<BridgeLifecycleResult>;
+  pause(input: BridgePauseInput, signal?: AbortSignal): Promise<BridgePauseResult>;
+  resume(input: BridgeResumeInput, signal?: AbortSignal): Promise<BridgeResumeResult>;
   destroy(input: BridgeDestroyInput, signal?: AbortSignal): Promise<BridgeDestroyResult>;
   openCodeStart(input: BridgeOpenCodeStartInput, signal?: AbortSignal): Promise<BridgeOpenCodeStartResult>;
   openCodeStop(input: BridgeOpenCodeStopInput, signal?: AbortSignal): Promise<BridgeOpenCodeStopResult>;
