@@ -128,6 +128,12 @@ const validateOpaqueIdInput = (value) => boundedString(value, 128, {
 
 const validateOperationIdInput = validateOpaqueIdInput;
 
+const validateSandboxRuntimeOperationIdInput = (value) => {
+  const operationId = validateOperationIdInput(value);
+  if (operationId.length > 63) fail('VALIDATION_FAILED');
+  return operationId;
+};
+
 const validateExpectedVersionInput = (value, { nullable = false, allowZero = false } = {}) => {
   if (nullable && value === null) return null;
   const minimum = allowZero ? 0 : 1;
@@ -919,7 +925,7 @@ export const createControlPlaneClient = ({
     { assertion, operationId, signal } = {},
   ) => {
     const encodedProjectId = encodeURIComponent(validateOpaqueIdInput(projectId));
-    const validatedOperationId = validateOperationIdInput(operationId);
+    const validatedOperationId = validateSandboxRuntimeOperationIdInput(operationId);
     const input = validateSandboxRuntimeInput(value, kind);
     return jsonRequest({
       method: 'POST',

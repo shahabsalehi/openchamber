@@ -549,6 +549,9 @@ async function handleSandboxRuntimeOperation(
     return methodNotAllowed('POST')
   }
   const operationId = validateOpaqueId(request.headers.get('X-Operation-Id'))
+  if (operationId.length > 63) {
+    throw new ControlPlaneFault('VALIDATION_FAILED')
+  }
   const body = sandboxRuntimeOperationBody(
     await readBoundedJson(request, MAX_JSON_BODY_BYTES),
     route.operationKind,

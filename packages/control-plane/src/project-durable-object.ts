@@ -30,6 +30,7 @@ import type {
   SandboxRuntimeOperationCompletion,
   SandboxRuntimeOperationKind,
   SandboxRuntimeOperationState,
+  SandboxRuntimePrivateOrphanProviderReference,
   SandboxRuntimePrivateSupervision,
   SandboxRuntimeReservationRecord,
   SandboxStatus,
@@ -987,7 +988,34 @@ export class ProjectDurableObject
     return this.#withResult(async () => {
       const context = await this.#authorizeContext(contextValue)
       const input = validateCompleteSandboxRuntimeOperationInput(inputValue)
+      const orphanProviderFingerprintValues = input.orphanProviders.flatMap((provider) => [
+        provider.providerId,
+        provider.handle,
+      ])
       const completionFingerprint = await operationFingerprint([
+        'sandbox-runtime-completion-v3',
+        context.scope.tenantId,
+        context.scope.projectId,
+        input.operationId,
+        String(input.expectedGeneration),
+        String(input.expectedRevision),
+        String(input.claimFence),
+        input.outcome,
+        input.provider?.providerId ?? 'null',
+        input.provider?.providerHandle ?? 'null',
+        input.provider?.status ?? 'null',
+        input.provider?.expiresAt === null || input.provider === null
+          ? 'null'
+          : String(input.provider.expiresAt),
+        input.supervision?.commandId ?? 'null',
+        input.supervision?.providerHandle ?? 'null',
+        input.supervision === null ? 'null' : String(input.supervision.generation),
+        input.supervision === null ? 'null' : String(input.supervision.port),
+        input.supervision?.username ?? 'null',
+        String(input.orphanProviders.length),
+        ...orphanProviderFingerprintValues,
+      ])
+      const legacyV2CompletionFingerprint = await operationFingerprint([
         'sandbox-runtime-completion-v2',
         context.scope.tenantId,
         context.scope.projectId,
@@ -1008,7 +1036,7 @@ export class ProjectDurableObject
         input.supervision === null ? 'null' : String(input.supervision.port),
         input.supervision?.username ?? 'null',
       ])
-      const legacyCompletionFingerprint = await operationFingerprint([
+      const legacyV1CompletionFingerprint = await operationFingerprint([
         'sandbox-runtime-completion-v1',
         context.scope.tenantId,
         context.scope.projectId,
@@ -1028,7 +1056,8 @@ export class ProjectDurableObject
         context.scope.projectId,
         input,
         completionFingerprint,
-        legacyCompletionFingerprint,
+        legacyV2CompletionFingerprint,
+        legacyV1CompletionFingerprint,
       )
     })
   }
@@ -2701,10 +2730,14 @@ export class ProjectDurableObject
     projectId: string,
     input: CompleteSandboxRuntimeOperationInput,
     completionFingerprint: string,
-    legacyCompletionFingerprint: string,
+    legacyV2CompletionFingerprint: string,
+    legacyV1CompletionFingerprint: string,
   ): SandboxRuntimeOperationCompletion {
     const now = Date.now()
-    const orphanJobId = opaqueId()
+    const orphanJobIds = Array.from(
+      { length: input.orphanProviders.length + (input.provider === null ? 0 : 1) },
+      opaqueId,
+    )
     let accepted = false
     let orphanCleanupRecorded = false
     let completionConflict = false
@@ -2719,22 +2752,29 @@ export class ProjectDurableObject
         throw new ControlPlaneFault('VERSION_CONFLICT')
       }
       if (operation.completion_fingerprint !== null) {
-        const matchesLegacyCompletion =
+        const mayReplayLegacyCompletion = input.orphanProviders.length === 0
+        const matchesLegacyV2Completion =
+          mayReplayLegacyCompletion &&
+          operation.completion_fingerprint === legacyV2CompletionFingerprint
+        const matchesLegacyV1Completion =
+          mayReplayLegacyCompletion &&
           input.supervision === null &&
-          operation.completion_fingerprint === legacyCompletionFingerprint
+          operation.completion_fingerprint === legacyV1CompletionFingerprint
         if (
           operation.completion_fingerprint !== completionFingerprint &&
-          !matchesLegacyCompletion
+          !matchesLegacyV2Completion &&
+          !matchesLegacyV1Completion
         ) {
           if (
             input.provider !== null &&
             !this.#runtimeCompletionProviderIsAdopted(operation, input.provider)
           ) {
-            orphanCleanupRecorded = this.#recordRuntimeOrphan(
+            orphanCleanupRecorded = this.#recordRuntimeOrphans(
               operation,
               input,
-              orphanJobId,
+              orphanJobIds,
               now,
+              false,
             )
             if (orphanCleanupRecorded) {
               return
@@ -2768,11 +2808,12 @@ export class ProjectDurableObject
         state.generation !== operation.target_generation ||
         state.lifecycle_revision !== operation.target_revision
       if (stale) {
-        orphanCleanupRecorded = this.#recordRuntimeOrphan(
+        orphanCleanupRecorded = this.#recordRuntimeOrphans(
           operation,
           input,
-          orphanJobId,
+          orphanJobIds,
           now,
+          true,
         )
         this.#execute(
           `UPDATE sandbox_runtime_operations
@@ -2788,11 +2829,12 @@ export class ProjectDurableObject
         return
       }
       if (input.outcome === 'outcomeUnknown') {
-        orphanCleanupRecorded = this.#recordRuntimeOrphan(
+        orphanCleanupRecorded = this.#recordRuntimeOrphans(
           operation,
           input,
-          orphanJobId,
+          orphanJobIds,
           now,
+          true,
         )
         if (operation.effect === 'checkpoint') {
           this.#execute(
@@ -2829,17 +2871,13 @@ export class ProjectDurableObject
         return
       }
       if (input.outcome === 'failed') {
-        if (
-          input.provider !== null &&
-          !this.#runtimeCompletionProviderIsAdopted(operation, input.provider)
-        ) {
-          orphanCleanupRecorded = this.#recordRuntimeOrphan(
-            operation,
-            input,
-            orphanJobId,
-            now,
-          )
-        }
+        orphanCleanupRecorded = this.#recordRuntimeOrphans(
+          operation,
+          input,
+          orphanJobIds,
+          now,
+          true,
+        )
         if (operation.effect === 'checkpoint') {
           this.#execute(
             `UPDATE sandbox_runtime_checkpoints SET state = 'failed', updated_at = ?
@@ -2878,22 +2916,31 @@ export class ProjectDurableObject
         input.provider !== null &&
         !this.#runtimeCompletionProviderIsAdopted(operation, input.provider)
       ) {
-        orphanCleanupRecorded = this.#recordRuntimeOrphan(
+        orphanCleanupRecorded = this.#recordRuntimeOrphans(
           operation,
           input,
-          orphanJobId,
+          orphanJobIds,
           now,
+          false,
         )
         completionConflict = true
         return
       }
       this.#completeSuccessfulRuntimeEffect(operation, input, now)
+      orphanCleanupRecorded = this.#recordRuntimeOrphans(
+        operation,
+        input,
+        orphanJobIds,
+        now,
+        true,
+      )
       this.#execute(
         `UPDATE sandbox_runtime_operations
             SET state = 'succeeded', completion_fingerprint = ?, completion_accepted = 1,
-                recovery_after = NULL, updated_at = ?
+                orphan_cleanup_recorded = ?, recovery_after = NULL, updated_at = ?
           WHERE operation_id = ? AND claim_fence = ?`,
         completionFingerprint,
+        orphanCleanupRecorded ? 1 : 0,
         now,
         operation.operation_id,
         input.claimFence,
@@ -2927,9 +2974,7 @@ export class ProjectDurableObject
     )
   }
 
-  #runtimeCompletionProviderIsCurrentlyAdopted(
-    provider: NonNullable<CompleteSandboxRuntimeOperationInput['provider']>,
-  ): boolean {
+  #runtimeProviderIsCurrentlyAdopted(providerId: string, providerHandle: string): boolean {
     const state = this.#runtimeStateRow()
     if (state?.lease_id === null || state?.lease_id === undefined) {
       return false
@@ -2938,33 +2983,64 @@ export class ProjectDurableObject
     return (
       lease !== null &&
       lease.generation === state.generation &&
-      lease.provider_id === provider.providerId &&
-      lease.provider_handle === provider.providerHandle
+      lease.provider_id === providerId &&
+      lease.provider_handle === providerHandle
     )
   }
 
-  #recordRuntimeOrphan(
+  #recordRuntimeOrphans(
     operation: RuntimeOperationRow,
     input: CompleteSandboxRuntimeOperationInput,
-    jobId: string,
+    jobIds: readonly string[],
     now: number,
+    includeExplicitProviders: boolean,
   ): boolean {
-    if (input.provider === null) {
-      return false
+    const candidates: SandboxRuntimePrivateOrphanProviderReference[] = []
+    if (input.provider !== null) {
+      candidates.push({
+        providerId: input.provider.providerId,
+        handle: input.provider.providerHandle,
+      })
     }
-    if (this.#runtimeCompletionProviderIsCurrentlyAdopted(input.provider)) {
-      return false
+    if (includeExplicitProviders) {
+      candidates.push(...input.orphanProviders)
     }
-    return this.#upsertRuntimeOrphan(
-      jobId,
-      operation.operation_id,
-      input.provider.providerId,
-      input.provider.providerHandle,
-      operation.target_generation,
-      operation.target_revision,
-      input.claimFence,
-      now,
-    )
+    const handlesByProvider = new Map<string, Set<string>>()
+    let nextJobId = 0
+    let recorded = false
+    for (const candidate of candidates) {
+      let handles = handlesByProvider.get(candidate.providerId)
+      if (handles === undefined) {
+        handles = new Set()
+        handlesByProvider.set(candidate.providerId, handles)
+      }
+      if (handles.has(candidate.handle)) {
+        continue
+      }
+      handles.add(candidate.handle)
+      if (this.#runtimeProviderIsCurrentlyAdopted(candidate.providerId, candidate.handle)) {
+        continue
+      }
+      const jobId = jobIds[nextJobId]
+      nextJobId += 1
+      if (
+        jobId === undefined ||
+        !this.#upsertRuntimeOrphan(
+          jobId,
+          operation.operation_id,
+          candidate.providerId,
+          candidate.handle,
+          operation.target_generation,
+          operation.target_revision,
+          input.claimFence,
+          now,
+        )
+      ) {
+        throw new ControlPlaneFault('INTEGRITY_ERROR')
+      }
+      recorded = true
+    }
+    return recorded
   }
 
   #upsertRuntimeOrphan(
@@ -3356,7 +3432,10 @@ export class ProjectDurableObject
   }
 
   #assertLeaseExpiry(status: SandboxStatus, expiresAt: number | null, now: number): void {
-    if (expiresAt !== null && expiresAt <= now && isActiveLeaseStatus(status)) {
+    if (isActiveLeaseStatus(status) && (expiresAt === null || expiresAt <= now)) {
+      // pending and unknown are pre-creation/uncertain states where null expiry is valid.
+      // Only require finite expiry when a sandbox actually exists.
+      if (status === 'pending' || status === 'unknown') return
       throw new ControlPlaneFault('INVALID_TRANSITION')
     }
   }

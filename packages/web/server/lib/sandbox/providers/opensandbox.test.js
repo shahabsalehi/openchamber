@@ -4,6 +4,28 @@ import { SANDBOX_ERROR_CODES } from '../errors.js';
 import { createOpenSandboxProvider } from './opensandbox.js';
 
 const API_KEY = 'open-sandbox-secret-key';
+const ownershipMetadata = Object.freeze({
+  environment: 'non-production',
+  projectId: 'project-123',
+  sessionId: 'session-123',
+  generation: 2,
+  operationId: 'operation-123',
+});
+const denyNetworkPolicy = Object.freeze({
+  defaultAction: 'deny',
+  egress: Object.freeze([
+    Object.freeze({ action: 'allow', target: '*.example.com' }),
+  ]),
+});
+const createInput = (overrides = {}) => ({
+  imageUri: 'runtime:latest',
+  entrypoint: ['sleep', '60'],
+  resourceLimits: { cpu: '1', memory: '1Gi' },
+  timeoutSeconds: 3600,
+  metadata: ownershipMetadata,
+  networkPolicy: denyNetworkPolicy,
+  ...overrides,
+});
 
 const systemClock = {
   now: () => new Date('2026-01-01T00:00:00.000Z'),
@@ -41,13 +63,11 @@ describe('OpenSandbox provider adapter', () => {
     }));
     const provider = createProvider(fetchImpl);
 
-    const record = await provider.create({
+    const record = await provider.create(createInput({
       imageUri: 'ghcr.io/openchamber/runtime:latest',
       entrypoint: ['node', 'server.js'],
-      timeoutSeconds: 3600,
       resourceLimits: { cpu: '2', memory: '4Gi' },
-      metadata: { owner: 'session-runtime' },
-    });
+    }));
 
     expect(record).toEqual({
       handle: 'sandbox-123',
@@ -69,7 +89,14 @@ describe('OpenSandbox provider adapter', () => {
       entrypoint: ['node', 'server.js'],
       timeout: 3600,
       resourceLimits: { cpu: '2', memory: '4Gi' },
-      metadata: { owner: 'session-runtime' },
+      metadata: {
+        'drarticle.io/environment': 'non-production',
+        'drarticle.io/project': 'project-123',
+        'drarticle.io/session': 'session-123',
+        'drarticle.io/generation': '2',
+        'drarticle.io/operation': 'operation-123',
+      },
+      networkPolicy: denyNetworkPolicy,
     });
     expect(String(url)).not.toContain(API_KEY);
     expect(init.body).not.toContain(API_KEY);
@@ -96,7 +123,7 @@ describe('OpenSandbox provider adapter', () => {
     });
   });
 
-  it('maps unknown states, omits provider details, and normalizes omitted expiry to null', async () => {
+  it('maps unknown states and omits provider details', async () => {
     const providerSecret = 'provider-status-secret';
     const provider = createProvider(mock(async () => Response.json(sandboxPayload({
       status: {
@@ -104,7 +131,6 @@ describe('OpenSandbox provider adapter', () => {
         reason: providerSecret,
         message: providerSecret,
       },
-      expiresAt: undefined,
     }))));
 
     const record = await provider.get('sandbox-123');
@@ -113,7 +139,7 @@ describe('OpenSandbox provider adapter', () => {
       handle: 'sandbox-123',
       status: 'unknown',
       createdAt: '2026-01-01T00:00:00.000Z',
-      expiresAt: null,
+      expiresAt: '2026-01-01T01:00:00.000Z',
     });
     expect(JSON.stringify(record)).not.toContain(providerSecret);
     expect(record).not.toHaveProperty('reason');
@@ -123,20 +149,24 @@ describe('OpenSandbox provider adapter', () => {
   it('requires the current create schema, string limits, and bounded lifecycle timeout', async () => {
     const fetchImpl = mock();
     const provider = createProvider(fetchImpl);
-    const validInput = {
-      imageUri: 'runtime:latest',
-      entrypoint: ['sleep', '60'],
-      resourceLimits: { cpu: '1', memory: '1Gi' },
-    };
+    const validInput = createInput();
     const invalidInputs = [
-      { imageUri: 'runtime:latest', resourceLimits: validInput.resourceLimits },
+      { ...validInput, entrypoint: undefined },
       { ...validInput, entrypoint: [] },
-      { imageUri: 'runtime:latest', entrypoint: validInput.entrypoint },
+      { ...validInput, resourceLimits: undefined },
       { ...validInput, resourceLimits: {} },
       { ...validInput, resourceLimits: { cpu: 1 } },
+      { ...validInput, timeoutSeconds: undefined },
       { ...validInput, timeoutSeconds: 59 },
       { ...validInput, timeoutSeconds: 86_401 },
       { ...validInput, timeoutSeconds: 60.5 },
+      { ...validInput, metadata: undefined },
+      { ...validInput, metadata: { ...ownershipMetadata, environment: 'production' } },
+      { ...validInput, metadata: { ...ownershipMetadata, projectId: 'bad/value' } },
+      { ...validInput, networkPolicy: undefined },
+      { ...validInput, networkPolicy: {} },
+      { ...validInput, networkPolicy: { defaultAction: 'allow', egress: [] } },
+      { ...validInput, networkPolicy: { defaultAction: 'deny', egress: [{ action: 'allow', target: '*' }] } },
     ];
 
     for (const input of invalidInputs) {
@@ -243,11 +273,7 @@ describe('OpenSandbox provider adapter', () => {
 
   it('rejects unexpected success statuses and malformed response bodies', async () => {
     const wrongStatusProvider = createProvider(mock(async () => Response.json(sandboxPayload(), { status: 201 })));
-    await expect(wrongStatusProvider.create({
-      imageUri: 'runtime:latest',
-      entrypoint: ['sleep', '60'],
-      resourceLimits: { cpu: '1' },
-    })).rejects.toMatchObject({
+    await expect(wrongStatusProvider.create(createInput())).rejects.toMatchObject({
       code: SANDBOX_ERROR_CODES.RESPONSE_INVALID,
       status: 201,
     });
@@ -262,11 +288,7 @@ describe('OpenSandbox provider adapter', () => {
       status: { state: 'Running' },
       expiresAt: null,
     }, { status: 202 })));
-    await expect(missingFieldProvider.create({
-      imageUri: 'runtime:latest',
-      entrypoint: ['sleep', '60'],
-      resourceLimits: { cpu: '1' },
-    })).rejects.toMatchObject({
+    await expect(missingFieldProvider.create(createInput())).rejects.toMatchObject({
       code: SANDBOX_ERROR_CODES.RESPONSE_INVALID,
     });
   });
@@ -292,11 +314,7 @@ describe('OpenSandbox provider adapter', () => {
 
     let capturedError;
     try {
-      await provider.create({
-        imageUri: 'runtime:latest',
-        entrypoint: ['sleep', '60'],
-        resourceLimits: { cpu: '1' },
-      });
+      await provider.create(createInput());
     } catch (error) {
       capturedError = error;
     }
@@ -316,12 +334,7 @@ describe('OpenSandbox provider adapter', () => {
     }, { status: 202 }));
     const provider = createProvider(fetchImpl);
 
-    await expect(provider.create({
-      imageUri: 'runtime:latest',
-      entrypoint: ['sleep', '60'],
-      resourceLimits: { cpu: '1' },
-      timeoutSeconds: 60,
-    })).rejects.toMatchObject({
+    await expect(provider.create(createInput({ timeoutSeconds: 60 }))).rejects.toMatchObject({
       code: SANDBOX_ERROR_CODES.RESPONSE_INVALID,
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -331,6 +344,7 @@ describe('OpenSandbox provider adapter', () => {
     const invalidPayloads = [
       sandboxPayload({ createdAt: '2026-02-30T00:00:00.000Z' }),
       sandboxPayload({ expiresAt: '2026-01-01T01:00:00' }),
+      sandboxPayload({ expiresAt: undefined }),
       sandboxPayload({ status: {} }),
       sandboxPayload({ status: { state: '' } }),
     ];
@@ -352,6 +366,187 @@ describe('OpenSandbox provider adapter', () => {
     await expect(provider.getEndpoint('sandbox-123', { port: 8080 })).rejects.toMatchObject({
       code: SANDBOX_ERROR_CODES.RESPONSE_INVALID,
     });
+  });
+
+  it('polls an accepted create to Running without repeating POST', async () => {
+    const fetchImpl = mock(async (_url, init) => {
+      if (init.method === 'POST') {
+        return Response.json(sandboxPayload({ status: { state: 'Pending' } }), { status: 202 });
+      }
+      return Response.json(sandboxPayload({ status: { state: 'Running' } }));
+    });
+    const provider = createProvider(fetchImpl);
+
+    await expect(provider.create(createInput())).resolves.toMatchObject({ status: 'running' });
+    expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+    expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'GET')).toHaveLength(1);
+  });
+
+  it('bounds create polling when the provider remains in an unknown state', async () => {
+    let nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+    const clock = {
+      now: () => new Date(nowMs),
+      setTimeout: (callback, delayMs) => {
+        if (delayMs === 500) {
+          nowMs += delayMs;
+          queueMicrotask(callback);
+        }
+        return { delayMs };
+      },
+      clearTimeout: () => {},
+    };
+    const fetchImpl = mock(async (_url, init) => Response.json(sandboxPayload({
+      status: { state: init.method === 'POST' ? 'Pending' : 'Provisioning' },
+    }), { status: init.method === 'POST' ? 202 : 200 }));
+    const provider = createProvider(fetchImpl, { clock });
+
+    await expect(provider.create(createInput())).rejects.toMatchObject({
+      code: SANDBOX_ERROR_CODES.REQUEST_TIMEOUT,
+    });
+    expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+    expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'GET').length).toBeLessThanOrEqual(20);
+  });
+
+  it.each([
+    [404, SANDBOX_ERROR_CODES.NOT_FOUND],
+    [409, SANDBOX_ERROR_CODES.CONFLICT],
+  ])('maps pause HTTP %s without polling or repeating POST', async (status, code) => {
+    const fetchImpl = mock(async () => new Response(null, { status }));
+    const provider = createProvider(fetchImpl);
+
+    await expect(provider.lifecycle.pause('sandbox-123')).rejects.toMatchObject({ code, status });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0][1].method).toBe('POST');
+  });
+
+  it('requires an empty 202 pause response', async () => {
+    const fetchImpl = mock(async () => new Response('{}', { status: 202 }));
+    const provider = createProvider(fetchImpl);
+
+    await expect(provider.lifecycle.pause('sandbox-123')).rejects.toMatchObject({
+      code: SANDBOX_ERROR_CODES.RESPONSE_INVALID,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists with repeated ownership metadata and strict pagination', async () => {
+    const providerMetadata = {
+      'drarticle.io/environment': 'non-production',
+      'drarticle.io/project': 'project-123',
+      'drarticle.io/session': 'session-123',
+      'drarticle.io/generation': '2',
+      'drarticle.io/operation': 'operation-123',
+    };
+    const fetchImpl = mock(async () => Response.json({
+      items: [sandboxPayload({ metadata: providerMetadata })],
+      pagination: {
+        page: 1,
+        pageSize: 50,
+        totalItems: 1,
+        totalPages: 1,
+        hasNextPage: false,
+      },
+    }));
+    const provider = createProvider(fetchImpl);
+
+    const result = await provider.list({ metadata: ownershipMetadata, page: 1, pageSize: 50 });
+    expect(result).toEqual({
+      items: [{
+        handle: 'sandbox-123',
+        status: 'running',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        expiresAt: '2026-01-01T01:00:00.000Z',
+        metadata: ownershipMetadata,
+      }],
+      page: 1,
+      pageSize: 50,
+      hasMore: false,
+    });
+    const url = new URL(fetchImpl.mock.calls[0][0]);
+    expect(url.searchParams.getAll('metadata')).toEqual([
+      'drarticle.io/environment=non-production',
+      'drarticle.io/project=project-123',
+      'drarticle.io/session=session-123',
+      'drarticle.io/generation=2',
+      'drarticle.io/operation=operation-123',
+    ]);
+    expect(url.searchParams.get('page')).toBe('1');
+    expect(url.searchParams.get('pageSize')).toBe('50');
+    expect(String(fetchImpl.mock.calls[0][0])).toContain('drarticle.io%2Fenvironment%3Dnon-production');
+  });
+
+  it('rejects oversized list pages before fetch and malformed pagination after fetch', async () => {
+    const fetchImpl = mock(async () => Response.json({
+      items: [],
+      pagination: {
+        page: 2,
+        pageSize: 50,
+        totalItems: 0,
+        totalPages: 0,
+        hasNextPage: false,
+      },
+    }));
+    const provider = createProvider(fetchImpl);
+    await expect(provider.list({ metadata: ownershipMetadata, page: 1, pageSize: 201 }))
+      .rejects.toMatchObject({ code: SANDBOX_ERROR_CODES.VALIDATION_FAILED });
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    await expect(provider.list({ metadata: ownershipMetadata, page: 1, pageSize: 50 }))
+      .rejects.toMatchObject({ code: SANDBOX_ERROR_CODES.RESPONSE_INVALID });
+  });
+
+  it('renews once with an absolute expiry and returns only safe renewal data', async () => {
+    const expiresAt = '2026-01-01T02:00:00.000Z';
+    const fetchImpl = mock(async () => Response.json({
+      id: 'sandbox-123',
+      expiresAt,
+      providerSecret: API_KEY,
+    }));
+    const provider = createProvider(fetchImpl);
+
+    await expect(provider.renewExpiration('sandbox-123', expiresAt)).resolves.toEqual({
+      handle: 'sandbox-123',
+      expiresAt,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0][0])).toMatch(/\/sandboxes\/sandbox-123\/renew-expiration$/);
+    expect(fetchImpl.mock.calls[0][1].method).toBe('POST');
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ expiresAt });
+  });
+
+  it('reconciles an ambiguous renew with GET without repeating POST', async () => {
+    const expiresAt = '2026-01-01T02:00:00.000Z';
+    const fetchImpl = mock(async (_url, init) => {
+      if (init.method === 'POST') throw new Error('ambiguous transport failure');
+      return Response.json(sandboxPayload({ expiresAt }));
+    });
+    const provider = createProvider(fetchImpl);
+
+    await expect(provider.renewExpiration('sandbox-123', expiresAt)).resolves.toEqual({
+      handle: 'sandbox-123',
+      expiresAt,
+    });
+    expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+    expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'GET')).toHaveLength(1);
+  });
+
+  it('preserves opaque WebSocket endpoint headers and rejects API-key injection', async () => {
+    const routingHeaders = { 'X-Route-Token': 'opaque-routing-token' };
+    const provider = createProvider(mock(async () => Response.json({
+      endpoint: 'wss://sandbox-123.example/socket',
+      headers: routingHeaders,
+    })));
+    await expect(provider.getEndpoint('sandbox-123', { port: 8080 })).resolves.toEqual({
+      endpoint: 'wss://sandbox-123.example/socket',
+      headers: routingHeaders,
+    });
+
+    const unsafeProvider = createProvider(mock(async () => Response.json({
+      endpoint: 'https://sandbox-123.example',
+      headers: { 'open-sandbox-api-key': 'must-not-propagate' },
+    })));
+    await expect(unsafeProvider.getEndpoint('sandbox-123', { port: 8080 }))
+      .rejects.toMatchObject({ code: SANDBOX_ERROR_CODES.RESPONSE_INVALID });
   });
 
   it('settles at the configured timeout when fetch ignores abort', async () => {
@@ -431,9 +626,9 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url, init) => {
         const urlStr = String(url);
         if (urlStr.includes('/pause')) {
-          return Response.json(sandboxPayload({ status: { state: 'Paused' } }));
+          return new Response(null, { status: 202 });
         }
-        return new Response('{}', { status: 200 });
+        return Response.json(sandboxPayload({ status: { state: 'Paused' } }));
       });
       const provider = createProvider(fetchImpl);
       const record = await provider.lifecycle.pause('sandbox-123');
@@ -447,11 +642,11 @@ describe('OpenSandbox bridge adapter', () => {
     });
 
     it('resume sends POST to /sandboxes/{id}/resume', async () => {
-      const fetchImpl = mock(async (url) => {
+      const fetchImpl = mock(async (url, init) => {
         if (String(url).includes('/resume')) {
-          return Response.json(sandboxPayload({ status: { state: 'Running' } }));
+          return new Response(null, { status: 202 });
         }
-        return new Response('{}', { status: 200 });
+        return Response.json(sandboxPayload({ status: { state: 'Running' } }));
       });
       const provider = createProvider(fetchImpl);
       const record = await provider.lifecycle.resume('sandbox-123');
@@ -490,7 +685,13 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url, init) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({
+            endpoint: 'https://execd.example',
+            headers: {
+              'X-EXECD-ACCESS-TOKEN': execdToken,
+              'X-ROUTING-TOKEN': 'routing-token',
+            },
+          });
         }
         if (urlStr.endsWith('/command') || urlStr.includes('/command')) {
           return new Response('data: {"commandId":"cmd-bg-1","event":"accepted"}\n\n', {
@@ -520,6 +721,7 @@ describe('OpenSandbox bridge adapter', () => {
       expect(body.cwd).toBe('/workspace/project');
       expect(body.envs).toEqual({ HOME: '/root' });
       expect(commandCall[1].headers['X-EXECD-ACCESS-TOKEN']).toBe(execdToken);
+      expect(commandCall[1].headers['X-ROUTING-TOKEN']).toBe('routing-token');
       expect(commandCall[1].headers['Accept']).toBe('text/event-stream');
       expect(commandCall[1].headers['OPEN-SANDBOX-API-KEY']).toBeUndefined();
     });
@@ -819,6 +1021,26 @@ describe('OpenSandbox bridge adapter', () => {
           expect(init.redirect).toBe('error');
         }
       }
+    });
+
+    it('rejects endpoint header collisions instead of overwriting request headers', async () => {
+      const fetchImpl = mock(async (url) => {
+        if (String(url).includes('endpoints/44772')) {
+          return Response.json({
+            endpoint: 'https://execd.example',
+            headers: { 'content-type': 'provider-value' },
+          });
+        }
+        return new Response('data: {"commandId":"must-not-run","event":"accepted"}\n\n', {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      });
+      const provider = createProvider(fetchImpl);
+
+      await expect(provider.command.runBackground('sandbox-123', { command: 'echo test' }))
+        .rejects.toMatchObject({ code: SANDBOX_ERROR_CODES.RESPONSE_INVALID });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
     });
   });
 });

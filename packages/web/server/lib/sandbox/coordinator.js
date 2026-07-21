@@ -2,6 +2,7 @@ import {
   SANDBOX_ERROR_CODES,
   SandboxRuntimeError,
 } from './errors.js';
+import { normalizeSandboxCreateInput } from './validation.js';
 
 const COORDINATOR_CODES = Object.freeze({
   COMPLETED: 'SANDBOX_COORDINATOR_COMPLETED',
@@ -47,9 +48,21 @@ const EFFECT_BY_KIND = Object.freeze({
 });
 
 const EFFECTS = new Set(['start', 'stop', 'resume', 'destroy', 'checkpoint']);
+const SANDBOX_STATUSES = new Set([
+  'pending',
+  'running',
+  'pausing',
+  'paused',
+  'resuming',
+  'stopping',
+  'terminated',
+  'failed',
+  'unknown',
+]);
 const MAX_SNAPSHOT_FILE_COUNT = 8192;
 const MAX_SNAPSHOT_FILE_BYTES = 1024 * 1024;
 const MAX_SNAPSHOT_AGGREGATE_BYTES = 64 * 1024 * 1024;
+const MAX_ORPHAN_PROVIDERS = 200;
 const DIAGNOSTIC_PHASES = new Set(['queued', 'claimed', 'begun', 'effect', 'completion']);
 const DIAGNOSTIC_OUTCOMES = new Set([
   'succeeded',
@@ -64,6 +77,7 @@ const MUTATION_AMBIGUITY_CODES = new Set([
   SANDBOX_ERROR_CODES.REQUEST_TIMEOUT,
   SANDBOX_ERROR_CODES.RESPONSE_INVALID,
 ]);
+const TERMINAL_SANDBOX_STATUSES = new Set(['terminated', 'failed']);
 const COMPLETION_RETRY_CODES = new Set([
   'PROVIDER_UNAVAILABLE',
   'PROVIDER_RESPONSE_INVALID',
@@ -98,6 +112,12 @@ class CompletionTransportError extends Error {
 }
 
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+const hasExactKeys = (value, expectedKeys) => {
+  const keys = Object.keys(value);
+  return keys.length === expectedKeys.length
+    && keys.every((key) => expectedKeys.includes(key));
+};
 
 const safeCode = (value, fallback = SANDBOX_ERROR_CODES.PROVIDER_FAILURE) => (
   typeof value === 'string' && SAFE_DIAGNOSTIC_CODES.has(value) ? value : fallback
@@ -151,6 +171,7 @@ const normalizeOperation = (value) => {
   if (!isRecord(value)
     || typeof value.operationId !== 'string'
     || !OPAQUE_ID_PATTERN.test(value.operationId)
+    || value.operationId.length > 63
     || !Number.isSafeInteger(value.expectedGeneration)
     || value.expectedGeneration < 1
     || !Number.isSafeInteger(value.expectedRevision)
@@ -182,6 +203,42 @@ const normalizeProviderReference = (value) => {
     providerId: value.providerId.trim(),
     providerHandle: value.providerHandle.trim(),
   });
+};
+
+const normalizeOrphanProvider = (value) => {
+  if (!isRecord(value) || !hasExactKeys(value, ['providerId', 'handle'])) {
+    throw responseError();
+  }
+  const provider = normalizeProviderReference({
+    providerId: value.providerId,
+    providerHandle: value.handle,
+  });
+  return Object.freeze({
+    providerId: provider.providerId,
+    handle: provider.providerHandle,
+  });
+};
+
+const canonicalizeOrphanProviders = (values, provider = null) => {
+  if (!Array.isArray(values)) throw responseError();
+  const unique = new Map();
+  for (const value of values) {
+    const candidate = normalizeOrphanProvider(value);
+    if (provider !== null
+      && candidate.providerId === provider.providerId
+      && candidate.handle === provider.providerHandle) {
+      continue;
+    }
+    unique.set(JSON.stringify([candidate.providerId, candidate.handle]), candidate);
+  }
+  if (unique.size > MAX_ORPHAN_PROVIDERS) throw responseError();
+  return Object.freeze(Array.from(unique.values()).sort((left, right) => {
+    if (left.providerId < right.providerId) return -1;
+    if (left.providerId > right.providerId) return 1;
+    if (left.handle < right.handle) return -1;
+    if (left.handle > right.handle) return 1;
+    return 0;
+  }));
 };
 
 const normalizeSupervision = (value, providerHandle, generation) => {
@@ -333,11 +390,114 @@ const normalizeSnapshot = (value) => {
 };
 
 const expiresAtMilliseconds = (expiresAt, clock) => {
-  if (expiresAt === null) return null;
   if (typeof expiresAt !== 'string') throw responseError();
   const milliseconds = Date.parse(expiresAt);
   if (!Number.isFinite(milliseconds) || milliseconds <= nowMs(clock)) throw responseError();
   return milliseconds;
+};
+
+const normalizeReconciliationCandidate = (value, clock) => {
+  if (!isRecord(value)
+    || !hasExactKeys(value, [
+      'providerId',
+      'handle',
+      'status',
+      'createdAt',
+      'expiresAt',
+    ])
+    || !SANDBOX_STATUSES.has(value.status)
+    || typeof value.createdAt !== 'string'
+    || !Number.isFinite(Date.parse(value.createdAt))) {
+    throw responseError();
+  }
+  const provider = normalizeOrphanProvider({
+    providerId: value.providerId,
+    handle: value.handle,
+  });
+  expiresAtMilliseconds(value.expiresAt, clock);
+  return Object.freeze({ ...provider, status: value.status });
+};
+
+const reconciliationOrphanProvider = (candidate) => Object.freeze({
+  providerId: candidate.providerId,
+  handle: candidate.handle,
+});
+
+const normalizeReconciliation = (value, clock) => {
+  if (!isRecord(value) || typeof value.outcome !== 'string') throw responseError();
+  if (value.outcome === 'none') {
+    if (!hasExactKeys(value, ['outcome'])) throw responseError();
+    return Object.freeze({ outcome: 'none' });
+  }
+  if (value.outcome === 'adopted') {
+    if (!hasExactKeys(value, ['outcome', 'lease'])
+      || !isRecord(value.lease)
+      || !hasExactKeys(value.lease, [
+        'providerId',
+        'handle',
+        'status',
+        'createdAt',
+        'expiresAt',
+        'cleanupPending',
+      ])
+      || value.lease.cleanupPending !== false) {
+      throw responseError();
+    }
+    const candidate = normalizeReconciliationCandidate({
+      providerId: value.lease.providerId,
+      handle: value.lease.handle,
+      status: value.lease.status,
+      createdAt: value.lease.createdAt,
+      expiresAt: value.lease.expiresAt,
+    }, clock);
+    if (candidate.status !== 'running') throw responseError();
+    return Object.freeze({
+      outcome: 'adopted',
+      provider: normalizeCreatedSandbox(value.lease, clock),
+    });
+  }
+  if (value.outcome === 'terminal') {
+    if (!hasExactKeys(value, ['outcome', 'candidate'])) throw responseError();
+    const candidate = normalizeReconciliationCandidate(value.candidate, clock);
+    if (!TERMINAL_SANDBOX_STATUSES.has(candidate.status)) throw responseError();
+    return Object.freeze({ outcome: 'terminal', candidate });
+  }
+  if (value.outcome === 'unresolved') {
+    if (!hasExactKeys(value, ['outcome', 'candidate'])) throw responseError();
+    return Object.freeze({
+      outcome: 'unresolved',
+      candidate: value.candidate === null
+        ? null
+        : normalizeReconciliationCandidate(value.candidate, clock),
+    });
+  }
+  if (value.outcome === 'multiple') {
+    if (!hasExactKeys(value, ['outcome', 'candidates'])
+      || !Array.isArray(value.candidates)
+      || value.candidates.length < 2) {
+      throw responseError();
+    }
+    const candidates = value.candidates.map((candidate) => (
+      normalizeReconciliationCandidate(candidate, clock)
+    ));
+    return Object.freeze({
+      outcome: 'multiple',
+      candidates: canonicalizeOrphanProviders(
+        candidates.map(reconciliationOrphanProvider),
+      ),
+    });
+  }
+  throw responseError();
+};
+
+const normalizeClaimCreateInput = (value, claim) => {
+  const input = normalizeSandboxCreateInput(value);
+  if (input.metadata.sessionId !== claim.sessionId
+    || input.metadata.generation !== claim.generation
+    || input.metadata.operationId !== claim.operationId) {
+    throw validationError();
+  }
+  return input;
 };
 
 const normalizeCreatedSandbox = (value, clock) => {
@@ -378,7 +538,13 @@ const salvageCreatedProvider = (value) => {
   }
 };
 
-const completionPayload = (claim, outcome, provider, supervision) => Object.freeze({
+const completionPayload = (
+  claim,
+  outcome,
+  provider,
+  supervision,
+  orphanProviders = [],
+) => Object.freeze({
   operationId: claim.operationId,
   expectedGeneration: claim.generation,
   expectedRevision: claim.lifecycleRevision,
@@ -386,6 +552,7 @@ const completionPayload = (claim, outcome, provider, supervision) => Object.free
   outcome,
   provider,
   supervision,
+  orphanProviders: canonicalizeOrphanProviders(orphanProviders, provider),
 });
 
 const bridgeFields = (claim, kind, extra = {}) => ({
@@ -500,6 +667,7 @@ export const createSandboxLifecycleCoordinator = ({
   const beginEffect = assertFunction(authority.beginSandboxRuntimeEffect);
   const completeOperation = assertFunction(authority.completeSandboxRuntimeOperation);
   const createSandbox = assertFunction(runtime.create);
+  const reconcileSandbox = assertFunction(runtime.reconcile);
   const destroyLocalSandbox = assertFunction(runtime.destroy);
   const listLocalSandboxes = assertFunction(runtime.list);
   const hydrate = assertFunction(bridge.hydrate);
@@ -609,12 +777,20 @@ export const createSandboxLifecycleCoordinator = ({
     }
   };
 
-  const runStart = async (claim, snapshot, resolvedCreateInput, deadline) => {
-    let createdRaw = null;
-    let createdProvider = null;
+  const failedStartResult = (error, deadline, outcome, provider = null, orphanProviders = []) => (
+    Object.freeze({
+      outcome,
+      provider,
+      supervision: null,
+      orphanProviders,
+      code: errorCode(error, deadline.expired()
+        ? COORDINATOR_CODES.OPERATION_TIMEOUT
+        : SANDBOX_ERROR_CODES.PROVIDER_FAILURE),
+    })
+  );
+
+  const continueStart = async (claim, snapshot, createdProvider, deadline) => {
     try {
-      createdRaw = await createSandbox.call(runtime, resolvedCreateInput);
-      createdProvider = normalizeCreatedSandbox(createdRaw, clock);
       if (deadline.expired()) throw new CompletionTransportError(COORDINATOR_CODES.OPERATION_TIMEOUT);
 
       await hydrate.call(bridge, bridgeFields(claim, 'hydrate', {
@@ -636,39 +812,103 @@ export const createSandboxLifecycleCoordinator = ({
         outcome: 'succeeded',
         provider: createdProvider,
         supervision,
+        orphanProviders: [],
         code: COORDINATOR_CODES.COMPLETED,
       });
     } catch (error) {
-      const orphanProvider = createdProvider ?? salvageCreatedProvider(createdRaw);
-      if (orphanProvider !== null) {
-        const destroyed = await confirmLocalDestroy(orphanProvider.providerHandle);
-        if (destroyed) {
-          return Object.freeze({
-            outcome: 'failed',
-            provider: null,
-            supervision: null,
-            code: errorCode(error, deadline.expired()
-              ? COORDINATOR_CODES.OPERATION_TIMEOUT
-              : SANDBOX_ERROR_CODES.PROVIDER_FAILURE),
-          });
-        }
-        return Object.freeze({
-          outcome: 'outcomeUnknown',
-          provider: Object.freeze({ ...orphanProvider, status: 'unknown', expiresAt: null }),
-          supervision: null,
-          code: errorCode(error, deadline.expired()
-            ? COORDINATOR_CODES.OPERATION_TIMEOUT
-            : SANDBOX_ERROR_CODES.PROVIDER_FAILURE),
-        });
+      const destroyed = await confirmLocalDestroy(createdProvider.providerHandle);
+      if (destroyed) {
+        return failedStartResult(error, deadline, 'failed');
       }
+      return failedStartResult(
+        error,
+        deadline,
+        'outcomeUnknown',
+        Object.freeze({ ...createdProvider, status: 'unknown', expiresAt: null }),
+      );
+    }
+  };
+
+  const reconcileAmbiguousStart = async (
+    claim,
+    snapshot,
+    resolvedCreateInput,
+    deadline,
+    ambiguousError,
+  ) => {
+    const ambiguousCode = errorCode(ambiguousError, deadline.expired()
+      ? COORDINATOR_CODES.OPERATION_TIMEOUT
+      : SANDBOX_ERROR_CODES.PROVIDER_FAILURE);
+    const unresolved = (orphanProviders = []) => Object.freeze({
+      outcome: 'outcomeUnknown',
+      provider: null,
+      supervision: null,
+      orphanProviders,
+      code: ambiguousCode,
+    });
+
+    let reconciliation;
+    try {
+      reconciliation = normalizeReconciliation(await reconcileSandbox.call(runtime, {
+        metadata: resolvedCreateInput.metadata,
+        timeoutSeconds: resolvedCreateInput.timeoutSeconds,
+        signal: deadline.signal,
+      }), clock);
+    } catch (_error) {
+      return unresolved();
+    }
+
+    if (reconciliation.outcome === 'adopted') {
+      return continueStart(claim, snapshot, reconciliation.provider, deadline);
+    }
+    if (reconciliation.outcome === 'terminal') {
       return Object.freeze({
-        outcome: isMutationAmbiguous(error, deadline) ? 'outcomeUnknown' : 'failed',
+        outcome: 'failed',
         provider: null,
         supervision: null,
-        code: errorCode(error, deadline.expired()
-          ? COORDINATOR_CODES.OPERATION_TIMEOUT
-          : SANDBOX_ERROR_CODES.PROVIDER_FAILURE),
+        orphanProviders: [reconciliationOrphanProvider(reconciliation.candidate)],
+        code: ambiguousCode,
       });
+    }
+    if (reconciliation.outcome === 'unresolved') {
+      return unresolved(reconciliation.candidate === null
+        ? []
+        : [reconciliationOrphanProvider(reconciliation.candidate)]);
+    }
+    if (reconciliation.outcome === 'multiple') {
+      return unresolved(reconciliation.candidates);
+    }
+    return unresolved();
+  };
+
+  const runStart = async (claim, snapshot, resolvedCreateInput, deadline) => {
+    let createdRaw = null;
+    try {
+      createdRaw = await createSandbox.call(runtime, resolvedCreateInput);
+      const createdProvider = normalizeCreatedSandbox(createdRaw, clock);
+      return continueStart(claim, snapshot, createdProvider, deadline);
+    } catch (error) {
+      const orphanProvider = salvageCreatedProvider(createdRaw);
+      if (orphanProvider !== null) {
+        const destroyed = await confirmLocalDestroy(orphanProvider.providerHandle);
+        if (destroyed) return failedStartResult(error, deadline, 'failed');
+        return failedStartResult(
+          error,
+          deadline,
+          'outcomeUnknown',
+          Object.freeze({ ...orphanProvider, status: 'unknown', expiresAt: null }),
+        );
+      }
+      if (isMutationAmbiguous(error, deadline)) {
+        return reconcileAmbiguousStart(
+          claim,
+          snapshot,
+          resolvedCreateInput,
+          deadline,
+          error,
+        );
+      }
+      return failedStartResult(error, deadline, 'failed');
     }
   };
 
@@ -912,8 +1152,10 @@ export const createSandboxLifecycleCoordinator = ({
           const resolvedCreateInput = typeof createInput === 'function'
             ? await createInput({ claim, snapshot, signal: deadline.signal })
             : createInput;
-          if (!isRecord(resolvedCreateInput)) throw validationError();
-          preflight = Object.freeze({ snapshot, createInput: resolvedCreateInput });
+          preflight = Object.freeze({
+            snapshot,
+            createInput: normalizeClaimCreateInput(resolvedCreateInput, claim),
+          });
         } catch (error) {
           const code = errorCode(error, COORDINATOR_CODES.PREFLIGHT_FAILED);
           emitDiagnostic(operation.operationId, 'claimed', effect, 'ignored', code);
@@ -971,6 +1213,7 @@ export const createSandboxLifecycleCoordinator = ({
         effectResult.outcome,
         effectResult.provider,
         effectResult.supervision,
+        effectResult.orphanProviders,
       );
       const completion = await complete(claim, payload);
       if (!completion.confirmed || completion.value === null || completion.value.accepted !== true) {

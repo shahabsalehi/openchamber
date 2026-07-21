@@ -4,10 +4,43 @@ import { createSandboxLifecycleCoordinator } from './coordinator.js';
 import { SANDBOX_ERROR_CODES, SandboxRuntimeError } from './errors.js';
 
 const FUTURE_EXPIRY = '2099-01-01T00:00:00.000Z';
-const CREATE_INPUT = Object.freeze({
+const CREATE_INPUT_BASE = Object.freeze({
   imageUri: 'sandbox:test',
   entrypoint: ['sleep', '3600'],
   resourceLimits: { cpu: '1', memory: '1Gi' },
+  timeoutSeconds: 3600,
+  networkPolicy: { defaultAction: 'deny', egress: [] },
+});
+
+const createInputForClaim = (currentClaim, overrides = {}) => ({
+  ...CREATE_INPUT_BASE,
+  metadata: {
+    environment: 'non-production',
+    projectId: 'project-runtime-0001',
+    sessionId: currentClaim.sessionId,
+    generation: currentClaim.generation,
+    operationId: currentClaim.operationId,
+  },
+  ...overrides,
+});
+
+const reconciliationCandidate = (handle, overrides = {}) => ({
+  providerId: 'fake-provider',
+  handle,
+  status: 'pending',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  expiresAt: FUTURE_EXPIRY,
+  ...overrides,
+});
+
+const runningLease = (handle = 'sandbox-handle-0001', overrides = {}) => ({
+  providerId: 'fake-provider',
+  handle,
+  status: 'running',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  expiresAt: FUTURE_EXPIRY,
+  cleanupPending: false,
+  ...overrides,
 });
 
 const deferred = () => {
@@ -78,7 +111,8 @@ const createAuthority = (claims, overrides = {}) => {
       return {
         operationId: payload.operationId,
         accepted: true,
-        orphanCleanupRecorded: payload.provider?.status === 'unknown',
+        orphanCleanupRecorded: payload.provider?.status === 'unknown'
+          || payload.orphanProviders.length > 0,
         runtime: { status: payload.outcome === 'succeeded' ? 'running' : payload.outcome },
       };
     }),
@@ -102,6 +136,7 @@ const createRuntime = (overrides = {}) => {
       leases.push(record);
       return record;
     }),
+    reconcile: mock(async () => ({ outcome: 'none' })),
     list: mock(() => [...leases]),
     destroy: mock(async (handle) => {
       const index = leases.findIndex((entry) => entry.handle === handle);
@@ -204,6 +239,7 @@ const createCoordinator = ({
   maxQueued = 4,
   operationDeadlineMs = 1_000,
   completionTimeoutMs = 100,
+  createInput = ({ claim: currentClaim }) => createInputForClaim(currentClaim),
 } = {}) => ({
   coordinator: createSandboxLifecycleCoordinator({
     authority,
@@ -211,7 +247,7 @@ const createCoordinator = ({
     bridge,
     snapshotSource,
     checkpointPublisher,
-    createInput: CREATE_INPUT,
+    createInput,
     maxConcurrent,
     maxQueued,
     operationDeadlineMs,
@@ -303,6 +339,7 @@ describe('sandbox lifecycle coordinator', () => {
     }
 
     expect(runtime.create).toHaveBeenCalledTimes(1);
+    expect(runtime.reconcile).not.toHaveBeenCalled();
     expect(bridge.hydrate).toHaveBeenCalledTimes(1);
     expect(bridge.checkpoint).toHaveBeenCalledTimes(1);
     expect(setup.checkpointPublisher.publish).toHaveBeenCalledTimes(1);
@@ -319,6 +356,10 @@ describe('sandbox lifecycle coordinator', () => {
     expect(events.indexOf('publish:runtime-flow-checkpoint-0001'))
       .toBeLessThan(events.indexOf('complete:runtime-flow-checkpoint-0001'));
     expect(events.filter((event) => event.startsWith('capture:'))).toHaveLength(1);
+    expect(authority.completeSandboxRuntimeOperation.mock.calls.every(
+      ([payload]) => Array.isArray(payload.orphanProviders)
+        && payload.orphanProviders.length === 0,
+    )).toBe(true);
   });
 
   it('bounds and validates authoritative snapshots before begin or create', async () => {
@@ -398,6 +439,143 @@ describe('sandbox lifecycle coordinator', () => {
     }
   });
 
+  it('normalizes the strict resolved create input before durable begin', async () => {
+    const item = claim({
+      operationId: 'runtime-create-normalized-0001',
+      kind: 'ensure', effect: 'start', generation: 1, lifecycleRevision: 1,
+    });
+    const events = [];
+    let normalizedBeforeBegin = false;
+    const authority = createAuthority([item], {
+      beginSandboxRuntimeEffect: mock(async ({ operationId }) => {
+        events.push('begin');
+        expect(normalizedBeforeBegin).toBe(true);
+        return item;
+      }),
+    });
+    const runtime = createRuntime({
+      create: mock(async (input) => {
+        events.push('create');
+        expect(Object.isFrozen(input)).toBe(true);
+        expect(Object.isFrozen(input.metadata)).toBe(true);
+        expect(Object.isFrozen(input.networkPolicy)).toBe(true);
+        expect(input).toEqual({
+          imageUri: 'sandbox:test',
+          entrypoint: ['sleep', '3600'],
+          resourceLimits: { cpu: '1', memory: '1Gi' },
+          timeoutSeconds: 3600,
+          metadata: {
+            environment: 'non-production',
+            projectId: 'project-runtime-0001',
+            sessionId: item.sessionId,
+            generation: item.generation,
+            operationId: item.operationId,
+          },
+          networkPolicy: {
+            defaultAction: 'deny',
+            egress: [{ action: 'allow', target: 'api.example.com' }],
+          },
+        });
+        return runningLease();
+      }),
+    });
+    const createInput = mock(({ claim: currentClaim }) => {
+      events.push('create-input');
+      const input = createInputForClaim(currentClaim, {
+        imageUri: ' sandbox:test ',
+        networkPolicy: {
+          defaultAction: 'deny',
+          egress: [{ action: 'allow', target: 'API.Example.COM' }],
+        },
+      });
+      normalizedBeforeBegin = true;
+      return input;
+    });
+    const setup = createCoordinator({ claims: [item], authority, runtime, createInput });
+
+    await expect(setup.coordinator.dispatch(operation(item))).resolves.toMatchObject({
+      accepted: true,
+      outcome: 'succeeded',
+    });
+    expect(events.slice(0, 3)).toEqual(['create-input', 'begin', 'create']);
+  });
+
+  it('rejects strict create ownership and TTL/policy violations before durable begin', async () => {
+    const cases = [
+      (valid) => ({
+        ...valid,
+        metadata: { ...valid.metadata, environment: 'production' },
+      }),
+      (valid) => ({
+        ...valid,
+        metadata: { ...valid.metadata, projectId: ' invalid-project ' },
+      }),
+      (valid) => ({
+        ...valid,
+        metadata: { ...valid.metadata, sessionId: 'session-runtime-wrong' },
+      }),
+      (valid) => ({
+        ...valid,
+        metadata: { ...valid.metadata, generation: valid.metadata.generation + 1 },
+      }),
+      (valid) => ({
+        ...valid,
+        metadata: { ...valid.metadata, operationId: 'runtime-operation-wrong-0001' },
+      }),
+      (valid) => ({
+        imageUri: valid.imageUri,
+        entrypoint: valid.entrypoint,
+        resourceLimits: valid.resourceLimits,
+        metadata: valid.metadata,
+        networkPolicy: valid.networkPolicy,
+      }),
+      (valid) => ({ ...valid, timeoutSeconds: Number.POSITIVE_INFINITY }),
+      (valid) => ({
+        ...valid,
+        networkPolicy: { defaultAction: 'allow', egress: [] },
+      }),
+    ];
+
+    for (const [index, mutate] of cases.entries()) {
+      const item = claim({
+        operationId: `runtime-create-preflight-${String(index).padStart(4, '0')}`,
+        kind: 'ensure', effect: 'start', generation: 1, lifecycleRevision: 1,
+      });
+      const authority = createAuthority([item]);
+      const runtime = createRuntime();
+      const setup = createCoordinator({
+        claims: [item],
+        authority,
+        runtime,
+        createInput: ({ claim: currentClaim }) => mutate(createInputForClaim(currentClaim)),
+      });
+
+      await expect(setup.coordinator.dispatch(operation(item))).resolves.toMatchObject({
+        accepted: false,
+        outcome: 'ignored',
+        code: SANDBOX_ERROR_CODES.VALIDATION_FAILED,
+      });
+      expect(authority.beginSandboxRuntimeEffect).not.toHaveBeenCalled();
+      expect(runtime.create).not.toHaveBeenCalled();
+      expect(runtime.reconcile).not.toHaveBeenCalled();
+    }
+  });
+
+  it('rejects coordinator operation IDs longer than ownership metadata permits', () => {
+    const setup = createCoordinator({ claims: [] });
+    expect(() => setup.coordinator.dispatch({
+      operationId: 'a'.repeat(64),
+      expectedGeneration: 1,
+      expectedRevision: 1,
+      effect: 'start',
+    })).toThrow(expect.objectContaining({
+      code: SANDBOX_ERROR_CODES.VALIDATION_FAILED,
+    }));
+    expect(setup.authority.claimSandboxRuntimeOperation).not.toHaveBeenCalled();
+    expect(setup.runtime.create).not.toHaveBeenCalled();
+    expect(setup.runtime.reconcile).not.toHaveBeenCalled();
+  });
+
   it('coalesces queued and running duplicates and creates exactly once', async () => {
     const item = claim({
       operationId: 'runtime-duplicate-start-0001',
@@ -456,18 +634,272 @@ describe('sandbox lifecycle coordinator', () => {
         };
       }),
     });
-    const setup = createCoordinator({ claims: [first, replacement], runtime });
+    let preflightSignal;
+    const setup = createCoordinator({
+      claims: [first, replacement],
+      runtime,
+      createInput: ({ claim: currentClaim, signal }) => {
+        preflightSignal = signal;
+        return createInputForClaim(currentClaim);
+      },
+    });
 
     await expect(setup.coordinator.dispatch(operation(first))).resolves.toMatchObject({
       accepted: true,
       outcome: 'outcomeUnknown',
     });
     expect(runtime.create).toHaveBeenCalledTimes(1);
+    expect(runtime.reconcile).toHaveBeenCalledTimes(1);
+    const reconciliationInput = runtime.reconcile.mock.calls[0][0];
+    expect(Object.keys(reconciliationInput)).toEqual(['metadata', 'timeoutSeconds', 'signal']);
+    expect(reconciliationInput.metadata).toEqual(createInputForClaim(first).metadata);
+    expect(reconciliationInput.timeoutSeconds).toBe(3600);
+    expect(reconciliationInput.signal).toBe(preflightSignal);
+    expect(setup.authority.completions[0].orphanProviders).toEqual([]);
     await expect(setup.coordinator.dispatch(operation(replacement))).resolves.toMatchObject({
       accepted: true,
       outcome: 'succeeded',
     });
     expect(runtime.create).toHaveBeenCalledTimes(2);
+    expect(runtime.reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  it('continues the existing start path with a uniquely adopted reconciliation lease', async () => {
+    const item = claim({
+      operationId: 'runtime-reconcile-adopted-0001',
+      kind: 'ensure', effect: 'start', generation: 1, lifecycleRevision: 1,
+    });
+    const adopted = runningLease('adopted-handle-0001');
+    const runtime = createRuntime({
+      create: mock(async () => {
+        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT);
+      }),
+      reconcile: mock(async () => ({ outcome: 'adopted', lease: adopted })),
+    });
+    const setup = createCoordinator({ claims: [item], runtime });
+
+    await expect(setup.coordinator.dispatch(operation(item))).resolves.toMatchObject({
+      accepted: true,
+      outcome: 'succeeded',
+    });
+    expect(runtime.create).toHaveBeenCalledTimes(1);
+    expect(runtime.reconcile).toHaveBeenCalledTimes(1);
+    expect(setup.bridge.hydrate).toHaveBeenCalledTimes(1);
+    expect(setup.bridge.hydrate.mock.calls[0][0].providerHandle).toBe(adopted.handle);
+    expect(setup.bridge.openCodeStart).toHaveBeenCalledTimes(1);
+    expect(runtime.destroy).not.toHaveBeenCalled();
+    expect(setup.authority.completions).toEqual([
+      {
+        operationId: item.operationId,
+        expectedGeneration: item.generation,
+        expectedRevision: item.lifecycleRevision,
+        claimFence: item.claimFence,
+        outcome: 'succeeded',
+        provider: {
+          providerId: adopted.providerId,
+          providerHandle: adopted.handle,
+          status: 'running',
+          expiresAt: Date.parse(FUTURE_EXPIRY),
+        },
+        supervision: supervision(
+          adopted.handle,
+          item.generation,
+          `command-${item.operationId}`,
+        ),
+        orphanProviders: [],
+      },
+    ]);
+  });
+
+  it('maps terminal reconciliation to failed completion with private orphan evidence', async () => {
+    const item = claim({
+      operationId: 'runtime-reconcile-terminal-0001',
+      kind: 'ensure', effect: 'start', generation: 1, lifecycleRevision: 1,
+    });
+    const candidate = reconciliationCandidate('terminal-handle-0001', { status: 'failed' });
+    const runtime = createRuntime({
+      create: mock(async () => {
+        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT);
+      }),
+      reconcile: mock(async () => ({ outcome: 'terminal', candidate })),
+    });
+    const setup = createCoordinator({ claims: [item], runtime });
+
+    await expect(setup.coordinator.dispatch(operation(item))).resolves.toMatchObject({
+      accepted: true,
+      outcome: 'failed',
+      code: SANDBOX_ERROR_CODES.REQUEST_TIMEOUT,
+    });
+    expect(runtime.create).toHaveBeenCalledTimes(1);
+    expect(runtime.reconcile).toHaveBeenCalledTimes(1);
+    expect(runtime.destroy).not.toHaveBeenCalled();
+    expect(setup.bridge.hydrate).not.toHaveBeenCalled();
+    expect(setup.authority.completions[0]).toMatchObject({
+      outcome: 'failed',
+      provider: null,
+      supervision: null,
+      orphanProviders: [{ providerId: candidate.providerId, handle: candidate.handle }],
+    });
+  });
+
+  it('maps unresolved reconciliation with and without a candidate deterministically', async () => {
+    const known = claim({
+      operationId: 'runtime-reconcile-unresolved-known-0001',
+      kind: 'ensure', effect: 'start', generation: 1, lifecycleRevision: 1,
+    });
+    const unknown = claim({
+      operationId: 'runtime-reconcile-unresolved-null-0001',
+      kind: 'ensure', effect: 'start', generation: 2, lifecycleRevision: 2,
+      leaseId: 'lease-runtime-0002',
+    });
+    const candidate = reconciliationCandidate('unresolved-handle-0001');
+    const runtime = createRuntime({
+      create: mock(async () => {
+        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE);
+      }),
+      reconcile: mock(async ({ metadata }) => (metadata.operationId === known.operationId
+        ? { outcome: 'unresolved', candidate }
+        : { outcome: 'unresolved', candidate: null })),
+    });
+    const setup = createCoordinator({ claims: [known, unknown], runtime });
+
+    await expect(setup.coordinator.dispatch(operation(known))).resolves.toMatchObject({
+      accepted: true,
+      outcome: 'outcomeUnknown',
+      code: SANDBOX_ERROR_CODES.PROVIDER_FAILURE,
+    });
+    await expect(setup.coordinator.dispatch(operation(unknown))).resolves.toMatchObject({
+      accepted: true,
+      outcome: 'outcomeUnknown',
+      code: SANDBOX_ERROR_CODES.PROVIDER_FAILURE,
+    });
+    expect(runtime.create).toHaveBeenCalledTimes(2);
+    expect(runtime.reconcile).toHaveBeenCalledTimes(2);
+    expect(setup.authority.completions.map((payload) => payload.orphanProviders)).toEqual([
+      [{ providerId: candidate.providerId, handle: candidate.handle }],
+      [],
+    ]);
+  });
+
+  it('canonicalizes every multiple reconciliation candidate without adopting or deleting one', async () => {
+    const item = claim({
+      operationId: 'runtime-reconcile-multiple-0001',
+      kind: 'ensure', effect: 'start', generation: 1, lifecycleRevision: 1,
+    });
+    const runtime = createRuntime({
+      create: mock(async () => {
+        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+      }),
+      reconcile: mock(async () => ({
+        outcome: 'multiple',
+        candidates: [
+          reconciliationCandidate('handle-b', { providerId: 'provider-b' }),
+          reconciliationCandidate('handle-b', { providerId: 'provider-a' }),
+          reconciliationCandidate('handle-a', { providerId: 'provider-b' }),
+          reconciliationCandidate('handle-b', { providerId: 'provider-a' }),
+        ],
+      })),
+    });
+    const setup = createCoordinator({ claims: [item], runtime });
+
+    await expect(setup.coordinator.dispatch(operation(item))).resolves.toMatchObject({
+      accepted: true,
+      outcome: 'outcomeUnknown',
+      code: SANDBOX_ERROR_CODES.RESPONSE_INVALID,
+    });
+    expect(runtime.create).toHaveBeenCalledTimes(1);
+    expect(runtime.reconcile).toHaveBeenCalledTimes(1);
+    expect(runtime.destroy).not.toHaveBeenCalled();
+    expect(setup.bridge.destroy).not.toHaveBeenCalled();
+    expect(setup.bridge.hydrate).not.toHaveBeenCalled();
+    expect(setup.bridge.openCodeStart).not.toHaveBeenCalled();
+    expect(setup.authority.completions[0].orphanProviders).toEqual([
+      { providerId: 'provider-a', handle: 'handle-b' },
+      { providerId: 'provider-b', handle: 'handle-a' },
+      { providerId: 'provider-b', handle: 'handle-b' },
+    ]);
+  });
+
+  it('fails malformed or failed reconciliation closed without changing the ambiguous create code', async () => {
+    const malformed = claim({
+      operationId: 'runtime-reconcile-malformed-0001',
+      kind: 'ensure', effect: 'start', generation: 1, lifecycleRevision: 1,
+    });
+    const failed = claim({
+      operationId: 'runtime-reconcile-error-0001',
+      kind: 'ensure', effect: 'start', generation: 2, lifecycleRevision: 2,
+      leaseId: 'lease-runtime-0002',
+    });
+    const overBound = claim({
+      operationId: 'runtime-reconcile-over-bound-0001',
+      kind: 'ensure', effect: 'start', generation: 3, lifecycleRevision: 3,
+      leaseId: 'lease-runtime-0003',
+    });
+    const runtime = createRuntime({
+      create: mock(async () => {
+        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT);
+      }),
+      reconcile: mock(async ({ metadata }) => {
+        if (metadata.operationId === malformed.operationId) {
+          return {
+            outcome: 'adopted',
+            lease: runningLease('malformed-adopted-handle', { expiresAt: null }),
+          };
+        }
+        if (metadata.operationId === overBound.operationId) {
+          return {
+            outcome: 'multiple',
+            candidates: Array.from({ length: 201 }, (_value, index) => (
+              reconciliationCandidate(`handle-${String(index).padStart(3, '0')}`)
+            )),
+          };
+        }
+        throw new Error('private reconciliation response details');
+      }),
+    });
+    const setup = createCoordinator({ claims: [malformed, failed, overBound], runtime });
+
+    for (const item of [malformed, failed, overBound]) {
+      await expect(setup.coordinator.dispatch(operation(item))).resolves.toMatchObject({
+        accepted: true,
+        outcome: 'outcomeUnknown',
+        code: SANDBOX_ERROR_CODES.REQUEST_TIMEOUT,
+      });
+    }
+    expect(runtime.create).toHaveBeenCalledTimes(3);
+    expect(runtime.reconcile).toHaveBeenCalledTimes(3);
+    expect(runtime.destroy).not.toHaveBeenCalled();
+    expect(setup.bridge.hydrate).not.toHaveBeenCalled();
+    expect(setup.authority.completions.every(
+      (payload) => payload.provider === null && payload.orphanProviders.length === 0,
+    )).toBe(true);
+    expect(JSON.stringify(setup.authority.completions)).not.toContain('private reconciliation');
+  });
+
+  it('rejects a null created expiry as inactive evidence and cleans the known handle', async () => {
+    const item = claim({
+      operationId: 'runtime-create-null-expiry-0001',
+      kind: 'ensure', effect: 'start', generation: 1, lifecycleRevision: 1,
+    });
+    const runtime = createRuntime({
+      create: mock(async () => runningLease('null-expiry-handle-0001', { expiresAt: null })),
+      destroy: mock(async (handle) => ({ handle, destroyed: true })),
+    });
+    const setup = createCoordinator({ claims: [item], runtime });
+
+    await expect(setup.coordinator.dispatch(operation(item))).resolves.toMatchObject({
+      accepted: true,
+      outcome: 'failed',
+      code: SANDBOX_ERROR_CODES.RESPONSE_INVALID,
+    });
+    expect(runtime.create).toHaveBeenCalledTimes(1);
+    expect(runtime.reconcile).not.toHaveBeenCalled();
+    expect(runtime.destroy).toHaveBeenCalledWith('null-expiry-handle-0001');
+    expect(setup.bridge.hydrate).not.toHaveBeenCalled();
+    expect(setup.authority.completions[0]).toMatchObject({
+      provider: null,
+      orphanProviders: [],
+    });
   });
 
   it('reports a late unconfirmed create handle only through outcomeUnknown completion', async () => {
@@ -514,7 +946,9 @@ describe('sandbox lifecycle coordinator', () => {
         expiresAt: null,
       },
       supervision: null,
+      orphanProviders: [],
     });
+    expect(runtime.reconcile).not.toHaveBeenCalled();
     expect(setup.bridge.hydrate).not.toHaveBeenCalled();
   });
 
@@ -549,6 +983,10 @@ describe('sandbox lifecycle coordinator', () => {
       'failed',
       'outcomeUnknown',
     ]);
+    expect(runtime.reconcile).not.toHaveBeenCalled();
+    expect(setup.authority.completions.every(
+      (payload) => payload.orphanProviders.length === 0,
+    )).toBe(true);
   });
 
   it('retries only the exact serialized completion payload without repeating the effect', async () => {
@@ -579,6 +1017,7 @@ describe('sandbox lifecycle coordinator', () => {
     });
     expect(serialized).toHaveLength(2);
     expect(serialized[1]).toBe(serialized[0]);
+    expect(JSON.parse(serialized[0]).orphanProviders).toEqual([]);
     expect(setup.bridge.pause).toHaveBeenCalledTimes(1);
   });
 
@@ -904,7 +1343,7 @@ describe('sandbox lifecycle coordinator', () => {
   it('lets an unconfirmed begin recover without running any provider mutation', async () => {
     const item = claim({
       operationId: 'runtime-begin-unconfirmed-0001',
-      kind: 'pause', effect: 'stop', generation: 1, lifecycleRevision: 2,
+      kind: 'ensure', effect: 'start', generation: 1, lifecycleRevision: 1,
     });
     const authority = createAuthority([item], {
       beginSandboxRuntimeEffect: mock(async () => {
@@ -918,7 +1357,10 @@ describe('sandbox lifecycle coordinator', () => {
       outcome: 'ignored',
       code: 'SANDBOX_COORDINATOR_BEGIN_UNCONFIRMED',
     });
-    expect(setup.bridge.pause).not.toHaveBeenCalled();
+    expect(setup.snapshotSource.read).toHaveBeenCalledTimes(1);
+    expect(setup.runtime.create).not.toHaveBeenCalled();
+    expect(setup.runtime.reconcile).not.toHaveBeenCalled();
+    expect(setup.bridge.hydrate).not.toHaveBeenCalled();
     expect(authority.completeSandboxRuntimeOperation).not.toHaveBeenCalled();
   });
 
@@ -950,7 +1392,7 @@ describe('sandbox lifecycle coordinator', () => {
     expect(bridge.destroy.mock.calls[0][1]).toBeInstanceOf(AbortSignal);
   });
 
-  it('rejects unsafe resume expiry and never starts OpenCode with it', async () => {
+  it('rejects a null active resume expiry and never starts OpenCode with it', async () => {
     const item = claim({
       operationId: 'runtime-resume-expiry-0001',
       kind: 'resume', effect: 'resume', generation: 1, lifecycleRevision: 2,
@@ -958,7 +1400,7 @@ describe('sandbox lifecycle coordinator', () => {
     const bridge = createBridge([], {
       resume: mock(async () => ({
         status: 'running',
-        expiresAt: '2000-01-01T00:00:00.000Z',
+        expiresAt: null,
       })),
     });
     const setup = createCoordinator({ claims: [item], bridge });
@@ -970,6 +1412,24 @@ describe('sandbox lifecycle coordinator', () => {
     });
     expect(bridge.resume).toHaveBeenCalledTimes(1);
     expect(bridge.openCodeStart).not.toHaveBeenCalled();
+    expect(setup.authority.completions[0].orphanProviders).toEqual([]);
+  });
+
+  it('requires a runtime reconciliation dependency at construction', () => {
+    const item = claim({
+      operationId: 'runtime-reconcile-config-0001',
+      kind: 'ensure', effect: 'start', generation: 1, lifecycleRevision: 1,
+    });
+    expect(() => createCoordinator({
+      claims: [item],
+      runtime: {
+        create: mock(async () => runningLease()),
+        list: mock(() => []),
+        destroy: mock(async (handle) => ({ handle, destroyed: true })),
+      },
+    })).toThrow(expect.objectContaining({
+      code: SANDBOX_ERROR_CODES.CONFIGURATION_INVALID,
+    }));
   });
 
   it('enforces the coordinator deadline relation at construction', () => {

@@ -317,8 +317,14 @@ export interface SandboxRuntimeProviderCompletion extends SandboxRuntimePrivateP
   expiresAt: number | null
 }
 
+export interface SandboxRuntimePrivateOrphanProviderReference {
+  providerId: string
+  handle: string
+}
+
 export type CompleteSandboxRuntimeOperationInput = BeginSandboxRuntimeEffectInput & {
   outcome: SandboxRuntimeCompletionOutcome
+  orphanProviders: readonly SandboxRuntimePrivateOrphanProviderReference[]
 } & (
     | {
         provider: null

@@ -16,8 +16,9 @@ The following production safeguards remain in force:
   routes and the `sandboxRuntimeV2` descriptor are absent;
 - `coordinator.js` is not imported by `index.js`, `factory.js`, the web server,
   or a route; and
-- the OpenSandbox adapter reports `supportsRealCreate: false` because its create
-  API has no proven idempotency contract.
+- the OpenSandbox adapter reports `supportsRealCreate: false`; real create is
+  gated behind a provider-neutral deterministic reconciliation contract that
+  never retries create after ambiguity.
 
 Do not weaken any of these gates as part of infrastructure handoff. Production
 enablement requires every deferred item below to pass independently.
@@ -41,8 +42,8 @@ Durable Object is made authoritative in the server package.
 | Credential encryption, capability expiry/revoke/use limits, broker bounds, identity, and cross-tenant rejection | `vault.test.ts`, `capability.test.ts`, `provider-broker.test.ts`, `broker-handler.test.ts`, `identity.test.ts`, and `milestone3-handler.test.ts` |
 | Durable runtime reserve, claim, begin-once, exact completion, pause/resume/checkpoint/destroy/replace, stale fencing, orphan recording, and alarm recovery | `sandbox-runtime.test.ts` in workerd |
 | Disabled-by-default BFF, same-origin-before-auth, Access assertion bounds, named routes only, response bounds, and redacted errors | `control-plane/{config,client,routes}.test.js` |
-| OpenSandbox request/response contract, capacity, timeout, cleanup, and disabled real-create gate | `sandbox/{factory,runtime,providers/opensandbox}.test.js` |
-| Complete fake start -> checkpoint -> pause -> resume -> destroy flow, explicit replacement after ambiguous create, bounded queue, deadlines, quota preflight, deterministic publication, and safe diagnostics | `sandbox/coordinator.test.js` |
+| OpenSandbox async 202 lifecycle polling, finite TTL, bounded metadata listing/pagination, deny-by-default egress, endpoint header preservation, and disabled real-create gate | `sandbox/{factory,runtime,providers/opensandbox}.test.js` |
+| Complete fake start -> checkpoint -> pause -> resume -> destroy flow, deterministic metadata reconciliation after ambiguous create (zero/one/terminal/unresolved/multiple), canonical orphanProviders, bounded queue, deadlines, quota preflight, deterministic publication, and safe diagnostics | `sandbox/coordinator.test.js` |
 | Authoritative hydration/checkpoint path rules, no partial snapshot success, in-sandbox `opencode serve` startup and authenticated health probe, reconciliation, and credential cleanup | `sandbox/bridge.test.js` |
 | Scoped URL authentication for terminal and preview, authenticated realtime proxying, preview SSRF/token isolation, and terminal WebSocket protocol/runtime | `ui-auth.test.js`, `preview/proxy-runtime.test.js`, `realtime-proxy.test.js`, and `terminal/{runtime,terminal-ws-protocol}.test.js` |
 | Session activity contract and actionable starting/ready/stopping/recovering/failed/retryable UI states while readiness remains disabled | `opencode/session-runtime.test.js` and `WebV2WorkspaceView.test.tsx` |

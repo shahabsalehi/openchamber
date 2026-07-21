@@ -19,6 +19,7 @@ import {
   type SandboxCleanupState,
   type SandboxRuntimeCompletionOutcome,
   type SandboxRuntimeOperationKind,
+  type SandboxRuntimePrivateOrphanProviderReference,
   type SandboxRuntimePrivateSupervision,
   type SandboxRuntimeProviderCompletion,
   type SandboxStatus,
@@ -488,6 +489,32 @@ function validateSandboxRuntimeProviderCompletion(
   }
 }
 
+function validateSandboxRuntimeOrphanProviders(
+  value: unknown,
+): readonly SandboxRuntimePrivateOrphanProviderReference[] {
+  if (!Array.isArray(value) || value.length > 200) {
+    throw new ControlPlaneFault('VALIDATION_FAILED')
+  }
+  const providers = value.map((candidate) => {
+    assertExactObject(candidate, ['providerId', 'handle'])
+    return Object.freeze({
+      providerId: validateProviderValue(candidate.providerId, 128),
+      handle: validateProviderValue(candidate.handle, 512),
+    })
+  })
+  for (let index = 1; index < providers.length; index += 1) {
+    const previous = providers[index - 1]
+    const current = providers[index]
+    if (
+      previous.providerId > current.providerId ||
+      (previous.providerId === current.providerId && previous.handle >= current.handle)
+    ) {
+      throw new ControlPlaneFault('VALIDATION_FAILED')
+    }
+  }
+  return Object.freeze(providers)
+}
+
 export function validateSandboxRuntimePrivateSupervision(
   value: unknown,
 ): SandboxRuntimePrivateSupervision {
@@ -522,6 +549,7 @@ export function validateCompleteSandboxRuntimeOperationInput(
     'outcome',
     'provider',
     'supervision',
+    'orphanProviders',
   ])
   const provider =
     value.provider === null ? null : validateSandboxRuntimeProviderCompletion(value.provider)
@@ -529,6 +557,7 @@ export function validateCompleteSandboxRuntimeOperationInput(
     value.supervision === null
       ? null
       : validateSandboxRuntimePrivateSupervision(value.supervision)
+  const orphanProviders = validateSandboxRuntimeOrphanProviders(value.orphanProviders)
   if (provider === null && supervision !== null) {
     throw new ControlPlaneFault('VALIDATION_FAILED')
   }
@@ -538,6 +567,7 @@ export function validateCompleteSandboxRuntimeOperationInput(
     expectedRevision: validateRuntimeCounter(value.expectedRevision),
     claimFence: validateExpectedVersion(value.claimFence, false),
     outcome: validateSandboxRuntimeCompletionOutcome(value.outcome),
+    orphanProviders,
   }
   if (provider === null) {
     return { ...common, provider: null, supervision: null }

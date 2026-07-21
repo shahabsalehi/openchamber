@@ -7,11 +7,12 @@ const MIN_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 86_400;
 const MAX_HANDLE_LENGTH = 1024;
 const MAX_TIMESTAMP_LENGTH = 128;
-const MAX_METADATA_ENTRIES = 64;
-const MAX_METADATA_KEY_LENGTH = 128;
-const MAX_METADATA_VALUE_LENGTH = 4096;
+const MAX_OWNERSHIP_VALUE_LENGTH = 63;
 const MAX_RESOURCE_LIMIT_ENTRIES = 32;
 const MAX_RESOURCE_LIMIT_KEY_LENGTH = 128;
+const MAX_NETWORK_EGRESS_RULES = 64;
+const MAX_NETWORK_TARGET_LENGTH = 253;
+const MAX_PROVIDER_PAGE_SIZE = 200;
 const MAX_CONNECTION_ENDPOINT_LENGTH = 16_384;
 const MAX_CONNECTION_HEADERS = 64;
 const MAX_CONNECTION_HEADER_NAME_LENGTH = 256;
@@ -28,6 +29,11 @@ const SANDBOX_STATUSES = new Set([
   'unknown',
 ]);
 const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+const OWNERSHIP_VALUE_PATTERN = /^[a-zA-Z0-9](?:[a-zA-Z0-9._-]{0,61}[a-zA-Z0-9])?$/;
+const FQDN_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const CONNECTION_HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const OWNERSHIP_FIELDS = ['environment', 'projectId', 'sessionId', 'generation', 'operationId'];
+const CREATE_INPUT_FIELDS = ['imageUri', 'entrypoint', 'resourceLimits', 'timeoutSeconds', 'metadata', 'networkPolicy'];
 
 const MAX_FILE_PATH_LENGTH = 4096;
 const MAX_FILE_COUNT = 8192;
@@ -57,6 +63,25 @@ const checkpointFailedError = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.
 
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isLeapYear = (year) => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+
+const assertKeysEqual = (value, expectedKeys, createError) => {
+  const keys = Object.keys(value);
+  if (keys.length !== expectedKeys.length || keys.some((key) => !expectedKeys.includes(key))) {
+    throw createError();
+  }
+};
+
+const normalizeAbortSignal = (value, createError) => {
+  if (value === undefined) return undefined;
+  if (!value
+    || typeof value !== 'object'
+    || typeof value.aborted !== 'boolean'
+    || typeof value.addEventListener !== 'function'
+    || typeof value.removeEventListener !== 'function') {
+    throw createError();
+  }
+  return value;
+};
 
 const normalizeIsoTimestamp = (value, createError = responseError) => {
   if (typeof value !== 'string') throw createError();
@@ -89,6 +114,90 @@ const normalizeIsoTimestamp = (value, createError = responseError) => {
   return timestamp;
 };
 
+const normalizeFutureIsoTimestamp = (value, now, createError = responseError) => {
+  const timestamp = normalizeIsoTimestamp(value, createError);
+  const nowMs = now instanceof Date ? now.getTime() : Number.NaN;
+  const expiresAtMs = Date.parse(timestamp);
+  if (!Number.isFinite(nowMs) || !Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) {
+    throw createError();
+  }
+  return timestamp;
+};
+
+export const normalizeSandboxOwnershipMetadata = (value, createError = validationError) => {
+  if (!isRecord(value)) throw createError();
+  assertKeysEqual(value, OWNERSHIP_FIELDS, createError);
+  if (value.environment !== 'non-production') throw createError();
+
+  const normalizeValue = (rawValue) => {
+    if (typeof rawValue !== 'string'
+      || rawValue.length === 0
+      || rawValue.length > MAX_OWNERSHIP_VALUE_LENGTH
+      || rawValue !== rawValue.trim()
+      || !OWNERSHIP_VALUE_PATTERN.test(rawValue)) {
+      throw createError();
+    }
+    return rawValue;
+  };
+
+  if (!Number.isSafeInteger(value.generation) || value.generation < 1) throw createError();
+  const generationValue = String(value.generation);
+  if (generationValue.length > MAX_OWNERSHIP_VALUE_LENGTH
+    || !OWNERSHIP_VALUE_PATTERN.test(generationValue)) {
+    throw createError();
+  }
+
+  return Object.freeze({
+    environment: 'non-production',
+    projectId: normalizeValue(value.projectId),
+    sessionId: normalizeValue(value.sessionId),
+    generation: value.generation,
+    operationId: normalizeValue(value.operationId),
+  });
+};
+
+const normalizeNetworkTarget = (value) => {
+  if (typeof value !== 'string'
+    || !value
+    || value.length > MAX_NETWORK_TARGET_LENGTH
+    || value !== value.trim()) {
+    throw validationError();
+  }
+  const target = value.toLowerCase();
+  const hostname = target.startsWith('*.') ? target.slice(2) : target;
+  const labels = hostname.split('.');
+  if (labels.length < 2 || labels.some((label) => !FQDN_LABEL_PATTERN.test(label))) {
+    throw validationError();
+  }
+  return target;
+};
+
+const normalizeSandboxNetworkPolicy = (value) => {
+  if (!isRecord(value)) throw validationError();
+  assertKeysEqual(value, ['defaultAction', 'egress'], validationError);
+  if (value.defaultAction !== 'deny'
+    || !Array.isArray(value.egress)
+    || value.egress.length > MAX_NETWORK_EGRESS_RULES) {
+    throw validationError();
+  }
+
+  const seenTargets = new Set();
+  const egress = value.egress.map((rule) => {
+    if (!isRecord(rule)) throw validationError();
+    assertKeysEqual(rule, ['action', 'target'], validationError);
+    if (rule.action !== 'allow') throw validationError();
+    const target = normalizeNetworkTarget(rule.target);
+    if (seenTargets.has(target)) throw validationError();
+    seenTargets.add(target);
+    return Object.freeze({ action: 'allow', target });
+  });
+
+  return Object.freeze({
+    defaultAction: 'deny',
+    egress: Object.freeze(egress),
+  });
+};
+
 export const normalizeSandboxHandle = (value) => {
   if (typeof value !== 'string') throw validationError();
   const handle = value.trim();
@@ -98,6 +207,7 @@ export const normalizeSandboxHandle = (value) => {
 
 export const normalizeSandboxCreateInput = (value) => {
   if (!isRecord(value)) throw validationError();
+  assertKeysEqual(value, CREATE_INPUT_FIELDS, validationError);
   const imageUri = typeof value.imageUri === 'string' ? value.imageUri.trim() : '';
   if (!imageUri || imageUri.length > MAX_IMAGE_URI_LENGTH) throw validationError();
 
@@ -113,15 +223,12 @@ export const normalizeSandboxCreateInput = (value) => {
     return item;
   });
 
-  let timeoutSeconds;
-  if (value.timeoutSeconds !== undefined) {
-    if (!Number.isInteger(value.timeoutSeconds)
-      || value.timeoutSeconds < MIN_TIMEOUT_SECONDS
-      || value.timeoutSeconds > MAX_TIMEOUT_SECONDS) {
-      throw validationError();
-    }
-    timeoutSeconds = value.timeoutSeconds;
+  if (!Number.isInteger(value.timeoutSeconds)
+    || value.timeoutSeconds < MIN_TIMEOUT_SECONDS
+    || value.timeoutSeconds > MAX_TIMEOUT_SECONDS) {
+    throw validationError();
   }
+  const timeoutSeconds = value.timeoutSeconds;
 
   if (!isRecord(value.resourceLimits)) throw validationError();
   const resourceLimitEntries = Object.entries(value.resourceLimits);
@@ -138,31 +245,17 @@ export const normalizeSandboxCreateInput = (value) => {
   }
   const resourceLimits = Object.fromEntries(normalizedResourceLimitEntries);
 
-  let metadata;
-  if (value.metadata !== undefined) {
-    if (!isRecord(value.metadata)) throw validationError();
-    const entries = Object.entries(value.metadata);
-    if (entries.length > MAX_METADATA_ENTRIES) throw validationError();
-    const normalizedEntries = [];
-    for (const [key, metadataValue] of entries) {
-      if (!key
-        || key.length > MAX_METADATA_KEY_LENGTH
-        || typeof metadataValue !== 'string'
-        || metadataValue.length > MAX_METADATA_VALUE_LENGTH) {
-        throw validationError();
-      }
-      normalizedEntries.push([key, metadataValue]);
-    }
-    metadata = Object.fromEntries(normalizedEntries);
-  }
+  const metadata = normalizeSandboxOwnershipMetadata(value.metadata);
+  const networkPolicy = normalizeSandboxNetworkPolicy(value.networkPolicy);
 
-  return {
+  return Object.freeze({
     imageUri,
-    entrypoint,
-    resourceLimits,
-    ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
-    ...(metadata === undefined ? {} : { metadata }),
-  };
+    entrypoint: Object.freeze(entrypoint),
+    resourceLimits: Object.freeze(resourceLimits),
+    timeoutSeconds,
+    metadata,
+    networkPolicy,
+  });
 };
 
 export const normalizeSandboxEndpointOptions = (value) => {
@@ -186,21 +279,99 @@ export const normalizeSandboxEndpointOptions = (value) => {
   };
 };
 
-export const normalizeProviderRecord = (value) => {
+export const normalizeProviderRecord = (value, now = new Date()) => {
   if (!isRecord(value)) throw responseError();
   const handle = typeof value.handle === 'string' ? value.handle.trim() : '';
   const status = typeof value.status === 'string' ? value.status.trim() : '';
   const createdAt = normalizeIsoTimestamp(value.createdAt);
-  const expiresAt = value.expiresAt === undefined || value.expiresAt === null
-    ? null
-    : normalizeIsoTimestamp(value.expiresAt);
+  const expiresAt = normalizeFutureIsoTimestamp(value.expiresAt, now);
   if (!handle
     || handle.length > MAX_HANDLE_LENGTH
     || !SANDBOX_STATUSES.has(status)) {
     throw responseError();
   }
-  return { handle, status, createdAt, expiresAt };
+  return Object.freeze({ handle, status, createdAt, expiresAt });
 };
+
+export const normalizeSandboxProviderListInput = (value) => {
+  if (!isRecord(value)) throw validationError();
+  const allowedKeys = value.signal === undefined
+    ? ['metadata', 'page', 'pageSize']
+    : ['metadata', 'page', 'pageSize', 'signal'];
+  assertKeysEqual(value, allowedKeys, validationError);
+  if (!Number.isSafeInteger(value.page) || value.page < 1) throw validationError();
+  if (!Number.isSafeInteger(value.pageSize)
+    || value.pageSize < 1
+    || value.pageSize > MAX_PROVIDER_PAGE_SIZE) {
+    throw validationError();
+  }
+  const signal = normalizeAbortSignal(value.signal, validationError);
+  return Object.freeze({
+    metadata: normalizeSandboxOwnershipMetadata(value.metadata),
+    page: value.page,
+    pageSize: value.pageSize,
+    ...(signal === undefined ? {} : { signal }),
+  });
+};
+
+export const normalizeProviderListResult = (value, now = new Date()) => {
+  if (!isRecord(value)
+    || !Array.isArray(value.items)
+    || !Number.isSafeInteger(value.page)
+    || value.page < 1
+    || !Number.isSafeInteger(value.pageSize)
+    || value.pageSize < 1
+    || value.pageSize > MAX_PROVIDER_PAGE_SIZE
+    || typeof value.hasMore !== 'boolean'
+    || value.items.length > value.pageSize) {
+    throw responseError();
+  }
+  const items = value.items.map((item) => {
+    if (!isRecord(item)) throw responseError();
+    const record = normalizeProviderRecord(item, now);
+    const metadata = normalizeSandboxOwnershipMetadata(item.metadata, responseError);
+    return Object.freeze({ ...record, metadata });
+  });
+  return Object.freeze({
+    items: Object.freeze(items),
+    page: value.page,
+    pageSize: value.pageSize,
+    hasMore: value.hasMore,
+  });
+};
+
+export const normalizeSandboxRenewalResult = (value, now = new Date()) => {
+  if (!isRecord(value)) throw responseError();
+  const handle = typeof value.handle === 'string' ? value.handle.trim() : '';
+  if (!handle || handle.length > MAX_HANDLE_LENGTH) throw responseError();
+  return Object.freeze({
+    handle,
+    expiresAt: normalizeFutureIsoTimestamp(value.expiresAt, now),
+  });
+};
+
+export const normalizeSandboxReconcileInput = (value) => {
+  if (!isRecord(value)) throw validationError();
+  const allowedKeys = value.signal === undefined
+    ? ['metadata', 'timeoutSeconds']
+    : ['metadata', 'timeoutSeconds', 'signal'];
+  assertKeysEqual(value, allowedKeys, validationError);
+  if (!Number.isInteger(value.timeoutSeconds)
+    || value.timeoutSeconds < MIN_TIMEOUT_SECONDS
+    || value.timeoutSeconds > MAX_TIMEOUT_SECONDS) {
+    throw validationError();
+  }
+  const signal = normalizeAbortSignal(value.signal, validationError);
+  return Object.freeze({
+    metadata: normalizeSandboxOwnershipMetadata(value.metadata),
+    timeoutSeconds: value.timeoutSeconds,
+    ...(signal === undefined ? {} : { signal }),
+  });
+};
+
+export const normalizeFutureSandboxExpiry = (value, now = new Date()) => (
+  normalizeFutureIsoTimestamp(value, now, validationError)
+);
 
 export const normalizeEndpointConnection = (value) => {
   if (!isRecord(value)
@@ -218,6 +389,7 @@ export const normalizeEndpointConnection = (value) => {
   if (!['http:', 'https:', 'ws:', 'wss:'].includes(parsedEndpoint.protocol)) throw responseError();
 
   const headerEntries = [];
+  const headerNames = new Set();
   if (value.headers !== undefined) {
     if (!isRecord(value.headers)) throw responseError();
     const entries = Object.entries(value.headers);
@@ -225,10 +397,17 @@ export const normalizeEndpointConnection = (value) => {
     for (const [key, headerValue] of entries) {
       if (!key
         || key.length > MAX_CONNECTION_HEADER_NAME_LENGTH
+        || !CONNECTION_HEADER_NAME_PATTERN.test(key)
         || typeof headerValue !== 'string'
-        || headerValue.length > MAX_CONNECTION_HEADER_VALUE_LENGTH) {
+        || headerValue.length > MAX_CONNECTION_HEADER_VALUE_LENGTH
+        || hasControlChars(headerValue)) {
         throw responseError();
       }
+      const normalizedName = key.toLowerCase();
+      if (normalizedName === 'open-sandbox-api-key' || headerNames.has(normalizedName)) {
+        throw responseError();
+      }
+      headerNames.add(normalizedName);
       headerEntries.push([key, headerValue]);
     }
   }

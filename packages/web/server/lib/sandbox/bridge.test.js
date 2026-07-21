@@ -17,14 +17,16 @@ const bridgeConfig = {
 
 const createBridgeProvider = (overrides = {}) => ({
   id: 'mock-bridge-provider',
-  create: mock(async () => ({ handle: 'sb-1', status: 'running', createdAt: '2026-01-01T00:00:00.000Z', expiresAt: null })),
-  get: mock(async (handle) => ({ handle, status: 'running', createdAt: '2026-01-01T00:00:00.000Z', expiresAt: null })),
+  create: mock(async () => ({ handle: 'sb-1', status: 'running', createdAt: '2026-01-01T00:00:00.000Z', expiresAt: '2026-01-01T01:00:00.000Z' })),
+  get: mock(async (handle) => ({ handle, status: 'running', createdAt: '2026-01-01T00:00:00.000Z', expiresAt: '2026-01-01T01:00:00.000Z' })),
+  list: mock(async ({ page, pageSize }) => ({ items: [], page, pageSize, hasMore: false })),
+  renewExpiration: mock(async (handle, expiresAt) => ({ handle, expiresAt })),
   getEndpoint: mock(async () => ({ endpoint: 'https://sandbox.example', headers: { 'X-Proxy-Auth': 'proxy-token' } })),
   destroy: mock(async () => {}),
   supportsRealCreate: false,
   lifecycle: {
-    pause: mock(async (handle) => ({ handle, status: 'paused', createdAt: '2026-01-01T00:00:00.000Z', expiresAt: null })),
-    resume: mock(async (handle) => ({ handle, status: 'running', createdAt: '2026-01-01T00:00:00.000Z', expiresAt: null })),
+    pause: mock(async (handle) => ({ handle, status: 'paused', createdAt: '2026-01-01T00:00:00.000Z', expiresAt: '2026-01-01T01:00:00.000Z' })),
+    resume: mock(async (handle) => ({ handle, status: 'running', createdAt: '2026-01-01T00:00:00.000Z', expiresAt: '2026-01-01T01:00:00.000Z' })),
   },
   command: {
     runBackground: mock(async () => ({ commandId: 'cmd-1', event: 'accepted', exitCode: null })),
@@ -204,7 +206,7 @@ describe('sandbox bridge', () => {
         claimFence: 1,
         status: 'paused',
       });
-      expect(p.lifecycle.pause).toHaveBeenCalledWith('sandbox-1');
+      expect(p.lifecycle.pause).toHaveBeenCalledWith('sandbox-1', undefined);
       expect(JSON.stringify(result)).not.toContain('execd-token-secret');
       expect(JSON.stringify(result)).not.toContain('sandbox-1');
     });
@@ -214,8 +216,8 @@ describe('sandbox bridge', () => {
       const bridge = createBridge(p);
       const result = await bridge.resume(claimFields({ kind: 'resume' }));
       expect(result.status).toBe('running');
-      expect(result.expiresAt).toBe(null);
-      expect(p.lifecycle.resume).toHaveBeenCalledWith('sandbox-1');
+      expect(result.expiresAt).toBe('2026-01-01T01:00:00.000Z');
+      expect(p.lifecycle.resume).toHaveBeenCalledWith('sandbox-1', undefined);
     });
 
     it('rejects mismatched pause and resume handles', async () => {
@@ -224,7 +226,7 @@ describe('sandbox bridge', () => {
           handle: 'different-sandbox',
           status: 'paused',
           createdAt: '2026-01-01T00:00:00.000Z',
-          expiresAt: null,
+          expiresAt: '2026-01-01T01:00:00.000Z',
         })),
         resume: mock(async () => ({
           handle: 'different-sandbox',
@@ -308,7 +310,7 @@ describe('sandbox bridge', () => {
         claimFence: 1,
         destroyed: true,
       });
-      expect(p.destroy).toHaveBeenCalledWith('sandbox-1');
+      expect(p.destroy).toHaveBeenCalledWith('sandbox-1', undefined);
     });
 
     it('treats provider not-found as successful destroy', async () => {
@@ -665,7 +667,10 @@ describe('sandbox bridge', () => {
       expect(bgSpec.cwd).toBe('/workspace/project');
       expect(bgSpec.envs.OPENCODE_SERVER_PASSWORD).toBeDefined();
       expect(bgSpec.envs.OPENCODE_SERVER_USERNAME).toBe('opencode');
-      expect(p.getEndpoint).toHaveBeenCalledWith('sandbox-1', { port: 13009, useServerProxy: true });
+      expect(p.getEndpoint).toHaveBeenCalledWith('sandbox-1', { port: 13009, useServerProxy: true }, undefined);
+      expect(fetchImpl.mock.calls[0][1].headers['X-Proxy-Auth']).toBe('proxy-token');
+      expect(fetchImpl.mock.calls[0][1].headers.Authorization).toMatch(/^Basic /);
+      expect(fetchImpl.mock.calls[0][1].headers['OPEN-SANDBOX-API-KEY']).toBeUndefined();
       bridge.dispose();
     });
 
@@ -865,6 +870,28 @@ describe('sandbox bridge', () => {
       expect(p.command.interruptCommand).toHaveBeenCalled();
     });
 
+    it.each([
+      ['conflicting Authorization', { Authorization: 'Bearer provider-route' }],
+      ['control-plane API key', { 'OPEN-SANDBOX-API-KEY': 'must-not-propagate' }],
+    ])('rejects %s endpoint headers instead of overwriting or forwarding them', async (_label, headers) => {
+      const fetchImpl = mock(async () => Response.json({ healthy: true, version: '1.18.3' }));
+      const p = createBridgeProvider({
+        getEndpoint: mock(async () => ({ endpoint: 'https://sandbox.example', headers })),
+      });
+      const bridge = createSandboxBridge({
+        provider: p,
+        bridgeConfig,
+        clock: systemClock,
+        fetchImpl,
+      });
+
+      await expect(bridge.openCodeStart(openCodeStartInput())).rejects.toMatchObject({
+        code: SANDBOX_ERROR_CODES.BRIDGE_OPENCODE_FAILED,
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(p.command.interruptCommand).toHaveBeenCalledTimes(1);
+    });
+
     it('does not leak password in error serialization', async () => {
       const fetchImpl = mock(async () => Response.json({ healthy: true, version: '1.18.3' }));
       const p = createBridgeProvider({
@@ -981,6 +1008,17 @@ describe('sandbox bridge', () => {
   });
 
   describe('abort signal propagation', () => {
+    it('passes a live external signal to lifecycle and destroy provider effects', async () => {
+      const p = createBridgeProvider();
+      const bridge = createBridge(p);
+      const controller = new AbortController();
+
+      await bridge.pause(claimFields(), controller.signal);
+      await bridge.destroy(claimFields({ kind: 'destroy' }), controller.signal);
+      expect(p.lifecycle.pause).toHaveBeenCalledWith('sandbox-1', controller.signal);
+      expect(p.destroy).toHaveBeenCalledWith('sandbox-1', controller.signal);
+    });
+
     it('propagates abort signal in pause', async () => {
       const p = createBridgeProvider();
       const bridge = createBridge(p);

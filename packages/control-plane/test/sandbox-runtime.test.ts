@@ -187,6 +187,7 @@ async function runEffect(
           outcome: 'succeeded' as const,
           provider: null,
           supervision: null,
+          orphanProviders: [],
         }
       : {
           operationId,
@@ -196,6 +197,7 @@ async function runEffect(
           outcome: 'succeeded' as const,
           provider,
           supervision,
+          orphanProviders: [],
         }
   const completion = requireSuccess(
     await stub.completeSandboxRuntimeOperation(context, completionInput),
@@ -205,7 +207,7 @@ async function runEffect(
 
 describe('hosted sandbox runtime routes', () => {
   it('returns disabled sanitized status and stores exact idempotent reservations', async () => {
-    const { project, session } = await createWorkspace()
+    const { project, session, stub } = await createWorkspace()
     const statusResponse = await handler.fetch(
       request(`/v2/projects/${project.projectId}/sandbox-runtime`),
       env,
@@ -226,6 +228,25 @@ describe('hosted sandbox runtime routes', () => {
       readiness: 'disabled',
       updatedAt: null,
     })
+
+    const oversizedOperationId = 'r'.repeat(64)
+    const oversizedOperation = await reserveOperation(
+      project.projectId,
+      session.sessionId,
+      'ensure',
+      oversizedOperationId,
+      0,
+      0,
+    )
+    expect(oversizedOperation.status).toBe(400)
+    const operationCount = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.sql
+        .exec<Record<string, SqlStorageValue> & { count: number }>(
+          'SELECT COUNT(*) AS count FROM sandbox_runtime_operations',
+        )
+        .one().count,
+    )
+    expect(operationCount).toBe(0)
 
     const operationId = 'runtime-ensure-operation-0001'
     const reservedResponse = await reserveOperation(
@@ -380,6 +401,7 @@ describe('durable sandbox runtime lifecycle', () => {
             port: 4_097,
             username: 'sandbox-user',
           },
+          orphanProviders: [],
         }),
       ),
     ).toEqual(started.completion)
@@ -399,6 +421,7 @@ describe('durable sandbox runtime lifecycle', () => {
             expiresAt: Date.now() + 60_000,
           },
           supervision: null,
+          orphanProviders: [],
         }),
       ),
     ).toMatchObject({ accepted: false, orphanCleanupRecorded: true })
@@ -432,6 +455,7 @@ describe('durable sandbox runtime lifecycle', () => {
           port: 4_097,
           username: 'sandbox-user',
         },
+        orphanProviders: [],
       }),
       'OPERATION_CONFLICT',
     )
@@ -509,6 +533,25 @@ describe('durable sandbox runtime lifecycle', () => {
           expiresAt: null,
         },
         supervision: resumeSupervision,
+        orphanProviders: [],
+      }),
+      'INVALID_TRANSITION',
+    )
+    requireFailure(
+      await stub.completeSandboxRuntimeOperation(context, {
+        operationId: 'runtime-lifecycle-operation-0003',
+        expectedGeneration: 1,
+        expectedRevision: 3,
+        claimFence: resumeClaim.claimFence,
+        outcome: 'succeeded',
+        provider: {
+          providerId: 'provider-neutral',
+          providerHandle,
+          status: 'running',
+          expiresAt: null,
+        },
+        supervision: resumeSupervision,
+        orphanProviders: [],
       }),
       'INVALID_TRANSITION',
     )
@@ -520,12 +563,13 @@ describe('durable sandbox runtime lifecycle', () => {
         claimFence: resumeClaim.claimFence,
         outcome: 'succeeded',
         provider: {
-        providerId: 'provider-neutral',
-        providerHandle,
-        status: 'running',
-        expiresAt: Date.now() + 60_000,
+          providerId: 'provider-neutral',
+          providerHandle,
+          status: 'running',
+          expiresAt: Date.now() + 60_000,
         },
         supervision: resumeSupervision,
+        orphanProviders: [],
       }),
     )
     expect(resumeClaim.supervision).toBeNull()
@@ -723,6 +767,7 @@ describe('durable sandbox runtime lifecycle', () => {
         outcome: 'succeeded',
         provider: null,
         supervision: null,
+        orphanProviders: [],
       }),
     )
 
@@ -758,6 +803,7 @@ describe('durable sandbox runtime lifecycle', () => {
         outcome: 'failed',
         provider: null,
         supervision: null,
+        orphanProviders: [],
       }),
     )
     const ensureFailedLease = await reserveOperation(
@@ -892,6 +938,7 @@ describe('durable sandbox runtime lifecycle', () => {
           expiresAt: null,
         },
         supervision: null,
+        orphanProviders: [],
       }),
       'OPERATION_CONFLICT',
     )
@@ -915,12 +962,267 @@ describe('durable sandbox runtime lifecycle', () => {
           outcome: 'succeeded',
           provider: null,
           supervision: null,
+          orphanProviders: [],
         }),
       ).runtime.status,
     ).toBe('paused')
   })
 
-  it('accepts an exact legacy completion fingerprint replay without supervision', async () => {
+  it('atomically records canonical orphan sets, dedupes sources, and replays exact v3', async () => {
+    const { project, session, context, stub } = await createWorkspace()
+    const activeProvider = {
+      providerId: 'provider-a',
+      providerHandle: 'active-provider-handle',
+      status: 'running' as const,
+      expiresAt: Date.now() + 60_000,
+    }
+    await reserveOperation(
+      project.projectId,
+      session.sessionId,
+      'ensure',
+      'runtime-orphan-set-operation-0001',
+      0,
+      0,
+    )
+    await runEffect(
+      stub,
+      context,
+      'runtime-orphan-set-operation-0001',
+      1,
+      1,
+      activeProvider,
+    )
+    const operationId = 'runtime-orphan-set-operation-0002'
+    await reserveOperation(project.projectId, session.sessionId, 'pause', operationId, 1, 1)
+    const claim = requireSuccess(
+      await stub.claimSandboxRuntimeOperation(context, {
+        operationId,
+        expectedGeneration: 1,
+        expectedRevision: 2,
+      }),
+    )
+    requireSuccess(
+      await stub.beginSandboxRuntimeEffect(context, {
+        operationId,
+        expectedGeneration: 1,
+        expectedRevision: 2,
+        claimFence: claim.claimFence,
+      }),
+    )
+    const completionInput: CompleteSandboxRuntimeOperationInput = {
+      operationId,
+      expectedGeneration: 1,
+      expectedRevision: 2,
+      claimFence: claim.claimFence,
+      outcome: 'failed',
+      provider: {
+        providerId: 'provider-b',
+        providerHandle: 'shared-orphan-handle',
+        status: 'failed',
+        expiresAt: null,
+      },
+      supervision: null,
+      orphanProviders: [
+        { providerId: 'provider-a', handle: activeProvider.providerHandle },
+        { providerId: 'provider-b', handle: 'shared-orphan-handle' },
+        { providerId: 'provider-c', handle: 'other-orphan-handle' },
+      ],
+    }
+    const completed = requireSuccess(
+      await stub.completeSandboxRuntimeOperation(context, completionInput),
+    )
+    expect(completed).toMatchObject({ accepted: true, orphanCleanupRecorded: true })
+    expect(
+      requireSuccess(await stub.completeSandboxRuntimeOperation(context, completionInput)),
+    ).toEqual(completed)
+    const orphanRows = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.sql
+        .exec<
+          Record<string, SqlStorageValue> & {
+            provider_id: string
+            provider_handle: string
+            state: string
+          }
+        >(
+          `SELECT provider_id, provider_handle, state
+             FROM sandbox_runtime_orphan_cleanup_jobs
+            ORDER BY provider_id, provider_handle`,
+        )
+        .toArray(),
+    )
+    expect(orphanRows).toEqual([
+      {
+        provider_id: 'provider-b',
+        provider_handle: 'shared-orphan-handle',
+        state: 'pending',
+      },
+      {
+        provider_id: 'provider-c',
+        provider_handle: 'other-orphan-handle',
+        state: 'pending',
+      },
+    ])
+  })
+
+  it('rejects stale generation and claim fences without orphan side effects', async () => {
+    const { project, session, context, stub } = await createWorkspace()
+    const operationId = 'runtime-orphan-fence-operation-0001'
+    await reserveOperation(project.projectId, session.sessionId, 'ensure', operationId, 0, 0)
+    const claim = requireSuccess(
+      await stub.claimSandboxRuntimeOperation(context, {
+        operationId,
+        expectedGeneration: 1,
+        expectedRevision: 1,
+      }),
+    )
+    requireSuccess(
+      await stub.beginSandboxRuntimeEffect(context, {
+        operationId,
+        expectedGeneration: 1,
+        expectedRevision: 1,
+        claimFence: claim.claimFence,
+      }),
+    )
+    const orphanProviders = [{ providerId: 'provider-a', handle: 'fenced-orphan-handle' }]
+    requireFailure(
+      await stub.completeSandboxRuntimeOperation(context, {
+        operationId,
+        expectedGeneration: 1,
+        expectedRevision: 2,
+        claimFence: claim.claimFence,
+        outcome: 'failed',
+        provider: null,
+        supervision: null,
+        orphanProviders,
+      }),
+      'VERSION_CONFLICT',
+    )
+    requireFailure(
+      await stub.completeSandboxRuntimeOperation(context, {
+        operationId,
+        expectedGeneration: 1,
+        expectedRevision: 1,
+        claimFence: claim.claimFence + 1,
+        outcome: 'failed',
+        provider: null,
+        supervision: null,
+        orphanProviders,
+      }),
+      'VERSION_CONFLICT',
+    )
+    const durableState = await runInDurableObject(stub, (_instance, state) => ({
+      orphanCount: state.storage.sql
+        .exec<Record<string, SqlStorageValue> & { count: number }>(
+          'SELECT COUNT(*) AS count FROM sandbox_runtime_orphan_cleanup_jobs',
+        )
+        .one().count,
+      operation: state.storage.sql
+        .exec<
+          Record<string, SqlStorageValue> & {
+            state: string
+            completion_fingerprint: string | null
+          }
+        >(
+          `SELECT state, completion_fingerprint FROM sandbox_runtime_operations
+            WHERE operation_id = ?`,
+          operationId,
+        )
+        .one(),
+    }))
+    expect(durableState).toEqual({
+      orphanCount: 0,
+      operation: { state: 'effectStarted', completion_fingerprint: null },
+    })
+  })
+
+  it('rolls back every orphan and operation transition when one insert fails', async () => {
+    const { project, session, context, stub } = await createWorkspace()
+    const operationId = 'runtime-orphan-atomic-operation-0001'
+    await reserveOperation(project.projectId, session.sessionId, 'ensure', operationId, 0, 0)
+    const claim = requireSuccess(
+      await stub.claimSandboxRuntimeOperation(context, {
+        operationId,
+        expectedGeneration: 1,
+        expectedRevision: 1,
+      }),
+    )
+    requireSuccess(
+      await stub.beginSandboxRuntimeEffect(context, {
+        operationId,
+        expectedGeneration: 1,
+        expectedRevision: 1,
+        claimFence: claim.claimFence,
+      }),
+    )
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql
+        .exec(`CREATE TRIGGER fail_second_runtime_orphan
+          BEFORE INSERT ON sandbox_runtime_orphan_cleanup_jobs
+          WHEN NEW.provider_handle = 'atomic-orphan-b'
+          BEGIN
+            SELECT RAISE(ABORT, 'injected orphan insert failure');
+          END`)
+        .toArray()
+    })
+    const completionInput: CompleteSandboxRuntimeOperationInput = {
+      operationId,
+      expectedGeneration: 1,
+      expectedRevision: 1,
+      claimFence: claim.claimFence,
+      outcome: 'failed',
+      provider: null,
+      supervision: null,
+      orphanProviders: [
+        { providerId: 'provider-a', handle: 'atomic-orphan-a' },
+        { providerId: 'provider-a', handle: 'atomic-orphan-b' },
+        { providerId: 'provider-a', handle: 'atomic-orphan-c' },
+      ],
+    }
+    requireFailure(
+      await stub.completeSandboxRuntimeOperation(context, completionInput),
+      'STORAGE_FAILURE',
+    )
+    const rolledBack = await runInDurableObject(stub, (_instance, state) => ({
+      orphanCount: state.storage.sql
+        .exec<Record<string, SqlStorageValue> & { count: number }>(
+          'SELECT COUNT(*) AS count FROM sandbox_runtime_orphan_cleanup_jobs',
+        )
+        .one().count,
+      operation: state.storage.sql
+        .exec<
+          Record<string, SqlStorageValue> & {
+            state: string
+            completion_fingerprint: string | null
+          }
+        >(
+          `SELECT state, completion_fingerprint FROM sandbox_runtime_operations
+            WHERE operation_id = ?`,
+          operationId,
+        )
+        .one(),
+    }))
+    expect(rolledBack).toEqual({
+      orphanCount: 0,
+      operation: { state: 'effectStarted', completion_fingerprint: null },
+    })
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec('DROP TRIGGER fail_second_runtime_orphan').toArray()
+    })
+    expect(
+      requireSuccess(await stub.completeSandboxRuntimeOperation(context, completionInput)),
+    ).toMatchObject({ accepted: true, orphanCleanupRecorded: true })
+    const committedCount = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.sql
+        .exec<Record<string, SqlStorageValue> & { count: number }>(
+          `SELECT COUNT(*) AS count FROM sandbox_runtime_orphan_cleanup_jobs
+            WHERE state = 'pending'`,
+        )
+        .one().count,
+    )
+    expect(committedCount).toBe(3)
+  })
+
+  it('accepts legacy v2 and v1 replays only with an empty orphan list', async () => {
     const { project, session, context, stub } = await createWorkspace()
     const operationId = 'runtime-legacy-completion-operation-0001'
     const providerHandle = 'legacy-completion-provider-handle'
@@ -932,7 +1234,33 @@ describe('durable sandbox runtime lifecycle', () => {
       status: 'running',
       expiresAt,
     })
-    const legacyFingerprint = await operationFingerprint([
+    const supervision = {
+      commandId: `${operationId}-command`,
+      providerHandle,
+      generation: 1,
+      port: 4_097,
+      username: 'sandbox-user',
+    }
+    const legacyV2Fingerprint = await operationFingerprint([
+      'sandbox-runtime-completion-v2',
+      context.scope.tenantId,
+      context.scope.projectId,
+      operationId,
+      '1',
+      '1',
+      String(started.claim.claimFence),
+      'succeeded',
+      'provider-neutral',
+      providerHandle,
+      'running',
+      String(expiresAt),
+      supervision.commandId,
+      supervision.providerHandle,
+      String(supervision.generation),
+      String(supervision.port),
+      supervision.username,
+    ])
+    const legacyV1Fingerprint = await operationFingerprint([
       'sandbox-runtime-completion-v1',
       context.scope.tenantId,
       context.scope.projectId,
@@ -951,7 +1279,54 @@ describe('durable sandbox runtime lifecycle', () => {
         .exec(
           `UPDATE sandbox_runtime_operations SET completion_fingerprint = ?
             WHERE operation_id = ?`,
-          legacyFingerprint,
+          legacyV2Fingerprint,
+          operationId,
+        )
+        .toArray()
+    })
+    expect(
+      requireSuccess(
+        await stub.completeSandboxRuntimeOperation(context, {
+          operationId,
+          expectedGeneration: 1,
+          expectedRevision: 1,
+          claimFence: started.claim.claimFence,
+          outcome: 'succeeded',
+          provider: {
+            providerId: 'provider-neutral',
+            providerHandle,
+            status: 'running',
+            expiresAt,
+          },
+          supervision,
+          orphanProviders: [],
+        }),
+      ),
+    ).toMatchObject({ accepted: true, orphanCleanupRecorded: false })
+    requireFailure(
+      await stub.completeSandboxRuntimeOperation(context, {
+        operationId,
+        expectedGeneration: 1,
+        expectedRevision: 1,
+        claimFence: started.claim.claimFence,
+        outcome: 'succeeded',
+        provider: {
+          providerId: 'provider-neutral',
+          providerHandle,
+          status: 'running',
+          expiresAt,
+        },
+        supervision,
+        orphanProviders: [{ providerId: 'provider-z', handle: 'legacy-v2-orphan' }],
+      }),
+      'OPERATION_CONFLICT',
+    )
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql
+        .exec(
+          `UPDATE sandbox_runtime_operations SET completion_fingerprint = ?
+            WHERE operation_id = ?`,
+          legacyV1Fingerprint,
           operationId,
         )
         .toArray()
@@ -971,9 +1346,37 @@ describe('durable sandbox runtime lifecycle', () => {
             expiresAt,
           },
           supervision: null,
+          orphanProviders: [],
         }),
       ),
     ).toMatchObject({ accepted: true, orphanCleanupRecorded: false })
+    requireFailure(
+      await stub.completeSandboxRuntimeOperation(context, {
+        operationId,
+        expectedGeneration: 1,
+        expectedRevision: 1,
+        claimFence: started.claim.claimFence,
+        outcome: 'succeeded',
+        provider: {
+          providerId: 'provider-neutral',
+          providerHandle,
+          status: 'running',
+          expiresAt,
+        },
+        supervision: null,
+        orphanProviders: [{ providerId: 'provider-z', handle: 'legacy-v1-orphan' }],
+      }),
+      'OPERATION_CONFLICT',
+    )
+    const legacyOrphanCount = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.sql
+        .exec<Record<string, SqlStorageValue> & { count: number }>(
+          `SELECT COUNT(*) AS count FROM sandbox_runtime_orphan_cleanup_jobs
+            WHERE provider_id = 'provider-z'`,
+        )
+        .one().count,
+    )
+    expect(legacyOrphanCount).toBe(0)
   })
 
   it('records a failed start handle for orphan cleanup', async () => {
@@ -1016,6 +1419,7 @@ describe('durable sandbox runtime lifecycle', () => {
           port: 4_097,
           username: 'sandbox-user',
         },
+        orphanProviders: [],
       }),
     )
     expect(failed).toMatchObject({ accepted: true, orphanCleanupRecorded: true })
@@ -1080,6 +1484,7 @@ describe('durable sandbox runtime lifecycle', () => {
           port: 4_097,
           username: 'sandbox-user',
         },
+        orphanProviders: [],
       }),
     )
     expect(completion).toMatchObject({
@@ -1155,6 +1560,7 @@ describe('durable sandbox runtime lifecycle', () => {
         outcome: 'failed',
         provider: null,
         supervision: null,
+        orphanProviders: [],
       }),
     )
     expect(failedClaim.supervision).toMatchObject({
@@ -1201,6 +1607,7 @@ describe('durable sandbox runtime lifecycle', () => {
             expiresAt: null,
           },
           supervision: null,
+          orphanProviders: [],
         }),
       ),
     ).toMatchObject({ accepted: true, orphanCleanupRecorded: false })
@@ -1217,7 +1624,7 @@ describe('durable sandbox runtime lifecycle', () => {
     expect(persistedCommandId).toBe('runtime-checkpoint-supervision-0001-command')
   })
 
-  it('rejects missing, malformed, mismatched, and partially persisted supervision', async () => {
+  it('validates canonical orphan references and rejects malformed supervision', async () => {
     const validInput = {
       operationId: 'runtime-validation-operation-0001',
       expectedGeneration: 1,
@@ -1228,7 +1635,7 @@ describe('durable sandbox runtime lifecycle', () => {
         providerId: 'provider-neutral',
         providerHandle: 'validation-provider-handle',
         status: 'running' as const,
-        expiresAt: null,
+        expiresAt: Date.now() + 60_000,
       },
       supervision: {
         commandId: 'validation-command-0001',
@@ -1237,8 +1644,51 @@ describe('durable sandbox runtime lifecycle', () => {
         port: 4_096,
         username: 'sandbox-user',
       },
+      orphanProviders: [],
     }
-    expect(validateCompleteSandboxRuntimeOperationInput(validInput)).toEqual(validInput)
+    const validatedEmpty = validateCompleteSandboxRuntimeOperationInput(validInput)
+    expect(validatedEmpty).toEqual(validInput)
+    expect(Object.isFrozen(validatedEmpty.orphanProviders)).toBe(true)
+    const sortedOrphanProviders = [
+      { providerId: 'provider-a', handle: 'handle-z' },
+      { providerId: 'provider-b', handle: 'handle-a' },
+      { providerId: 'provider-b', handle: 'handle-b' },
+    ]
+    const validatedMultiple = validateCompleteSandboxRuntimeOperationInput({
+      ...validInput,
+      orphanProviders: sortedOrphanProviders,
+    })
+    expect(validatedMultiple.orphanProviders).toEqual(sortedOrphanProviders)
+    expect(validatedMultiple.orphanProviders.every(Object.isFrozen)).toBe(true)
+    for (const orphanProviders of [
+      [
+        { providerId: 'provider-a', handle: 'handle-a' },
+        { providerId: 'provider-a', handle: 'handle-a' },
+      ],
+      [
+        { providerId: 'provider-b', handle: 'handle-a' },
+        { providerId: 'provider-a', handle: 'handle-a' },
+      ],
+      [
+        { providerId: 'provider-a', handle: 'handle-b' },
+        { providerId: 'provider-a', handle: 'handle-a' },
+      ],
+      Array.from({ length: 201 }, (_, index) => ({
+        providerId: 'provider-a',
+        handle: `handle-${String(index).padStart(3, '0')}`,
+      })),
+      [{ providerId: 'provider-a', handle: 'handle-a', endpoint: 'private' }],
+    ]) {
+      expect(() =>
+        validateCompleteSandboxRuntimeOperationInput({ ...validInput, orphanProviders }),
+      ).toThrow()
+    }
+    expect(() =>
+      validateCompleteSandboxRuntimeOperationInput({
+        ...validInput,
+        orphanProviders: undefined,
+      }),
+    ).toThrow()
     expect(() =>
       validateCompleteSandboxRuntimeOperationInput({
         ...validInput,
@@ -1286,6 +1736,7 @@ describe('durable sandbox runtime lifecycle', () => {
         outcome: 'succeeded',
         provider: validInput.provider,
         supervision: null,
+        orphanProviders: [],
       }),
       'INVALID_TRANSITION',
     )
@@ -1301,6 +1752,7 @@ describe('durable sandbox runtime lifecycle', () => {
           ...validInput.supervision,
           providerHandle: 'different-validation-provider-handle',
         },
+        orphanProviders: [],
       }),
       'OPERATION_CONFLICT',
     )
@@ -1313,6 +1765,7 @@ describe('durable sandbox runtime lifecycle', () => {
         outcome: 'succeeded',
         provider: validInput.provider,
         supervision: validInput.supervision,
+        orphanProviders: [],
       }),
     )
     await expect(
@@ -1489,6 +1942,7 @@ describe('durable sandbox runtime lifecycle', () => {
           port: 4_097,
           username: 'sandbox-user',
         },
+        orphanProviders: [],
       }),
     )
     expect(staleCompletion).toMatchObject({ accepted: false, orphanCleanupRecorded: true })
@@ -1560,6 +2014,7 @@ describe('durable sandbox runtime lifecycle', () => {
           expiresAt: null,
         },
         supervision: null,
+        orphanProviders: [],
       }),
       'OPERATION_CONFLICT',
     )

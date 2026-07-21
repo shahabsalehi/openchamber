@@ -4,6 +4,7 @@ import { SANDBOX_ERROR_CODES, SandboxRuntimeError, sanitizeSandboxError } from '
 import {
   normalizeBridgeClaimFields,
   normalizeBridgeFileRecord,
+  normalizeEndpointConnection,
   normalizeProviderRecord,
 } from './validation.js';
 
@@ -30,6 +31,24 @@ const operationInvalidError = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.
 const opencodeFailedError = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.BRIDGE_OPENCODE_FAILED);
 const hydrationFailedError = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.BRIDGE_HYDRATION_FAILED);
 const checkpointFailedError = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.BRIDGE_CHECKPOINT_FAILED);
+
+const mergeEndpointHeaders = (endpointHeaders, requestHeaders) => {
+  const headers = {};
+  const names = new Set();
+  for (const [name, value] of Object.entries(endpointHeaders)) {
+    names.add(name.toLowerCase());
+    headers[name] = value;
+  }
+  for (const [name, value] of Object.entries(requestHeaders)) {
+    const normalizedName = name.toLowerCase();
+    if (names.has(normalizedName)) {
+      throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+    }
+    names.add(normalizedName);
+    headers[name] = value;
+  }
+  return Object.freeze(headers);
+};
 
 const generatePassword = () => randomBytes(32).toString('base64url');
 
@@ -312,7 +331,10 @@ export const createSandboxBridge = ({
 
     let record;
     try {
-      record = normalizeProviderRecord(await provider.lifecycle.pause(input.providerHandle));
+      record = normalizeProviderRecord(
+        await provider.lifecycle.pause(input.providerHandle, signal),
+        clock.now(),
+      );
     } catch (error) {
       throw sanitizeSandboxError(error);
     }
@@ -336,7 +358,10 @@ export const createSandboxBridge = ({
 
     let record;
     try {
-      record = normalizeProviderRecord(await provider.lifecycle.resume(input.providerHandle));
+      record = normalizeProviderRecord(
+        await provider.lifecycle.resume(input.providerHandle, signal),
+        clock.now(),
+      );
     } catch (error) {
       throw sanitizeSandboxError(error);
     }
@@ -359,7 +384,7 @@ export const createSandboxBridge = ({
     assertBridgeEnabled(bridgeConfig);
 
     try {
-      await provider.destroy(input.providerHandle);
+      await provider.destroy(input.providerHandle, signal);
     } catch (error) {
       const safeError = sanitizeSandboxError(error);
       if (safeError.code !== SANDBOX_ERROR_CODES.NOT_FOUND) throw safeError;
@@ -610,11 +635,18 @@ export const createSandboxBridge = ({
     storeCredentials(input.leaseId, input.generation, credentials);
 
     let endpointConnection;
+    let healthHeaders;
     try {
-      endpointConnection = await provider.getEndpoint(
+      endpointConnection = normalizeEndpointConnection(await provider.getEndpoint(
         input.providerHandle,
         { port, useServerProxy: true },
-      );
+        signal,
+      ));
+      const authHeader = `Basic ${Buffer.from(`${OPENCODE_USERNAME}:${password}`).toString('base64')}`;
+      healthHeaders = mergeEndpointHeaders(endpointConnection.headers, {
+        Accept: 'application/json',
+        Authorization: authHeader,
+      });
     } catch (error) {
       await interruptAndClear(
         provider, input.providerHandle, commandId,
@@ -637,19 +669,13 @@ export const createSandboxBridge = ({
       }
 
       const healthUrl = new URL(OPENCODE_HEALTH_PATH, endpointConnection.endpoint);
-      const authHeader = `Basic ${Buffer.from(`${OPENCODE_USERNAME}:${password}`).toString('base64')}`;
-
       try {
         const healthResponse = await fetchWithDeadline(
           fetchImpl,
           healthUrl,
           {
             method: 'GET',
-            headers: {
-              Accept: 'application/json',
-              ...endpointConnection.headers,
-              Authorization: authHeader,
-            },
+            headers: healthHeaders,
             redirect: 'error',
             signal: signal ?? undefined,
           },

@@ -1,7 +1,11 @@
 import { SANDBOX_ERROR_CODES, SandboxRuntimeError } from '../errors.js';
 import {
   normalizeEndpointConnection,
+  normalizeFutureSandboxExpiry,
   normalizeProviderRecord,
+  normalizeSandboxOwnershipMetadata,
+  normalizeSandboxProviderListInput,
+  normalizeSandboxRenewalResult,
   normalizeSandboxCreateInput,
   normalizeSandboxEndpointOptions,
   normalizeSandboxHandle,
@@ -20,12 +24,24 @@ const MIN_REQUEST_TIMEOUT_MS = 100;
 const MAX_REQUEST_TIMEOUT_MS = 120_000;
 const API_KEY_HEADER = 'OPEN-SANDBOX-API-KEY';
 const EXECD_PORT = 44772;
-const EXECD_TOKEN_HEADER = 'X-EXECD-ACCESS-TOKEN';
 const EXECD_LOG_CURSOR_HEADER = 'EXECD-COMMANDS-TAIL-CURSOR';
 const MAX_LOG_BYTES = 256 * 1024;
 const MAX_SSE_BYTES = 64 * 1024;
 const MAX_FILE_DOWNLOAD_BYTES = 1024 * 1024;
 const FIXED_WORKSPACE_ROOT = '/workspace/project';
+const LIFECYCLE_POLL_MAX_ATTEMPTS = 20;
+const LIFECYCLE_POLL_TIMEOUT_MS = 30_000;
+const LIFECYCLE_POLL_DELAY_MS = 500;
+const RENEW_RECONCILE_MAX_ATTEMPTS = 6;
+const RENEW_RECONCILE_TIMEOUT_MS = 30_000;
+const OWNERSHIP_LABELS = Object.freeze({
+  environment: 'drarticle.io/environment',
+  projectId: 'drarticle.io/project',
+  sessionId: 'drarticle.io/session',
+  generation: 'drarticle.io/generation',
+  operationId: 'drarticle.io/operation',
+});
+const TERMINAL_STATES = new Set(['terminated', 'failed']);
 
 const configurationError = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.CONFIGURATION_INVALID);
 
@@ -128,12 +144,59 @@ const normalizeOpenSandboxStatus = (status) => {
   return KNOWN_OPEN_SANDBOX_STATES.has(state) ? state : 'unknown';
 };
 
-const normalizeOpenSandboxRecord = (payload) => normalizeProviderRecord({
+const normalizeOpenSandboxRecord = (payload, now) => normalizeProviderRecord({
   handle: payload.id,
   status: normalizeOpenSandboxStatus(payload.status),
   createdAt: payload.createdAt,
-  expiresAt: payload.expiresAt ?? null,
+  expiresAt: payload.expiresAt,
+}, now);
+
+const toOpenSandboxMetadata = (metadata) => Object.freeze({
+  [OWNERSHIP_LABELS.environment]: metadata.environment,
+  [OWNERSHIP_LABELS.projectId]: metadata.projectId,
+  [OWNERSHIP_LABELS.sessionId]: metadata.sessionId,
+  [OWNERSHIP_LABELS.generation]: String(metadata.generation),
+  [OWNERSHIP_LABELS.operationId]: metadata.operationId,
 });
+
+const fromOpenSandboxMetadata = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+  }
+  const rawGeneration = value[OWNERSHIP_LABELS.generation];
+  if (typeof rawGeneration !== 'string' || !/^\d+$/.test(rawGeneration)) {
+    throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+  }
+  return normalizeSandboxOwnershipMetadata({
+    environment: value[OWNERSHIP_LABELS.environment],
+    projectId: value[OWNERSHIP_LABELS.projectId],
+    sessionId: value[OWNERSHIP_LABELS.sessionId],
+    generation: Number.parseInt(rawGeneration, 10),
+    operationId: value[OWNERSHIP_LABELS.operationId],
+  }, () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID));
+};
+
+const mergeEndpointHeaders = (endpointHeaders, requestHeaders = {}) => {
+  const merged = {};
+  const names = new Set();
+  for (const [name, value] of Object.entries(endpointHeaders)) {
+    const normalizedName = name.toLowerCase();
+    if (normalizedName === API_KEY_HEADER.toLowerCase() || names.has(normalizedName)) {
+      throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+    }
+    names.add(normalizedName);
+    merged[name] = value;
+  }
+  for (const [name, value] of Object.entries(requestHeaders)) {
+    const normalizedName = name.toLowerCase();
+    if (names.has(normalizedName)) {
+      throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+    }
+    names.add(normalizedName);
+    merged[name] = value;
+  }
+  return merged;
+};
 
 const workspacePath = (relativePath) => {
   if (relativePath === '') return FIXED_WORKSPACE_ROOT;
@@ -212,6 +275,19 @@ const readStreamedBuffer = async (response, maxBytes) => {
   return Buffer.concat(chunks);
 };
 
+const parseEmptyResponse = async (response) => {
+  const contentLength = response.headers?.get?.('content-length');
+  if (contentLength !== null && contentLength !== undefined && contentLength !== '0') {
+    throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+  }
+  if (typeof response.text !== 'function') {
+    throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+  }
+  const body = await response.text();
+  if (body !== '') throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+  return undefined;
+};
+
 export const createOpenSandboxProvider = ({
   controlPlaneUrl,
   apiKey,
@@ -233,36 +309,49 @@ export const createOpenSandboxProvider = ({
 
   const buildUrl = (path) => new URL(path, `${baseUrl}/`);
 
-  const request = async ({ path, url, method, expectedStatus, body, parseJson = false }) => {
+  const request = async ({
+    path,
+    url,
+    method,
+    expectedStatus,
+    body,
+    responseMode = 'none',
+    signal,
+    deadlineMs = timeoutMs,
+  }) => {
+    if (signal?.aborted) {
+      throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT);
+    }
     const controller = new AbortController();
     let rejectDeadline;
+    let onExternalAbort = null;
     const deadline = new Promise((_resolve, reject) => {
       rejectDeadline = reject;
     });
+    if (signal) {
+      onExternalAbort = () => {
+        controller.abort();
+        rejectDeadline(new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT));
+      };
+      signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
     const timer = clock.setTimeout(() => {
       controller.abort();
       rejectDeadline(new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT));
-    }, timeoutMs);
+    }, Math.max(1, Math.min(timeoutMs, deadlineMs)));
     const operation = (async () => {
       let response;
-      try {
-        response = await fetchImpl(url ?? buildUrl(path), {
-          method,
-          headers: {
-            Accept: 'application/json',
-            [API_KEY_HEADER]: secretApiKey,
-            ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-          },
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-          redirect: 'error',
-          signal: controller.signal,
-        });
-      } catch (error) {
-        if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
-          throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT);
-        }
-        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE);
-      }
+      try { response = await fetchImpl(url ?? buildUrl(path), {
+        method,
+        headers: {
+          Accept: 'application/json',
+          [API_KEY_HEADER]: secretApiKey,
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        redirect: 'error',
+        signal: controller.signal,
+      }); } catch (error) { if (error instanceof SandboxRuntimeError) throw error; if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) { throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT); } throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE); }
 
       if (!response || !Number.isInteger(response.status)) {
         throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
@@ -273,9 +362,11 @@ export const createOpenSandboxProvider = ({
         }
         throw mapHttpError(response.status);
       }
-      if (!parseJson) return response;
+      if (responseMode === 'none') return response;
       try {
-        return await parseJsonObject(response);
+        if (responseMode === 'json') return await parseJsonObject(response);
+        if (responseMode === 'empty') return await parseEmptyResponse(response);
+        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
       } catch (error) {
         if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
           throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT);
@@ -287,27 +378,99 @@ export const createOpenSandboxProvider = ({
       return await Promise.race([operation, deadline]);
     } finally {
       clock.clearTimeout(timer);
+      if (signal && onExternalAbort) {
+        signal.removeEventListener('abort', onExternalAbort);
+      }
     }
   };
 
-  const create = async (rawInput) => {
+  const get = async (rawHandle, signal, deadlineMs = timeoutMs) => {
+    const handle = normalizeSandboxHandle(rawHandle);
+    const payload = await request({
+      path: `sandboxes/${encodeURIComponent(handle)}`,
+      method: 'GET',
+      expectedStatus: 200,
+      responseMode: 'json',
+      signal,
+      deadlineMs,
+    });
+    return normalizeOpenSandboxRecord(payload, clock.now());
+  };
+
+  const waitForPoll = (delayMs, signal) => new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT));
+      return;
+    }
+    let timer = null;
+    let settled = false;
+    const cleanup = () => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clock.clearTimeout(timer);
+      cleanup();
+      reject(new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT));
+    };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    timer = clock.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    }, delayMs);
+  });
+
+  const pollLifecycle = async (handle, targetStatus, { initialRecord = null, signal } = {}) => {
+    const startedAt = clock.now().getTime();
+    let record = initialRecord;
+    let attempts = 0;
+    while (attempts < LIFECYCLE_POLL_MAX_ATTEMPTS) {
+      if (record) {
+        if (record.status === targetStatus) return record;
+        if (TERMINAL_STATES.has(record.status)) {
+          throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE);
+        }
+      }
+      const elapsedMs = clock.now().getTime() - startedAt;
+      if (!Number.isFinite(elapsedMs) || elapsedMs >= LIFECYCLE_POLL_TIMEOUT_MS) break;
+      record = await get(handle, signal, LIFECYCLE_POLL_TIMEOUT_MS - elapsedMs);
+      attempts += 1;
+      if (record.status === targetStatus) return record;
+      if (TERMINAL_STATES.has(record.status)) {
+        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE);
+      }
+      const remainingMs = LIFECYCLE_POLL_TIMEOUT_MS - (clock.now().getTime() - startedAt);
+      if (attempts < LIFECYCLE_POLL_MAX_ATTEMPTS && remainingMs > 0) {
+        await waitForPoll(Math.min(LIFECYCLE_POLL_DELAY_MS, remainingMs), signal);
+      }
+    }
+    throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT);
+  };
+
+  const create = async (rawInput, signal) => {
     const input = normalizeSandboxCreateInput(rawInput);
     const body = {
       image: { uri: input.imageUri },
       entrypoint: input.entrypoint,
       resourceLimits: input.resourceLimits,
-      ...(input.timeoutSeconds === undefined ? {} : { timeout: input.timeoutSeconds }),
-      ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+      timeout: input.timeoutSeconds,
+      metadata: toOpenSandboxMetadata(input.metadata),
+      networkPolicy: input.networkPolicy,
     };
     const payload = await request({
       path: 'sandboxes',
       method: 'POST',
       expectedStatus: 202,
       body,
-      parseJson: true,
+      responseMode: 'json',
+      signal,
     });
+    let initialRecord;
     try {
-      return normalizeOpenSandboxRecord(payload);
+      initialRecord = normalizeOpenSandboxRecord(payload, clock.now());
     } catch (error) {
       let handle = null;
       try {
@@ -324,20 +487,125 @@ export const createOpenSandboxProvider = ({
       }
       throw error;
     }
+    return pollLifecycle(initialRecord.handle, 'running', { initialRecord, signal });
   };
 
-  const get = async (rawHandle) => {
-    const handle = normalizeSandboxHandle(rawHandle);
+  const list = async (rawInput) => {
+    const input = normalizeSandboxProviderListInput(rawInput);
+    const url = buildUrl('sandboxes');
+    const providerMetadata = toOpenSandboxMetadata(input.metadata);
+    for (const [key, value] of Object.entries(providerMetadata)) {
+      url.searchParams.append('metadata', `${key}=${value}`);
+    }
+    url.searchParams.set('page', String(input.page));
+    url.searchParams.set('pageSize', String(input.pageSize));
     const payload = await request({
-      path: `sandboxes/${encodeURIComponent(handle)}`,
+      url,
       method: 'GET',
       expectedStatus: 200,
-      parseJson: true,
+      responseMode: 'json',
+      signal: input.signal,
     });
-    return normalizeOpenSandboxRecord(payload);
+    if (!Array.isArray(payload.items)
+      || !payload.pagination
+      || typeof payload.pagination !== 'object'
+      || Array.isArray(payload.pagination)) {
+      throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+    }
+    const pagination = payload.pagination;
+    const expectedTotalPages = pagination.totalItems === 0
+      ? 0
+      : Math.ceil(pagination.totalItems / input.pageSize);
+    if (!Number.isSafeInteger(pagination.page)
+      || pagination.page !== input.page
+      || !Number.isSafeInteger(pagination.pageSize)
+      || pagination.pageSize !== input.pageSize
+      || !Number.isSafeInteger(pagination.totalItems)
+      || pagination.totalItems < 0
+      || !Number.isSafeInteger(pagination.totalPages)
+      || pagination.totalPages < 0
+      || pagination.totalPages !== expectedTotalPages
+      || typeof pagination.hasNextPage !== 'boolean'
+      || pagination.hasNextPage !== (pagination.page < pagination.totalPages)
+      || payload.items.length > input.pageSize
+      || payload.items.length > pagination.totalItems) {
+      throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+    }
+    const items = payload.items.map((item) => Object.freeze({
+      ...normalizeOpenSandboxRecord(item, clock.now()),
+      metadata: fromOpenSandboxMetadata(item.metadata),
+    }));
+    return Object.freeze({
+      items: Object.freeze(items),
+      page: input.page,
+      pageSize: input.pageSize,
+      hasMore: pagination.hasNextPage,
+    });
   };
 
-  const getEndpoint = async (rawHandle, rawOptions) => {
+  const renewExpiration = async (rawHandle, rawExpiresAt, signal) => {
+    const handle = normalizeSandboxHandle(rawHandle);
+    const expiresAt = normalizeFutureSandboxExpiry(rawExpiresAt, clock.now());
+    const requestedExpiryMs = Date.parse(expiresAt);
+    let primaryError = null;
+    try {
+      const payload = await request({
+        path: `sandboxes/${encodeURIComponent(handle)}/renew-expiration`,
+        method: 'POST',
+        expectedStatus: 200,
+        body: { expiresAt },
+        responseMode: 'json',
+        signal,
+      });
+      const result = normalizeSandboxRenewalResult({
+        handle: payload.id ?? handle,
+        expiresAt: payload.expiresAt,
+      }, clock.now());
+      if (result.handle !== handle || Date.parse(result.expiresAt) < requestedExpiryMs) {
+        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+      }
+      return result;
+    } catch (error) {
+      if (!(error instanceof SandboxRuntimeError)
+        || ![
+          SANDBOX_ERROR_CODES.PROVIDER_FAILURE,
+          SANDBOX_ERROR_CODES.REQUEST_TIMEOUT,
+          SANDBOX_ERROR_CODES.RESPONSE_INVALID,
+        ].includes(error.code)) {
+        throw error;
+      }
+      primaryError = error;
+    }
+
+    const reconcileStartedAt = clock.now().getTime();
+    for (let attempt = 0; attempt < RENEW_RECONCILE_MAX_ATTEMPTS; attempt += 1) {
+      const elapsedMs = clock.now().getTime() - reconcileStartedAt;
+      if (!Number.isFinite(elapsedMs) || elapsedMs >= RENEW_RECONCILE_TIMEOUT_MS) throw primaryError;
+      let record;
+      try {
+        record = await get(handle, signal, RENEW_RECONCILE_TIMEOUT_MS - elapsedMs);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        if (attempt + 1 >= RENEW_RECONCILE_MAX_ATTEMPTS) throw primaryError;
+        const remainingMs = RENEW_RECONCILE_TIMEOUT_MS - (clock.now().getTime() - reconcileStartedAt);
+        if (remainingMs <= 0) throw primaryError;
+        await waitForPoll(Math.min(LIFECYCLE_POLL_DELAY_MS, remainingMs), signal);
+        continue;
+      }
+      if (Date.parse(record.expiresAt) >= requestedExpiryMs) {
+        return Object.freeze({ handle, expiresAt: record.expiresAt });
+      }
+      if (TERMINAL_STATES.has(record.status)) throw primaryError;
+      if (attempt + 1 < RENEW_RECONCILE_MAX_ATTEMPTS) {
+        const remainingMs = RENEW_RECONCILE_TIMEOUT_MS - (clock.now().getTime() - reconcileStartedAt);
+        if (remainingMs <= 0) throw primaryError;
+        await waitForPoll(Math.min(LIFECYCLE_POLL_DELAY_MS, remainingMs), signal);
+      }
+    }
+    throw primaryError;
+  };
+
+  const getEndpoint = async (rawHandle, rawOptions, signal) => {
     const handle = normalizeSandboxHandle(rawHandle);
     const options = normalizeSandboxEndpointOptions(rawOptions);
     const url = buildUrl(`sandboxes/${encodeURIComponent(handle)}/endpoints/${options.port}`);
@@ -356,7 +624,8 @@ export const createOpenSandboxProvider = ({
       url,
       method: 'GET',
       expectedStatus: 200,
-      parseJson: true,
+      responseMode: 'json',
+      signal,
     });
     return normalizeEndpointConnection({
       endpoint: payload.endpoint,
@@ -364,35 +633,38 @@ export const createOpenSandboxProvider = ({
     });
   };
 
-  const destroy = async (rawHandle) => {
+  const destroy = async (rawHandle, signal) => {
     const handle = normalizeSandboxHandle(rawHandle);
     await request({
       path: `sandboxes/${encodeURIComponent(handle)}`,
       method: 'DELETE',
       expectedStatus: 204,
+      signal,
     });
   };
 
-  const pause = async (rawHandle) => {
+  const pause = async (rawHandle, signal) => {
     const handle = normalizeSandboxHandle(rawHandle);
-    const payload = await request({
+    await request({
       path: `sandboxes/${encodeURIComponent(handle)}/pause`,
       method: 'POST',
-      expectedStatus: 200,
-      parseJson: true,
+      expectedStatus: 202,
+      responseMode: 'empty',
+      signal,
     });
-    return normalizeOpenSandboxRecord(payload);
+    return pollLifecycle(handle, 'paused', { signal });
   };
 
-  const resume = async (rawHandle) => {
+  const resume = async (rawHandle, signal) => {
     const handle = normalizeSandboxHandle(rawHandle);
-    const payload = await request({
+    await request({
       path: `sandboxes/${encodeURIComponent(handle)}/resume`,
       method: 'POST',
-      expectedStatus: 200,
-      parseJson: true,
+      expectedStatus: 202,
+      responseMode: 'empty',
+      signal,
     });
-    return normalizeOpenSandboxRecord(payload);
+    return pollLifecycle(handle, 'running', { signal });
   };
 
   const getExecdEndpoint = async (rawHandle) => {
@@ -402,7 +674,7 @@ export const createOpenSandboxProvider = ({
       url: endpointUrl,
       method: 'GET',
       expectedStatus: 200,
-      parseJson: true,
+      responseMode: 'json',
     });
     return normalizeEndpointConnection({
       endpoint: payload.endpoint,
@@ -422,25 +694,15 @@ export const createOpenSandboxProvider = ({
     }, timeoutMs);
     const operation = (async () => {
       let response;
-      try {
-        const reqHeaders = {
-          [EXECD_TOKEN_HEADER]: execdHeaders[EXECD_TOKEN_HEADER] || '',
-          ...(extraHeaders || {}),
-        };
-        response = await fetchImpl(new URL(path, execdEndpoint), {
-          method,
-          headers: reqHeaders,
-          ...(body !== undefined && !rawBody ? { body: JSON.stringify(body) } : {}),
-          ...(rawBody !== undefined ? { body: rawBody } : {}),
-          redirect: 'error',
-          signal: controller.signal,
-        });
-      } catch (error) {
-        if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
-          throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT);
-        }
-        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE);
-      }
+      try { const reqHeaders = mergeEndpointHeaders(execdHeaders, extraHeaders || {});
+      response = await fetchImpl(new URL(path, execdEndpoint), {
+        method,
+        headers: reqHeaders,
+        ...(body !== undefined && !rawBody ? { body: JSON.stringify(body) } : {}),
+        ...(rawBody !== undefined ? { body: rawBody } : {}),
+        redirect: 'error',
+        signal: controller.signal,
+      }); } catch (error) { if (error instanceof SandboxRuntimeError) throw error; if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) { throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT); } throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE); }
 
       if (!response || !Number.isInteger(response.status)) {
         throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
@@ -522,24 +784,16 @@ export const createOpenSandboxProvider = ({
 
     const operation = (async () => {
       let response;
-      try {
-        response = await fetchImpl(new URL('command', endpoint.endpoint), {
-          method: 'POST',
-          headers: {
-            'Accept': 'text/event-stream',
-            'Content-Type': 'application/json',
-            [EXECD_TOKEN_HEADER]: endpoint.headers[EXECD_TOKEN_HEADER] || '',
-          },
-          body: JSON.stringify(body),
-          redirect: 'error',
-          signal: controller.signal,
-        });
-      } catch (error) {
-        if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
-          throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT);
-        }
-        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE);
-      }
+      try { response = await fetchImpl(new URL('command', endpoint.endpoint), {
+        method: 'POST',
+        headers: mergeEndpointHeaders(endpoint.headers, {
+          'Accept': 'text/event-stream',
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify(body),
+        redirect: 'error',
+        signal: controller.signal,
+      }); } catch (error) { if (error instanceof SandboxRuntimeError) throw error; if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) { throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT); } throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE); }
 
       if (!response || !Number.isInteger(response.status)) {
         throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
@@ -598,22 +852,14 @@ export const createOpenSandboxProvider = ({
 
     const operation = (async () => {
       let response;
-      try {
-        response = await fetchImpl(new URL(logPath, endpoint.endpoint), {
-          method: 'GET',
-          headers: {
-            'Accept': 'text/plain',
-            [EXECD_TOKEN_HEADER]: endpoint.headers[EXECD_TOKEN_HEADER] || '',
-          },
-          redirect: 'error',
-          signal: controller.signal,
-        });
-      } catch (error) {
-        if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
-          throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT);
-        }
-        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE);
-      }
+      try { response = await fetchImpl(new URL(logPath, endpoint.endpoint), {
+        method: 'GET',
+        headers: mergeEndpointHeaders(endpoint.headers, {
+          'Accept': 'text/plain',
+        }),
+        redirect: 'error',
+        signal: controller.signal,
+      }); } catch (error) { if (error instanceof SandboxRuntimeError) throw error; if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) { throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT); } throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE); }
 
       if (!response || !Number.isInteger(response.status)) {
         throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
@@ -664,21 +910,12 @@ export const createOpenSandboxProvider = ({
 
     const operation = (async () => {
       let response;
-      try {
-        response = await fetchImpl(new URL(`command?id=${encodeURIComponent(commandId)}`, endpoint.endpoint), {
-          method: 'DELETE',
-          headers: {
-            [EXECD_TOKEN_HEADER]: endpoint.headers[EXECD_TOKEN_HEADER] || '',
-          },
-          redirect: 'error',
-          signal: controller.signal,
-        });
-      } catch (error) {
-        if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
-          throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT);
-        }
-        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE);
-      }
+      try { response = await fetchImpl(new URL(`command?id=${encodeURIComponent(commandId)}`, endpoint.endpoint), {
+        method: 'DELETE',
+        headers: mergeEndpointHeaders(endpoint.headers),
+        redirect: 'error',
+        signal: controller.signal,
+      }); } catch (error) { if (error instanceof SandboxRuntimeError) throw error; if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) { throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT); } throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE); }
 
       if (!response || !Number.isInteger(response.status)) {
         throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
@@ -757,21 +994,12 @@ export const createOpenSandboxProvider = ({
 
     const operation = (async () => {
       let response;
-      try {
-        response = await fetchImpl(new URL(`files/download?path=${encodeURIComponent(fullPath)}`, endpoint.endpoint), {
-          method: 'GET',
-          headers: {
-            [EXECD_TOKEN_HEADER]: endpoint.headers[EXECD_TOKEN_HEADER] || '',
-          },
-          redirect: 'error',
-          signal: controller.signal,
-        });
-      } catch (error) {
-        if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
-          throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT);
-        }
-        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE);
-      }
+      try { response = await fetchImpl(new URL(`files/download?path=${encodeURIComponent(fullPath)}`, endpoint.endpoint), {
+        method: 'GET',
+        headers: mergeEndpointHeaders(endpoint.headers),
+        redirect: 'error',
+        signal: controller.signal,
+      }); } catch (error) { if (error instanceof SandboxRuntimeError) throw error; if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) { throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT); } throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_FAILURE); }
 
       if (!response || !Number.isInteger(response.status)) {
         throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
@@ -849,6 +1077,8 @@ export const createOpenSandboxProvider = ({
     id: PROVIDER_ID,
     create,
     get,
+    list,
+    renewExpiration,
     getEndpoint,
     destroy,
     supportsRealCreate: false,

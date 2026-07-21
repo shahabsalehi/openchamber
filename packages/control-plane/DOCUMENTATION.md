@@ -291,8 +291,11 @@ timestamps, and fixed readiness `disabled`. Its serializer is constructed from
 an allowlist and never includes provider ID/handle, endpoint, headers, R2 key,
 capability, credential, secret, claim fence, or retry internals.
 
-Every POST requires `X-Operation-Id` and exact JSON containing `sessionId`,
-non-negative `expectedGeneration`, and non-negative `expectedRevision`.
+Every POST requires an opaque 8-63 character `X-Operation-Id` and exact JSON
+containing `sessionId`, non-negative `expectedGeneration`, and non-negative
+`expectedRevision`. This sandbox-runtime-only limit is enforced before the
+reservation fingerprint or Project Durable Object call; unrelated operation
+IDs retain their existing 128-character maximum.
 Checkpoint additionally requires a positive `workspaceRevision`; every other
 action rejects that field. Unknown fields and query parameters are rejected.
 Reservations return `202` with an immutable sanitized reservation record.
@@ -776,11 +779,14 @@ The trusted bridge sequence is:
    same claim fence returns `INVALID_TRANSITION` and never authorizes another
    effect; and
 4. `completeSandboxRuntimeOperation` exact-object validates provider and
-   supervision data, binds supervision generation to the operation target and
-   its provider handle to the completion provider, fingerprints every field,
-   stores any returned handle in the private operation row, then applies state
-   only if operation, generation, lifecycle revision, active pointer, and claim
-   fence still match.
+   supervision data plus a required private `orphanProviders` array of at most
+   200 minimal `{ providerId, handle }` references. The array must already be
+   case-sensitive tuple-unique and sorted by provider ID then handle; completion
+   rejects rather than canonicalizing malformed input. It binds supervision
+   generation to the operation target and its provider handle to the completion
+   provider, fingerprints every field, stores any returned handle in the private
+   operation row, then applies state only if operation, generation, lifecycle
+   revision, active pointer, and claim fence still match.
 
 All four SQLite transitions use `transactionSync`; the bridge performs external
 I/O outside the DO. Completion never accepts an endpoint, credential,
@@ -806,8 +812,20 @@ successful start retires any pending orphan record for the identity it adopts.
 If that identity is displaced again later, the unique cleanup row is atomically
 refreshed and returned to `pending` with the new operation fences and zero
 attempts.
-Completion fingerprint v2 covers supervision while exact v1 no-supervision
-replays remain idempotent for rows written before this migration.
+For a terminal completion, every orphan-eligible provider completion is combined
+with every explicit orphan reference, deduplicated across both sources, and
+filtered against the provider identity adopted by the resulting runtime. Every
+remaining existing-table orphan row is upserted in the same SQLite transaction
+as operation completion; one insertion failure rolls back the operation and all
+orphan writes. `orphanCleanupRecorded` is true only when that transaction records
+or refreshes every eligible orphan, and is false when none remain. Provider
+references remain private and never enter public DTOs, logs, endpoints, headers,
+or metadata.
+
+Completion fingerprint v3 covers supervision and the canonical orphan list.
+Exact v3 retries replay idempotently. Exact persisted v2 replays and v1
+no-supervision replays remain compatible only when the validated orphan list is
+empty; a non-empty list can replay only an exact v3 fingerprint.
 
 Runtime-owned lease rows remain compatible with the legacy private lease RPCs,
 but those RPCs cannot race an active runtime operation or move the lease to a

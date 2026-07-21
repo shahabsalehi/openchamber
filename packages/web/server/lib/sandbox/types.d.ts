@@ -34,12 +34,31 @@ export interface SandboxLogger {
   warn?(message: string, context?: Readonly<Record<string, string | number | boolean | null>>): void;
 }
 
+export interface SandboxOwnershipMetadata {
+  environment: 'non-production';
+  projectId: string;
+  sessionId: string;
+  generation: number;
+  operationId: string;
+}
+
+export interface SandboxNetworkEgressRule {
+  action: 'allow';
+  target: string;
+}
+
+export interface SandboxNetworkPolicy {
+  defaultAction: 'deny';
+  egress: readonly SandboxNetworkEgressRule[];
+}
+
 export interface SandboxCreateInput {
   imageUri: string;
   entrypoint: readonly string[];
   resourceLimits: Readonly<Record<string, string>>;
-  timeoutSeconds?: number;
-  metadata?: Readonly<Record<string, string>>;
+  timeoutSeconds: number;
+  metadata: SandboxOwnershipMetadata;
+  networkPolicy: SandboxNetworkPolicy;
 }
 
 export interface SandboxEndpointOptions {
@@ -63,7 +82,30 @@ export interface SandboxProviderRecord {
   handle: string;
   status: SandboxStatus;
   createdAt: string;
-  expiresAt: string | null;
+  expiresAt: string;
+}
+
+export interface SandboxProviderListRecord extends SandboxProviderRecord {
+  metadata: SandboxOwnershipMetadata;
+}
+
+export interface SandboxProviderListInput {
+  metadata: SandboxOwnershipMetadata;
+  page: number;
+  pageSize: number;
+  signal?: AbortSignal;
+}
+
+export interface SandboxProviderListResult {
+  items: readonly SandboxProviderListRecord[];
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+}
+
+export interface SandboxRenewalResult {
+  handle: string;
+  expiresAt: string;
 }
 
 export interface SandboxEndpointConnection {
@@ -73,10 +115,12 @@ export interface SandboxEndpointConnection {
 
 export interface SandboxProvider {
   readonly id: string;
-  create(input: SandboxCreateInput): Promise<SandboxProviderRecord>;
-  get(handle: string): Promise<SandboxProviderRecord>;
-  getEndpoint(handle: string, options: SandboxEndpointOptions): Promise<SandboxEndpointConnection>;
-  destroy(handle: string): Promise<void>;
+  create(input: SandboxCreateInput, signal?: AbortSignal): Promise<SandboxProviderRecord>;
+  get(handle: string, signal?: AbortSignal): Promise<SandboxProviderRecord>;
+  list(input: SandboxProviderListInput): Promise<SandboxProviderListResult>;
+  renewExpiration(handle: string, expiresAt: string, signal?: AbortSignal): Promise<SandboxRenewalResult>;
+  getEndpoint(handle: string, options: SandboxEndpointOptions, signal?: AbortSignal): Promise<SandboxEndpointConnection>;
+  destroy(handle: string, signal?: AbortSignal): Promise<void>;
 }
 
 export interface SandboxLeaseSnapshot extends SandboxProviderRecord {
@@ -93,12 +137,30 @@ export interface SandboxFailureSummary {
   code: SandboxErrorCode;
 }
 
+export interface SandboxReconcileInput {
+  metadata: SandboxOwnershipMetadata;
+  timeoutSeconds: number;
+  signal?: AbortSignal;
+}
+
+interface SandboxReconciliationCandidate extends SandboxProviderRecord {
+  providerId: string;
+}
+
+export type SandboxReconcileResult =
+  | Readonly<{ outcome: 'none' }>
+  | Readonly<{ outcome: 'adopted'; lease: SandboxLeaseSnapshot }>
+  | Readonly<{ outcome: 'terminal'; candidate: SandboxReconciliationCandidate }>
+  | Readonly<{ outcome: 'unresolved'; candidate: SandboxReconciliationCandidate | null }>
+  | Readonly<{ outcome: 'multiple'; candidates: readonly SandboxReconciliationCandidate[] }>;
+
 export interface SandboxRuntime {
   create(input: SandboxCreateInput): Promise<SandboxLeaseSnapshot>;
   get(handle: string): Promise<SandboxLeaseSnapshot>;
   getEndpoint(handle: string, options: SandboxEndpointOptions): Promise<SandboxEndpointConnection>;
   destroy(handle: string): Promise<SandboxDestroyResult>;
   list(): readonly SandboxLeaseSnapshot[];
+  reconcile(input: SandboxReconcileInput): Promise<SandboxReconcileResult>;
   dispose(): Promise<void>;
 }
 
@@ -215,7 +277,7 @@ export interface BridgeResumeResult {
   generation: number;
   claimFence: number;
   status: SandboxStatus;
-  expiresAt: string | null;
+  expiresAt: string;
 }
 
 export type BridgeLifecycleResult = BridgePauseResult | BridgeResumeResult;
@@ -307,8 +369,8 @@ export interface BridgeSSECommandResult {
 // ── Extended provider contract for bridge ──
 
 export interface SandboxProviderLifecycle {
-  pause(handle: string): Promise<SandboxProviderRecord>;
-  resume(handle: string): Promise<SandboxProviderRecord>;
+  pause(handle: string, signal?: AbortSignal): Promise<SandboxProviderRecord>;
+  resume(handle: string, signal?: AbortSignal): Promise<SandboxProviderRecord>;
 }
 
 export interface SandboxProviderCommand {

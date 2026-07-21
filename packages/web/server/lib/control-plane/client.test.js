@@ -297,6 +297,63 @@ describe('control-plane client named operations', () => {
     expect(fetchCalls).toBe(0);
   });
 
+  it('limits only sandbox-runtime reservation request operation IDs to 63 characters', async () => {
+    let sandboxFetchCalls = 0;
+    const sandboxClient = createControlPlaneClient({
+      origin: 'https://control.example',
+      fetchImpl: async (_url, init) => {
+        sandboxFetchCalls += 1;
+        return jsonResponse({
+          ...runtimeReservation('ensure', 'start'),
+          operationId: init.headers.get('x-operation-id'),
+        }, 202);
+      },
+    });
+    const maximumSandboxOperationId = 's'.repeat(63);
+    const input = { sessionId: SESSION_ID, expectedGeneration: 0, expectedRevision: 0 };
+    expect((await sandboxClient.ensureSandboxRuntime(PROJECT_ID, input, {
+      assertion: ASSERTION,
+      operationId: maximumSandboxOperationId,
+    })).body.operationId).toBe(maximumSandboxOperationId);
+    expect(await errorCode(Promise.resolve().then(() => sandboxClient.ensureSandboxRuntime(
+      PROJECT_ID,
+      input,
+      { assertion: ASSERTION, operationId: 's'.repeat(64) },
+    )))).toBe('VALIDATION_FAILED');
+    expect(sandboxFetchCalls).toBe(1);
+
+    let unrelatedOperationHeader = null;
+    const unrelatedClient = createControlPlaneClient({
+      origin: 'https://control.example',
+      fetchImpl: async (_url, init) => {
+        unrelatedOperationHeader = init.headers.get('x-operation-id');
+        return jsonResponse(project, 201);
+      },
+    });
+    const maximumGenericOperationId = 'g'.repeat(128);
+    await unrelatedClient.createProject(
+      { name: 'Project' },
+      { assertion: ASSERTION, operationId: maximumGenericOperationId },
+    );
+    expect(unrelatedOperationHeader).toBe(maximumGenericOperationId);
+
+    const legacyResponseOperationId = 'r'.repeat(128);
+    const responseClient = createControlPlaneClient({
+      origin: 'https://control.example',
+      fetchImpl: async () => jsonResponse({
+        ...runtimeStatus,
+        activeOperation: {
+          operationId: legacyResponseOperationId,
+          kind: 'ensure',
+          state: 'inProgress',
+        },
+      }),
+    });
+    expect((await responseClient.getSandboxRuntimeStatus(PROJECT_ID, {
+      assertion: ASSERTION,
+    })).body.activeOperation.operationId).toBe(legacyResponseOperationId);
+  });
+
   it('rejects redirects manually, cancels their body, and exposes no redirect details', async () => {
     let canceled = false;
     const client = createControlPlaneClient({

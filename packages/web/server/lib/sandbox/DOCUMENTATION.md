@@ -65,25 +65,47 @@ A registered provider is private to this server module and has a non-empty
 `id` plus these operations:
 
 ```ts
-create({ imageUri, entrypoint, resourceLimits, timeoutSeconds?, metadata? })
-get(handle)
-getEndpoint(handle, { port, useServerProxy?, expiresAt? })
-destroy(handle)
+create({ imageUri, entrypoint, resourceLimits, timeoutSeconds, metadata, networkPolicy }, signal?)
+get(handle, signal?)
+list({ metadata, page, pageSize, signal? })
+renewExpiration(handle, absoluteExpiresAt, signal?)
+getEndpoint(handle, { port, useServerProxy?, expiresAt? }, signal?)
+destroy(handle, signal?)
 ```
 
 `entrypoint` must contain at least one string. `resourceLimits` must be a
-non-empty record whose values are strings. Optional `timeoutSeconds` is an
-integer from 60 through 86400. `create` and `get` return allowlisted lifecycle
-records only: handle, canonical status, valid ISO creation time, and a valid ISO
-expiry or `null`. Status is one of `pending`, `running`, `pausing`, `paused`,
+non-empty record whose values are strings. `timeoutSeconds` is required and is
+an integer from 60 through 86400. `metadata` is an exact provider-neutral
+ownership object containing `environment: 'non-production'`, `projectId`,
+`sessionId`, positive safe-integer `generation`, and `operationId`. String
+ownership values use the provider label-value syntax and are at most 63
+characters. No arbitrary create metadata is accepted.
+
+`networkPolicy` is also required and exact: `defaultAction` must be `deny`, and
+`egress` is a bounded list of at most 64 `{ action: 'allow', target }` rules.
+Targets are normalized lower-case FQDNs or leading `*.` wildcard FQDNs. Omitted,
+null, allow-default, malformed, and empty-object policies fail validation. An
+empty `egress` list means deny all; it never becomes the provider's permissive
+omitted/empty default.
+
+`create` and `get` return allowlisted lifecycle records only: handle, canonical
+status, valid ISO creation time, and a finite expiry strictly in the future.
+Expiry is never optional or `null`. Status is one of `pending`, `running`, `pausing`, `paused`,
 `resuming`, `stopping`, `terminated`, `failed`, or `unknown`. Provider payload
-extras are discarded.
+extras are discarded. Terminal states remain represented so reconciliation can
+distinguish known terminal failure from transition or absence.
+
+Provider listing accepts page numbers from 1 and page sizes from 1 through 200.
+It returns a strictly normalized page containing lifecycle records plus neutral
+ownership metadata and `hasMore`; failure is never converted into an empty
+page. Renewal accepts one absolute RFC3339 expiry and returns only the matching
+handle and finite future expiry.
 `getEndpoint` is the sole operation that returns a connection object containing
 an endpoint URL and optional connection headers. The registry is sealed after
 default provider construction.
 
-The runtime exposes `create`, `get`, `getEndpoint`, `destroy`, `list`, and
-`dispose`. `get` refreshes an owned lease from the provider and verifies that
+The runtime exposes `create`, `get`, `getEndpoint`, `destroy`, `list`,
+`reconcile`, and `dispose`. `get` refreshes an owned lease from the provider and verifies that
 the returned handle matches. A canonical provider not-found evicts the stale
 local lease; malformed or mismatched responses retain it. `list` is deliberately
 not an authoritative provider query: it returns the last create/get snapshot in
@@ -91,20 +113,62 @@ process memory and can be stale until `get` succeeds. Listings and operation
 results never include provider configuration, create metadata, endpoint URLs,
 connection headers, status reason/message fields, or API keys.
 
+`reconcile({ metadata, timeoutSeconds, signal? })` is provider-neutral and never
+creates or deletes. It scans at most two listing rounds, four 50-item pages per
+round, 400 returned candidates, and 10 seconds. Metadata is matched again
+client-side exactly after adapter translation. Zero matches return
+`{ outcome: 'none' }`, which explicitly is not authoritative proof of absence.
+If the fourth page still reports `hasMore`, the capped round is incomplete and
+returns `unresolved` with a null candidate instead of selecting from partial data.
+Unique handles are sorted; multiple matches return `multiple` without adopting,
+renewing, or deleting. One match is inspected at most eight times. Terminal
+state returns `terminal`; transition, unknown state, or an internal deadline
+returns `unresolved`. A running candidate is renewed exactly once to current
+time plus the supplied create timeout before adoption. Capacity, duplicate
+handle, duplicate ownership, and concurrent-adoption checks happen before that
+renewal. An adopted lease remains private process-local state.
+
+Every non-null `terminal`, `unresolved`, or `multiple` candidate contains only
+the runtime's fixed normalized `providerId` plus handle, status, creation time,
+and expiry. Provider list payloads cannot supply or override that provider ID,
+and ownership metadata is never exposed in reconciliation results. This gives a
+later durable coordinator a provider-qualified orphan cleanup reference without
+crossing the private metadata boundary. `adopted.lease` retains its existing
+lease snapshot shape.
+
 ## OpenSandbox adapter
 
 The adapter implements the verified OpenSandbox lifecycle API:
 
 - `POST /sandboxes` sends exactly `{ image: { uri }, entrypoint,
-  resourceLimits, timeout?, metadata? }`, requires HTTP 202, and allowlists
-  lifecycle fields from the JSON response. It does not request persistent
+  resourceLimits, timeout, metadata, networkPolicy }`, requires HTTP 202 JSON,
+  and never repeats the POST. The accepted response may be asynchronous; the
+  adapter performs at most 20 GET inspections, with a 30-second time cap and
+  500ms maximum inter-poll delay, until `Running`. `Failed` and `Terminated` are
+  terminal unsuccessful results. Other known transitions and unknown non-empty
+  states are tolerated only until the bound. It does not request persistent
   volumes.
+- Neutral ownership metadata is translated only here to exactly
+  `drarticle.io/environment`, `drarticle.io/project`,
+  `drarticle.io/session`, `drarticle.io/generation`, and
+  `drarticle.io/operation`. Environment is always `non-production`. No reserved
+  provider label prefix is written.
 - `GET /sandboxes/{id}` requires HTTP 200. Both create and get read the current
   structured `status.state`; known Alibaba OpenSandbox states map to the
   canonical lower-case union and any non-empty future state maps to `unknown`.
   Provider `status.reason` and `status.message` are intentionally omitted.
-  Provider responses that omit `expiresAt` normalize it to `null`, which is
-  valid for manually cleaned-up sandboxes.
+  Every normalized record requires a finite future `expiresAt`; omission,
+  `null`, past expiry, or malformed expiry is invalid.
+- `GET /sandboxes` sends each translated ownership filter as a separate encoded
+  `metadata=key=value` query value plus `page` and `pageSize`. The adapter
+  strictly validates `{ items, pagination: { page, pageSize, totalItems,
+  totalPages, hasNextPage } }`, maps ownership labels back to neutral fields,
+  and exposes `hasMore`.
+- `POST /sandboxes/{id}/renew-expiration` is sent exactly once with
+  `{ expiresAt }`, requires HTTP 200 JSON, and validates a matching handle plus
+  finite future expiry at least as late as requested. A network/5xx/timeout or
+  malformed-success ambiguity is reconciled with bounded GET inspection; the
+  mutating POST is never repeated.
 - `GET /sandboxes/{id}/endpoints/{port}` translates `useServerProxy` to
   `use_server_proxy`, converts optional absolute ISO `expiresAt` to floored Unix
   epoch seconds in `expires`, requires the translated expiry to be in the future
@@ -114,6 +178,10 @@ The adapter implements the verified OpenSandbox lifecycle API:
 - `DELETE /sandboxes/{id}` requires HTTP 204. The response acknowledges
   asynchronous provider cleanup; OpenChamber does not poll or invent a second
   provider lifecycle.
+- Pause and resume each issue exactly one POST to `/pause` or `/resume`, require
+  an empty HTTP 202 response, then use the same bounded GET polling discipline
+  to `Paused` or `Running`. HTTP 404 and 409 retain their sanitized distinct
+  errors. `Failed` and `Terminated` are unsuccessful; unknown states time out.
 
 If a successful create response cannot produce a safe lifecycle record but does
 contain a syntactically valid sandbox handle, the adapter treats it as a known
@@ -135,12 +203,21 @@ The module is below the browser/runtime API boundary. There are no routes or
 shared UI contracts, and `packages/web/server/index.d.ts` does not re-export it.
 Only trusted server-side code may receive a connection from `getEndpoint`.
 
-Endpoint URLs and connection headers are returned for the immediate call only.
+Endpoint URLs and connection headers are opaque service/routing authentication
+returned for the immediate server-side HTTP or WebSocket call only.
 They are not copied into lease state, snapshots, listings, errors, or logs.
 Sandbox create input, metadata, files, resource limits, control-plane URLs, API
 keys, and provider credentials are never persisted. The runtime logs only a
 stable error code when cleanup remains pending; it never logs raw provider
 errors or responses.
+
+Endpoint consumers preserve all provider-returned headers. Execd requests no
+longer select one assumed token header and discard routing headers. The
+control-plane `OPEN-SANDBOX-API-KEY` header is rejected if it appears in an
+endpoint payload and is never sent to endpoint, execd, health, or WebSocket
+traffic. Case-insensitive header duplicates and consumer-header collisions fail
+closed. In particular, an endpoint `Authorization` header cannot be silently
+overwritten by the bridge's OpenCode Basic authentication.
 
 Provider error bodies are untrusted. Their `{ code, message }` values are not
 forwarded. Unknown thrown values and abort reasons are replaced by canonical
@@ -148,7 +225,8 @@ forwarded. Unknown thrown values and abort reasons are replaced by canonical
 
 ## Lifecycle and cleanup
 
-1. `create` validates and normalizes input, reserves capacity before awaiting
+1. `create` validates and normalizes finite TTL, exact ownership, and deny-first
+   network input, reserves capacity before awaiting
    the provider, then stores only the returned safe lifecycle record in memory.
    Provider adapters compensate known partial allocations before returning an
    invalid-response failure; no malformed record is registered as a lease.
@@ -164,7 +242,7 @@ forwarded. Unknown thrown values and abort reasons are replaced by canonical
 5. Any other destroy failure retains the lease as `cleanupPending`, consumes
    capacity, emits only a sanitized warning, and can be retried by `destroy`.
 6. `dispose` immediately prevents new creates, inspections, and endpoint
-   resolutions, waits for creates that were already in flight, then attempts every resulting
+   resolutions, waits for creates and reconciliations that were already in flight, then attempts every resulting
    active and cleanup-pending lease with `Promise.allSettled`. Successful leases
    are removed. Failures remain retryable in memory and are aggregated as
    code-only summaries in `SANDBOX_DISPOSE_FAILED`. Calling `dispose` again
@@ -178,19 +256,19 @@ Three independent time values must not be conflated:
   body parse with one race-settled deadline, including when injected fetch or
   parser promises ignore `AbortSignal`. Its injected timer is always cleared,
   abort is best effort, and timeout maps to `SANDBOX_REQUEST_TIMEOUT`.
-- Create `timeoutSeconds` is forwarded as OpenSandbox `timeout` and acts as the
-  provider lifecycle TTL. The current API bounds it to 60 through 86400 seconds,
-  but does not give OpenChamber a sufficiently precise lifecycle anchor to
-  derive an expiry when the response omits `expiresAt`. OpenChamber therefore
-  preserves provider expiry as `null` instead of guessing whether TTL began at
-  request acceptance, provisioning, or running state.
+- Create `timeoutSeconds` is required, forwarded as OpenSandbox `timeout`, and
+  acts as the provider lifecycle TTL. The API bounds it to 60 through 86400
+  seconds. OpenChamber requires the provider to return a finite future absolute
+  expiry and never synthesizes one from create acceptance or provisioning.
+- Reconciliation renewal computes one new absolute expiry from the injected
+  runtime clock plus that same finite timeout. Renewal is explicit and is never
+  an automatic background extension.
 - Endpoint `expiresAt` is an absolute caller-supplied ISO time translated to
   floored epoch seconds. It controls the endpoint credential/URL, not sandbox
   lifetime.
 
-Lease or endpoint renewal is intentionally deferred. There is no hidden retry,
-automatic TTL extension, or synthesized expiry. A future renew operation needs
-an explicit provider-neutral contract and ownership policy.
+There is no hidden mutation retry, automatic TTL extension, or synthesized
+expiry. Endpoint expiry remains independent from sandbox renewal.
 
 ## Durable versus ephemeral state
 
@@ -243,15 +321,16 @@ documented lifecycle status for each operation.
 
 Provider additions should implement the same private operation descriptor and
 register through the factory. A future durable design may use a Cloudflare
-Durable Object for serialized lease ownership, R2 for durable state or artifacts,
-and provider reconciliation after restart. That DO/R2/provider architecture is
-a roadmap boundary, not behavior implemented or implied by this process-local
-runtime.
+Durable Object for serialized lease ownership and R2 for durable state or
+artifacts. The process-local runtime supplies bounded provider lookup and
+adoption primitives, but invoking them after a durable begin remains outside
+this module. That DO/R2/dispatcher architecture is a roadmap boundary, not
+behavior implemented or implied by this process-local runtime.
 
 Routes, browser exposure, UI/settings, CLI flags, durable lease persistence,
 credential vaults, billing, migrations, provider deployment, Hetzner tooling,
-Cloudflare Durable Objects/R2, renew operations, and crash-recovery
-reconciliation are not part of this foundation. Each requires a separate trust,
+Cloudflare Durable Objects/R2, coordinator wiring, and crash-recovery dispatch
+are not part of this foundation. Each requires a separate trust,
 lifecycle, and runtime parity design before implementation.
 
 ## Validation
@@ -260,10 +339,12 @@ The focused tests use injected fetches, clocks, loggers, environments, and mock
 providers only. They cover disabled construction, configuration validation,
 request translation, API-key placement, lifecycle behavior, timeout aborts,
 ignored-abort deadline settlement, structured status/error mapping, timestamp
-and endpoint expiry validation, malformed-create compensation, authoritative
-inspection, malformed responses, bounded capacity, cleanup retry, aggregate
-disposal, shutdown continuation, and secret exclusion from safe values, logs,
-and errors.
+and endpoint expiry validation, deny-first network validation, exact metadata
+translation, bounded list pagination and reconciliation, one-shot renewal with
+GET reconciliation, malformed-create compensation, authoritative inspection,
+malformed responses, bounded capacity, cleanup retry, aggregate disposal,
+endpoint-header propagation/collision rejection, shutdown continuation, and
+secret exclusion from safe values, logs, and errors.
 
 ## Sandbox Bridge (milestone 5)
 
@@ -379,10 +460,11 @@ corresponding bridge operation is invoked.
 The OpenSandbox adapter (`providers/opensandbox.js`) implements all bridge
 capabilities:
 
-- **Lifecycle**: `POST /sandboxes/{id}/pause` and `/resume` with standard API
-  key auth and redirect rejection.
-- **Execd**: resolves endpoint on port 44772 and uses transient
-  `X-EXECD-ACCESS-TOKEN` header for all subsequent execd requests. Execd
+- **Lifecycle**: exactly one empty-202 `POST /sandboxes/{id}/pause` or `/resume`,
+  followed by bounded GET polling, with standard API key auth, caller abort
+  propagation, and redirect rejection.
+- **Execd**: resolves endpoint on port 44772 and preserves every transient
+  provider-returned opaque endpoint header for subsequent execd requests. Execd
   requests never carry the `OPEN-SANDBOX-API-KEY` header.
 - **Command**: `POST /command` with `{ command, cwd?, background?, timeout?, uid?, gid?, envs? }`
   and `Accept: text/event-stream`. Bounded SSE parsing extracts the command ID
@@ -528,8 +610,8 @@ The bridge factory, `createSandboxBridge`, and error codes are exported from
   validation, durable recovery, or crash-recovery reconciliation.
 - Provider idempotency for real create must be proven before
   `OPENCHAMBER_SANDBOX_BRIDGE_REAL_CREATE` can be enabled for any provider.
-- Lease renewal, automatic TTL extension, and endpoint expiration management are
-  not implemented.
+- Automatic TTL extension and browser endpoint exposure are not implemented.
+  Provider renewal exists only for bounded runtime adoption.
 - The bridge does not expose provider handles, endpoint headers, passwords, or
   bridge credentials. The final BFF must respect these boundaries.
 
@@ -558,15 +640,21 @@ The injected contracts are:
   `authority.beginSandboxRuntimeEffect`, and
   `authority.completeSandboxRuntimeOperation`, preserving the Project DO's
   exact operation/generation/revision/claim-fence sequence;
-- process-local `runtime.create`, `runtime.list`, and `runtime.destroy`;
+- process-local `runtime.create`, `runtime.reconcile`, `runtime.list`, and
+  `runtime.destroy`;
 - the real bridge operations for hydration, checkpoint capture, lifecycle, and
   exact OpenCode supervision;
 - `snapshotSource.read`, which must return `{ complete: true, revision, files }`;
 - `checkpointPublisher.publish`, which atomically and idempotently publishes by
   `operationId` and `expectedWorkspaceRevision` and confirms with
   `{ published: true }`; and
-- a fixed sandbox create input (or an injected resolver evaluated during start
-  preflight).
+- a fixed sandbox create input (or an injected trusted resolver evaluated during
+  start preflight). The resolved input is strictly normalized before durable
+  begin. Its exact non-production environment, session ID, generation, and
+  operation ID must match the durable claim; its project ID remains supplied by
+  the trusted create-input dependency and must pass the same ownership
+  normalization. Finite timeout and explicit deny-default network policy remain
+  mandatory.
 
 All dependencies are injected fakes in acceptance tests. The fake authoritative
 snapshot is quiescent while read; these tests do not prove a production
@@ -585,12 +673,16 @@ begin response for the same operation, target generation, lifecycle revision,
 and claim fence. Claim and begin are not retried. A rejected replay/no-op claim
 is ignored without dispatch; an unconfirmed claim or begin is left for the
 Project DO's existing stale-claim recovery. The coordinator never infers that a
-provider effect may be repeated.
+provider effect may be repeated. Coordinator operation IDs are bounded to 63
+characters because they become strict provider ownership metadata.
 
 Completion transport ambiguity is the only retried authority call. Every retry
 uses a parsed copy of one pre-serialized, byte-identical completion payload until
 the completion deadline. It never changes `outcome`, provider identity, or
-supervision and never repeats the provider effect.
+supervision and never repeats the provider effect. Every completion includes a
+private `orphanProviders` list, canonicalized by provider ID and handle, sorted,
+deduplicated, and bounded to 200. A handle already represented by the single
+unknown `provider` field is not duplicated in that list.
 
 ### Bounded scheduler and deadlines
 
@@ -624,6 +716,15 @@ production design.
   authoritative snapshot before begin; begin; call `runtime.create` exactly
   once; hydrate; start OpenCode with bridge-owned process-local credentials; and
   complete with the provider record plus supervision. Create is never retried.
+  If that one create fails ambiguously without a safe handle, call the bounded
+  `runtime.reconcile` exactly once with the normalized ownership, create TTL, and
+  operation signal. `none` remains `outcomeUnknown`; one adopted running lease
+  continues through the same hydration/OpenCode/completion path; terminal
+  evidence is `failed`; unresolved or multiple evidence is `outcomeUnknown`.
+  Terminal, unresolved, and every multiple candidate are carried only as
+  canonical private orphan references. Multiple candidates are never selected
+  or deleted. Malformed or failed reconciliation fails closed to
+  `outcomeUnknown` while retaining the original ambiguous create code.
   Any post-create failure attempts confirmed runtime destroy/not-found. Confirmed
   absence completes `failed`; otherwise the known handle is included only in an
   `outcomeUnknown` completion so the Project DO can record durable orphan work.
@@ -631,7 +732,7 @@ production design.
   tuple exists; call bridge pause; require the normalized matching provider
   response to be paused; and complete with provider and supervision both null.
 - **Resume**: claim and begin; call bridge resume; require a normalized matching
-  running response and a null or future expiry; start OpenCode with new
+  running response and a finite future non-null expiry; start OpenCode with new
   process-local credentials; and complete with the adopted provider identity,
   refreshed expiry, and new supervision. Resume performs no hidden hydration.
 - **Destroy**: claim and begin; attempt exact OpenCode stop but attempt sandbox
@@ -656,8 +757,11 @@ and relies on the publisher's idempotent key and expected-revision CAS.
 `outcomeUnknown` is used when a mutating provider call or checkpoint publication
 may have committed, including operation deadline, abort, network/5xx,
 malformed-success, or completion-transport ambiguity. A late start handle is
-never adopted locally after ambiguity; it is carried only to durable orphan
-recording.
+never guessed or recreated after ambiguity. Only the runtime's unique running
+reconciliation result may be adopted; a known uncleaned handle is carried only
+to durable orphan recording. Created, reconciled/adopted, and resumed active
+records require finite future expiry. Nullable expiry is reserved for unknown or
+terminal evidence that is not adopted as active state.
 
 Diagnostics are optional and failure-isolated. Events contain exactly:
 
@@ -688,11 +792,13 @@ returned handle that differs from the trusted claim handle. Resume exposes only
 the normalized status and expiry needed by the coordinator; provider extras are
 discarded. The declarations expose exact `BridgePauseInput`/
 `BridgePauseResult` and `BridgeResumeInput`/`BridgeResumeResult` contracts;
-resume alone contains `expiresAt: string | null`. Compatibility lifecycle names
+resume alone contains a finite future `expiresAt: string`. Compatibility lifecycle names
 remain unions of those exact contracts. This correction remains inside the
 disabled bridge/coordinator boundary.
 
 Production orphan execution is not implemented here. The Project DO's durable
 orphan jobs are only recorded through fenced completion; a private trusted
-orphan executor, provider reconciliation, production heartbeat, private
-authority transport, and production rollout remain future milestones.
+orphan executor, durable dispatcher invocation of this bounded process-local
+reconciliation path, production heartbeat, private authority transport, and
+production rollout remain future milestones. All sandbox creation, coordinator
+wiring, readiness, deployment, and production gates remain disabled.
