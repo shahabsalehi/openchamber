@@ -16,11 +16,12 @@ import { createWebToolsAPI } from './tools';
 import { createWebPushAPI } from './push';
 import { createWebGitHubAPI } from './github';
 import { createWebClientAuthAPI } from './clientAuth';
-import { createWebV2API } from './webV2';
+import { createWebV2API, createWebV2RuntimeAPI } from './webV2';
 
 export interface WebAPIsOptions {
   urls?: RuntimeUrlResolver;
   enableWebV2?: boolean;
+  enableWebV2Runtime?: boolean;
 }
 
 const createActiveRuntimeUrlResolver = (): RuntimeUrlResolver => ({
@@ -37,6 +38,12 @@ export const createWebAPIs = (options: WebAPIsOptions = {}): RuntimeAPIs => {
   const urls = options.urls ?? createRuntimeUrlResolver();
   setRuntimeUrlResolver(urls);
   const activeUrls = createActiveRuntimeUrlResolver();
+  const webV2 = options.enableWebV2 === true
+    ? {
+        ...createWebV2API(),
+        ...(options.enableWebV2Runtime === true ? { runtime: createWebV2RuntimeAPI() } : {}),
+      }
+    : undefined;
 
   return {
     runtime: { platform: 'web', isDesktop: false, isVSCode: false, label: 'web' },
@@ -49,7 +56,7 @@ export const createWebAPIs = (options: WebAPIsOptions = {}): RuntimeAPIs => {
     github: createWebGitHubAPI({ urls: activeUrls }),
     push: createWebPushAPI(),
     clientAuth: createWebClientAuthAPI(),
-    ...(options.enableWebV2 === true ? { webV2: createWebV2API() } : {}),
+    ...(webV2 ? { webV2 } : {}),
     tools: createWebToolsAPI(),
   };
 };

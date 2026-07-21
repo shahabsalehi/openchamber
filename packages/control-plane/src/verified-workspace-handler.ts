@@ -9,6 +9,8 @@ import type {
   ProjectRecord,
   ProjectRpcContext,
   ProjectScope,
+  ReserveSandboxRuntimeOperationInput,
+  SandboxRuntimeOperationKind,
   VerifiedPrincipal,
   VerifiedPrincipalAuthenticator,
 } from './contracts'
@@ -23,6 +25,7 @@ import {
   validateName,
   validateOpaqueId,
   validateReadFileInput,
+  validateRuntimeCounter,
   validateVerifiedPrincipal,
   validateWriteFileInput,
 } from './validation'
@@ -62,12 +65,27 @@ interface SessionItemRoute {
   url: URL
 }
 
+interface SandboxRuntimeStatusRoute {
+  kind: 'sandbox-runtime-status'
+  projectId: string
+  url: URL
+}
+
+interface SandboxRuntimeOperationRoute {
+  kind: 'sandbox-runtime-operation'
+  operationKind: SandboxRuntimeOperationKind
+  projectId: string
+  url: URL
+}
+
 type VerifiedWorkspaceRoute =
   | ProjectCollectionRoute
   | FileCollectionRoute
   | FileItemRoute
   | SessionCollectionRoute
   | SessionItemRoute
+  | SandboxRuntimeStatusRoute
+  | SandboxRuntimeOperationRoute
 
 function decode(value: string): string {
   try {
@@ -83,6 +101,9 @@ function isVerifiedWorkspacePath(pathname: string): boolean {
     return false
   }
   if (segments.length === 3) {
+    return true
+  }
+  if (segments[4] === 'sandbox-runtime' && segments.length <= 6) {
     return true
   }
   if (segments[4] === 'files') {
@@ -104,6 +125,25 @@ function parseVerifiedWorkspaceRoute(request: Request): VerifiedWorkspaceRoute |
     segments[2] === 'projects'
   ) {
     const projectId = validateOpaqueId(decode(segments[3]))
+    if (segments[4] === 'sandbox-runtime') {
+      if (segments.length === 5) {
+        return { kind: 'sandbox-runtime-status', projectId, url }
+      }
+      if (segments.length === 6) {
+        const operationKind = decode(segments[5])
+        if (
+          operationKind === 'ensure' ||
+          operationKind === 'pause' ||
+          operationKind === 'resume' ||
+          operationKind === 'destroy' ||
+          operationKind === 'checkpoint' ||
+          operationKind === 'replace'
+        ) {
+          return { kind: 'sandbox-runtime-operation', operationKind, projectId, url }
+        }
+      }
+      return null
+    }
     if (segments[4] === 'files') {
       if (segments.length === 5) {
         return { kind: 'file-collection', projectId, url }
@@ -188,6 +228,27 @@ function sessionUpdateBody(value: unknown): { title: string; expectedRevision: n
   return {
     title: validateName(value.title),
     expectedRevision: validateExpectedVersion(value.expectedRevision, false),
+  }
+}
+
+function sandboxRuntimeOperationBody(
+  value: unknown,
+  kind: SandboxRuntimeOperationKind,
+): Pick<
+  ReserveSandboxRuntimeOperationInput,
+  'sessionId' | 'expectedGeneration' | 'expectedRevision' | 'workspaceRevision'
+> {
+  const keys =
+    kind === 'checkpoint'
+      ? ['sessionId', 'expectedGeneration', 'expectedRevision', 'workspaceRevision']
+      : ['sessionId', 'expectedGeneration', 'expectedRevision']
+  assertExactObject(value, keys)
+  return {
+    sessionId: validateOpaqueId(value.sessionId),
+    expectedGeneration: validateRuntimeCounter(value.expectedGeneration),
+    expectedRevision: validateRuntimeCounter(value.expectedRevision),
+    workspaceRevision:
+      kind === 'checkpoint' ? validateExpectedVersion(value.workspaceRevision, false) : null,
   }
 }
 
@@ -460,6 +521,63 @@ async function handleSessionItem(
   )
 }
 
+async function handleSandboxRuntimeStatus(
+  request: Request,
+  env: Cloudflare.Env,
+  route: SandboxRuntimeStatusRoute,
+  principal: VerifiedPrincipal,
+): Promise<Response> {
+  assertNoQuery(route.url)
+  if (request.method !== 'GET') {
+    await cancelUnreadBody(request)
+    return methodNotAllowed('GET')
+  }
+  const context = await requireActiveProject(env, principal, route.projectId)
+  const project = env.PROJECTS.getByName(await projectObjectName(context.scope))
+  return rpcResponse(await project.getSandboxRuntimeStatus(context))
+}
+
+async function handleSandboxRuntimeOperation(
+  request: Request,
+  env: Cloudflare.Env,
+  route: SandboxRuntimeOperationRoute,
+  principal: VerifiedPrincipal,
+): Promise<Response> {
+  assertNoQuery(route.url)
+  if (request.method !== 'POST') {
+    await cancelUnreadBody(request)
+    return methodNotAllowed('POST')
+  }
+  const operationId = validateOpaqueId(request.headers.get('X-Operation-Id'))
+  const body = sandboxRuntimeOperationBody(
+    await readBoundedJson(request, MAX_JSON_BODY_BYTES),
+    route.operationKind,
+  )
+  const requestFingerprint = await operationFingerprint([
+    'sandbox-runtime-reservation-v1',
+    principal.id,
+    principal.tenantId,
+    route.projectId,
+    operationId,
+    route.operationKind,
+    body.sessionId,
+    String(body.expectedGeneration),
+    String(body.expectedRevision),
+    body.workspaceRevision === null ? 'null' : String(body.workspaceRevision),
+  ])
+  const context = await requireActiveProject(env, principal, route.projectId)
+  const project = env.PROJECTS.getByName(await projectObjectName(context.scope))
+  return rpcResponse(
+    await project.reserveSandboxRuntimeOperation(context, {
+      operationId,
+      requestFingerprint,
+      kind: route.operationKind,
+      ...body,
+    }),
+    202,
+  )
+}
+
 export async function fetchVerifiedWorkspace(
   request: Request,
   env: Cloudflare.Env,
@@ -481,6 +599,12 @@ export async function fetchVerifiedWorkspace(
     const principal = await authenticate(request, options.authenticator)
     if (route.kind === 'project-collection') {
       return await handleProjectCollection(request, env, route, principal)
+    }
+    if (route.kind === 'sandbox-runtime-status') {
+      return await handleSandboxRuntimeStatus(request, env, route, principal)
+    }
+    if (route.kind === 'sandbox-runtime-operation') {
+      return await handleSandboxRuntimeOperation(request, env, route, principal)
     }
     if (route.kind === 'file-collection') {
       return await handleFileCollection(request, env, route, principal)

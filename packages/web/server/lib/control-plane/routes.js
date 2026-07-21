@@ -382,6 +382,7 @@ const rejectMethod = (uiAuthController, requestTimeoutMs) => authenticated(uiAut
 
 export const registerControlPlaneRoutes = (app, {
   client,
+  sandboxRuntimeEnabled = false,
   uiAuthController,
   requestTimeoutMs = CONTROL_PLANE_REQUEST_TIMEOUT_MS,
 } = {}) => {
@@ -396,6 +397,15 @@ export const registerControlPlaneRoutes = (app, {
   const filePath = `${filesPath}/*filePath`;
   const sessionsPath = `${BFF_PREFIX}/projects/:projectId/sessions`;
   const sessionPath = `${sessionsPath}/:sessionId`;
+  const sandboxRuntimePath = `${BFF_PREFIX}/projects/:projectId/sandbox-runtime`;
+  const sandboxRuntimeOperations = Object.freeze([
+    Object.freeze(['ensure', 'ensureSandboxRuntime']),
+    Object.freeze(['pause', 'pauseSandboxRuntime']),
+    Object.freeze(['resume', 'resumeSandboxRuntime']),
+    Object.freeze(['destroy', 'destroySandboxRuntime']),
+    Object.freeze(['checkpoint', 'checkpointSandboxRuntime']),
+    Object.freeze(['replace', 'replaceSandboxRuntime']),
+  ]);
   const credentialsPath = `${BFF_PREFIX}/credentials`;
   const credentialPath = `${credentialsPath}/:credentialId`;
   const credentialRevokePath = `${credentialPath}/revoke`;
@@ -404,6 +414,9 @@ export const registerControlPlaneRoutes = (app, {
   app.head(filesPath, rejectMethod(uiAuthController, boundedRequestTimeoutMs));
   app.head(filePath, rejectMethod(uiAuthController, boundedRequestTimeoutMs));
   app.head(sessionsPath, rejectMethod(uiAuthController, boundedRequestTimeoutMs));
+  if (sandboxRuntimeEnabled === true) {
+    app.head(sandboxRuntimePath, rejectMethod(uiAuthController, boundedRequestTimeoutMs));
+  }
   app.head(credentialsPath, rejectMethod(uiAuthController, boundedRequestTimeoutMs));
 
   app.get(projectsPath, withAuth((req, res, auth) => {
@@ -505,6 +518,32 @@ export const registerControlPlaneRoutes = (app, {
     ));
   }));
 
+  if (sandboxRuntimeEnabled === true) {
+    app.get(sandboxRuntimePath, withAuth((req, res, auth) => {
+      assertNoQuery(req);
+      return runOperation(req, res, (signal) => client.getSandboxRuntimeStatus(req.params.projectId, {
+        assertion: auth.assertion,
+        signal,
+      }));
+    }));
+    for (const [operation, methodName] of sandboxRuntimeOperations) {
+      const operationPath = `${sandboxRuntimePath}/${operation}`;
+      app.post(operationPath, withAuth(async (req, res, auth) => {
+        assertNoQuery(req);
+        const body = await readBoundedJson(req);
+        const operationId = readSingleHeader(req, 'x-operation-id', {
+          maximumBytes: 128,
+          required: true,
+        });
+        return runOperation(req, res, (signal) => client[methodName](req.params.projectId, body, {
+          assertion: auth.assertion,
+          operationId,
+          signal,
+        }));
+      }));
+    }
+  }
+
   app.get(credentialsPath, withAuth((req, res, auth) => {
     assertNoQuery(req);
     return runOperation(req, res, (signal) => client.listCredentials({ assertion: auth.assertion, signal }));
@@ -551,6 +590,12 @@ export const registerControlPlaneRoutes = (app, {
   app.all(filePath, rejectMethod(uiAuthController, boundedRequestTimeoutMs));
   app.all(sessionsPath, rejectMethod(uiAuthController, boundedRequestTimeoutMs));
   app.all(sessionPath, rejectMethod(uiAuthController, boundedRequestTimeoutMs));
+  if (sandboxRuntimeEnabled === true) {
+    app.all(sandboxRuntimePath, rejectMethod(uiAuthController, boundedRequestTimeoutMs));
+    for (const [operation] of sandboxRuntimeOperations) {
+      app.all(`${sandboxRuntimePath}/${operation}`, rejectMethod(uiAuthController, boundedRequestTimeoutMs));
+    }
+  }
   app.all(credentialsPath, rejectMethod(uiAuthController, boundedRequestTimeoutMs));
   app.all(credentialRevokePath, rejectMethod(uiAuthController, boundedRequestTimeoutMs));
   app.all(credentialPath, rejectMethod(uiAuthController, boundedRequestTimeoutMs));

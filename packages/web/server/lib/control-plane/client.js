@@ -32,6 +32,35 @@ export const CONTROL_PLANE_ERROR_DEFINITIONS = Object.freeze({
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const HTTP_ETAG_PATTERN = /^(\*|"[^"\p{Cc}]{1,128}")$/u;
+const SANDBOX_RUNTIME_STATUSES = Object.freeze([
+  'pending',
+  'running',
+  'pausing',
+  'paused',
+  'resuming',
+  'stopping',
+  'terminated',
+  'failed',
+  'unknown',
+]);
+const SANDBOX_RUNTIME_OPERATION_KINDS = Object.freeze([
+  'ensure',
+  'pause',
+  'resume',
+  'destroy',
+  'checkpoint',
+  'replace',
+]);
+const SANDBOX_RUNTIME_EFFECTS = Object.freeze(['start', 'stop', 'resume', 'destroy', 'checkpoint']);
+const SANDBOX_RUNTIME_EFFECT_BY_KIND = Object.freeze({
+  ensure: 'start',
+  pause: 'stop',
+  resume: 'resume',
+  destroy: 'destroy',
+  checkpoint: 'checkpoint',
+  replace: 'start',
+});
+const SANDBOX_RUNTIME_CHECKPOINT_STATES = Object.freeze(['requested', 'ready', 'failed', 'outcomeUnknown']);
 const UTF8_TEXT_CONTENT_TYPE_PATTERN = /^(?:text\/[!#$%&'*+.^_`|~0-9A-Za-z-]+|application\/(?:json|javascript|xml|yaml|x-yaml|toml))(?:\s*;\s*charset=utf-8)?$/i;
 const FILE_RESPONSE_HEADER_NAMES = Object.freeze([
   'etag',
@@ -194,6 +223,134 @@ const validateDeletedFileRecord = (value) => {
     path: validateFilePathResponse(record.path),
     appVersion: safeInteger(record.appVersion, { minimum: 1 }),
     cleanupPending: record.cleanupPending,
+  };
+};
+
+const validateNullableOpaqueIdResponse = (value) => (
+  value === null ? null : boundedString(value, 128, { pattern: OPAQUE_ID_PATTERN })
+);
+
+const validateSandboxRuntimeStatusValue = (value) => (
+  SANDBOX_RUNTIME_STATUSES.includes(value) ? value : fail('PROVIDER_RESPONSE_INVALID')
+);
+
+const validateSandboxRuntimeOperationKind = (value) => (
+  SANDBOX_RUNTIME_OPERATION_KINDS.includes(value) ? value : fail('PROVIDER_RESPONSE_INVALID')
+);
+
+const validateSandboxRuntimeCheckpoint = (value) => {
+  if (value === null) return null;
+  const record = exactObject(value, [
+    'state',
+    'generation',
+    'workspaceRevision',
+    'lifecycleRevision',
+    'createdAt',
+    'updatedAt',
+  ]);
+  if (!SANDBOX_RUNTIME_CHECKPOINT_STATES.includes(record.state)) fail('PROVIDER_RESPONSE_INVALID');
+  return {
+    state: record.state,
+    generation: safeInteger(record.generation),
+    workspaceRevision: safeInteger(record.workspaceRevision, { minimum: 1 }),
+    lifecycleRevision: safeInteger(record.lifecycleRevision),
+    createdAt: safeInteger(record.createdAt),
+    updatedAt: safeInteger(record.updatedAt),
+  };
+};
+
+const validateSandboxRuntimeActiveOperation = (value) => {
+  if (value === null) return null;
+  const record = exactObject(value, ['operationId', 'kind', 'state']);
+  if (record.state !== 'pending' && record.state !== 'inProgress') fail('PROVIDER_RESPONSE_INVALID');
+  return {
+    operationId: boundedString(record.operationId, 128, { pattern: OPAQUE_ID_PATTERN }),
+    kind: validateSandboxRuntimeOperationKind(record.kind),
+    state: record.state,
+  };
+};
+
+const validateSandboxRuntimeStatus = (value) => {
+  const record = exactObject(value, [
+    'projectId',
+    'exists',
+    'sessionId',
+    'leaseId',
+    'status',
+    'generation',
+    'lifecycleRevision',
+    'outcomeUnknown',
+    'activeOperation',
+    'checkpoint',
+    'readiness',
+    'updatedAt',
+  ]);
+  if (typeof record.exists !== 'boolean' || typeof record.outcomeUnknown !== 'boolean') {
+    fail('PROVIDER_RESPONSE_INVALID');
+  }
+  if (record.readiness !== 'disabled') fail('PROVIDER_RESPONSE_INVALID');
+  return {
+    projectId: boundedString(record.projectId, 128, { pattern: OPAQUE_ID_PATTERN }),
+    exists: record.exists,
+    sessionId: validateNullableOpaqueIdResponse(record.sessionId),
+    leaseId: validateNullableOpaqueIdResponse(record.leaseId),
+    status: validateSandboxRuntimeStatusValue(record.status),
+    generation: safeInteger(record.generation),
+    lifecycleRevision: safeInteger(record.lifecycleRevision),
+    outcomeUnknown: record.outcomeUnknown,
+    activeOperation: validateSandboxRuntimeActiveOperation(record.activeOperation),
+    checkpoint: validateSandboxRuntimeCheckpoint(record.checkpoint),
+    readiness: 'disabled',
+    updatedAt: record.updatedAt === null ? null : safeInteger(record.updatedAt),
+  };
+};
+
+const validateSandboxRuntimeReservation = (value) => {
+  const record = exactObject(value, [
+    'operationId',
+    'kind',
+    'effect',
+    'sessionId',
+    'leaseId',
+    'generation',
+    'lifecycleRevision',
+    'status',
+    'workspaceRevision',
+    'readiness',
+    'acceptedAt',
+  ]);
+  if (!SANDBOX_RUNTIME_EFFECTS.includes(record.effect) || record.readiness !== 'disabled') {
+    fail('PROVIDER_RESPONSE_INVALID');
+  }
+  return {
+    operationId: boundedString(record.operationId, 128, { pattern: OPAQUE_ID_PATTERN }),
+    kind: validateSandboxRuntimeOperationKind(record.kind),
+    effect: record.effect,
+    sessionId: boundedString(record.sessionId, 128, { pattern: OPAQUE_ID_PATTERN }),
+    leaseId: validateNullableOpaqueIdResponse(record.leaseId),
+    generation: safeInteger(record.generation),
+    lifecycleRevision: safeInteger(record.lifecycleRevision),
+    status: validateSandboxRuntimeStatusValue(record.status),
+    workspaceRevision: record.workspaceRevision === null
+      ? null
+      : safeInteger(record.workspaceRevision, { minimum: 1 }),
+    readiness: 'disabled',
+    acceptedAt: safeInteger(record.acceptedAt),
+  };
+};
+
+const validateSandboxRuntimeInput = (value, kind) => {
+  const checkpoint = kind === 'checkpoint';
+  const input = exactInputObject(value, checkpoint
+    ? ['sessionId', 'expectedGeneration', 'expectedRevision', 'workspaceRevision']
+    : ['sessionId', 'expectedGeneration', 'expectedRevision']);
+  return {
+    sessionId: validateOpaqueIdInput(input.sessionId),
+    expectedGeneration: safeInteger(input.expectedGeneration, { errorCode: 'VALIDATION_FAILED' }),
+    expectedRevision: safeInteger(input.expectedRevision, { errorCode: 'VALIDATION_FAILED' }),
+    ...(checkpoint
+      ? { workspaceRevision: validateExpectedVersionInput(input.workspaceRevision) }
+      : {}),
   };
 };
 
@@ -742,6 +899,71 @@ export const createControlPlaneClient = ({
     });
   };
 
+  const getSandboxRuntimeStatus = (projectId, { assertion, signal } = {}) => requestJson({
+    method: 'GET',
+    pathname: `/v2/projects/${encodeURIComponent(validateOpaqueIdInput(projectId))}/sandbox-runtime`,
+    assertion,
+    signal,
+    statuses: [200],
+    validate: (value) => {
+      const status = validateSandboxRuntimeStatus(value);
+      if (status.projectId !== projectId) fail('PROVIDER_RESPONSE_INVALID');
+      return status;
+    },
+  });
+
+  const reserveSandboxRuntimeOperation = (
+    projectId,
+    kind,
+    value,
+    { assertion, operationId, signal } = {},
+  ) => {
+    const encodedProjectId = encodeURIComponent(validateOpaqueIdInput(projectId));
+    const validatedOperationId = validateOperationIdInput(operationId);
+    const input = validateSandboxRuntimeInput(value, kind);
+    return jsonRequest({
+      method: 'POST',
+      pathname: `/v2/projects/${encodedProjectId}/sandbox-runtime/${kind}`,
+      assertion,
+      operationId: validatedOperationId,
+      value: input,
+      signal,
+      statuses: [202],
+      validate: (responseValue) => {
+        const reservation = validateSandboxRuntimeReservation(responseValue);
+        if (
+          reservation.operationId !== validatedOperationId
+          || reservation.kind !== kind
+          || reservation.effect !== SANDBOX_RUNTIME_EFFECT_BY_KIND[kind]
+          || reservation.sessionId !== input.sessionId
+          || reservation.workspaceRevision !== (input.workspaceRevision ?? null)
+        ) {
+          fail('PROVIDER_RESPONSE_INVALID');
+        }
+        return reservation;
+      },
+    });
+  };
+
+  const ensureSandboxRuntime = (projectId, value, options) => (
+    reserveSandboxRuntimeOperation(projectId, 'ensure', value, options)
+  );
+  const pauseSandboxRuntime = (projectId, value, options) => (
+    reserveSandboxRuntimeOperation(projectId, 'pause', value, options)
+  );
+  const resumeSandboxRuntime = (projectId, value, options) => (
+    reserveSandboxRuntimeOperation(projectId, 'resume', value, options)
+  );
+  const destroySandboxRuntime = (projectId, value, options) => (
+    reserveSandboxRuntimeOperation(projectId, 'destroy', value, options)
+  );
+  const checkpointSandboxRuntime = (projectId, value, options) => (
+    reserveSandboxRuntimeOperation(projectId, 'checkpoint', value, options)
+  );
+  const replaceSandboxRuntime = (projectId, value, options) => (
+    reserveSandboxRuntimeOperation(projectId, 'replace', value, options)
+  );
+
   const listCredentials = ({ assertion, signal } = {}) => requestJson({
     method: 'GET',
     pathname: '/v2/credentials',
@@ -825,6 +1047,13 @@ export const createControlPlaneClient = ({
     listSessions,
     createSession,
     updateSession,
+    getSandboxRuntimeStatus,
+    ensureSandboxRuntime,
+    pauseSandboxRuntime,
+    resumeSandboxRuntime,
+    destroySandboxRuntime,
+    checkpointSandboxRuntime,
+    replaceSandboxRuntime,
     listCredentials,
     createCredential,
     rotateCredential,

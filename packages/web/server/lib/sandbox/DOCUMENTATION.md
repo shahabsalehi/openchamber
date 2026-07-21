@@ -261,3 +261,271 @@ and endpoint expiry validation, malformed-create compensation, authoritative
 inspection, malformed responses, bounded capacity, cleanup retry, aggregate
 disposal, shutdown continuation, and secret exclusion from safe values, logs,
 and errors.
+
+## Sandbox Bridge (milestone 5)
+
+### Ownership and purpose
+
+The bridge module (`bridge.js`) is a provider-neutral, server-only effect
+executor that operates on already-created sandbox leases. It is disabled by
+default and requires a separate configuration gate independent from general
+sandbox enablement. The bridge is called only after a trusted claim/begin-effect
+sequence from the control plane; it never performs claim validation or durable
+recovery itself. The Project Durable Object is the sole durable authority.
+
+Every effect-bearing bridge input carries trusted claim fields:
+`leaseId`, `generation`, `operationId`, `claimFence`, and `providerHandle`.
+Provider methods use only `providerHandle`; `leaseId` is never passed as a
+provider handle. The bridge does not track generations locally; durable
+claim/begin/complete fencing is authoritative.
+
+The bridge exposes:
+
+- **Lifecycle dispatch**: pause, resume, and destroy against a provider handle.
+- **Authoritative file hydration**: validates the complete snapshot, cleans and
+  recreates the fixed workspace root, writes all directories and files, and
+  writes the hydration marker last only after every write succeeds. Any failure
+  means no success marker and a `SANDBOX_BRIDGE_HYDRATION_FAILED` error.
+- **Checkpoint**: traverses the fixed workspace one directory level at a time,
+  validates every entry, rejects symlinks and malformed traversal results,
+  enforces per-file/count/aggregate UTF-8 byte bounds, and fails on any
+  list/read/validation error. Never substitutes empty content. Returns a
+  complete deterministic sorted snapshot and base revision.
+- **OpenCode process supervision**: starts `opencode serve` as a background
+  command with a random process-local password in `OPENCODE_SERVER_PASSWORD`
+  env var, resolves the provider endpoint on port 13009, and polls
+  `/global/health` with Basic auth for readiness. Supports stop with credential
+  cleanup.
+
+### Configuration gates
+
+The bridge is controlled by environment variables:
+
+| Variable | Default | Behavior |
+| --- | --- | --- |
+| `OPENCHAMBER_SANDBOX_BRIDGE_ENABLED` | Absent (disabled) | `"true"` enables the bridge. `"false"` disables. Any other value throws `SANDBOX_CONFIGURATION_INVALID`. |
+| `OPENCHAMBER_SANDBOX_BRIDGE_REAL_CREATE` | Absent (disabled) | `"true"` enables real-create support. The current OpenSandbox adapter sets `supportsRealCreate: false` regardless. Setting this to `"true"` with OpenSandbox fails startup. |
+| `OPENCHAMBER_SANDBOX_BRIDGE_OPENCODE_PORT` | `13009` | Integer 1-65535. |
+
+The OpenCode config directory is fixed at
+`/workspace/project/.opencode-runtime`; it is not configurable from the
+environment or any request.
+
+The bridge gate is independent from `OPENCHAMBER_SANDBOX_PROVIDER`. A provider
+configured without the bridge gate returns `null` for the bridge and does not
+expose bridge capabilities. Malformed boolean values throw a sanitized
+configuration error, never silently disable.
+
+### Real-create safety gate
+
+The current OpenSandbox adapter (`providers/opensandbox.js`) exposes
+`supportsRealCreate: false`. The bridge constructor rejects when
+`bridgeConfig.realCreateSupported` is `false` and the provider's
+`supportsRealCreate` is `true` (an inconsistent state). Real OpenSandbox create
+has no documented idempotency key; until deterministic create lookup or
+idempotency is proven by the provider adapter, real create must remain
+hard-disabled. The `OPENCHAMBER_SANDBOX_BRIDGE_REAL_CREATE` env var provides a
+separate safety gate that cannot become `true` for the current OpenSandbox
+adapter.
+
+### Claim field validation
+
+Every bridge input is validated as an exact object (extra keys rejected).
+Claim fields are:
+
+- `leaseId`: URL-safe string, 8-128 characters.
+- `generation`: positive safe integer.
+- `operationId`: URL-safe string, 8-128 characters.
+- `claimFence`: positive safe integer.
+- `providerHandle`: non-empty string, max 1024 characters, no control characters.
+- `kind`: exact enum (`hydrate`, `checkpoint`, `pause`, `resume`, `destroy`, `openCodeStart`, `openCodeStop`).
+
+### Provider contract extensions
+
+The bridge requires the following optional provider capabilities beyond the base
+`SandboxProvider` contract. Each capability is checked at construction; a
+missing capability causes `SANDBOX_BRIDGE_OPERATION_INVALID` when the
+corresponding bridge operation is invoked.
+
+**Lifecycle** (`provider.lifecycle`):
+- `pause(handle)` → `SandboxProviderRecord`
+- `resume(handle)` → `SandboxProviderRecord`
+
+**Command** (`provider.command`):
+- `runBackground(handle, { command, cwd?, envs?, timeout? })` → `BridgeSSECommandResult`
+- `commandStatus(handle, commandId)` → `BridgeCommandResult`
+- `commandLog(handle, commandId, cursor?)` → `BridgeCommandOutput`
+- `interruptCommand(handle, commandId)` → `void`
+
+**Files** (`provider.files`):
+- `searchFiles(handle, path, pattern)` → `BridgeFileRecord[]`
+- `uploadFile(handle, path, content: Buffer)` → `void`
+- `downloadFile(handle, path)` → `Buffer`
+- `deleteFile(handle, path)` → `void`
+
+**Directories** (`provider.directories`):
+- `listDirectory(handle, path, depth)` → `{ path, type }[]`
+- `createDirectory(handle, path)` → `void`
+- `deleteDirectory(handle, path)` → `void`
+
+**Execd** (`provider.execd`):
+- `getExecdEndpoint(handle)` → `SandboxEndpointConnection`
+
+### OpenSandbox bridge adapter
+
+The OpenSandbox adapter (`providers/opensandbox.js`) implements all bridge
+capabilities:
+
+- **Lifecycle**: `POST /sandboxes/{id}/pause` and `/resume` with standard API
+  key auth and redirect rejection.
+- **Execd**: resolves endpoint on port 44772 and uses transient
+  `X-EXECD-ACCESS-TOKEN` header for all subsequent execd requests. Execd
+  requests never carry the `OPEN-SANDBOX-API-KEY` header.
+- **Command**: `POST /command` with `{ command, cwd?, background?, timeout?, uid?, gid?, envs? }`
+  and `Accept: text/event-stream`. Bounded SSE parsing extracts the command ID
+  and terminal event. Status via `GET /command/status/{id}` (JSON). Logs via
+  `GET /command/{id}/logs?cursor=...` (text/plain) with bounded
+  `EXECD-COMMANDS-TAIL-CURSOR` response header. Interrupt via
+  `DELETE /command?id=...`.
+- **Files**: `GET /files/search?path=...&pattern=...`, `POST /files/upload`
+  (multipart with metadata JSON + binary file), `GET /files/download?path=...`,
+  `DELETE /files?path=...`. All paths normalized to
+  `/workspace/project/{relativePath}`.
+- **Directories**: `GET /directories/list?path=...&depth=...`,
+  `POST /directories`, `DELETE /directories?path=...` (recursive). Directory
+  listing metadata rejects symlinks and non-regular entries.
+
+### Workspace and file safety
+
+- Fixed workspace root: `/workspace/project`.
+- Relative paths are normalized (leading `./` stripped, `.` rejected).
+- Absolute paths, traversal (`../`), backslashes, and control characters
+  (0x00-0x1f, 0x7f) are rejected before any provider call.
+- File content size limit: 1 MiB per file.
+- File count limit: 8192 entries per snapshot/list.
+- Workspace traversal limit: 16384 total file and directory entries.
+- File path length limit: 4096 characters.
+- Aggregate hydration byte limit: 64 MiB.
+- Aggregate checkpoint byte limit: 256 MiB.
+
+### Hydration and checkpoint
+
+**Hydration** is all-or-fail. The complete snapshot is validated first (exact
+objects, normalized relative paths, file-count and aggregate UTF-8 byte bounds).
+Before deletion, the existing fixed workspace is enumerated one level at a time
+with bounded entry and path depth. Every returned path must be a unique direct
+child of the directory queried; nested symlinks, malformed entries, duplicates,
+and descendants beyond the depth bound fail closed. Only after enumeration
+proves completeness is the fixed workspace root cleaned and recreated using
+directory APIs. All directories are created, all files are written, and the
+hydration marker is written last only after every write succeeds. Any failure
+means no success marker and a `SANDBOX_BRIDGE_HYDRATION_FAILED` error.
+
+**Checkpoint** is all-or-fail. The fixed workspace is enumerated one directory
+level at a time so traversal can prove completeness rather than trusting a
+depth-limited aggregate response. Directories are traversed as structure;
+symlinks, malformed/non-immediate entries, duplicates, entry-count overflow,
+and descendants beyond the depth bound fail closed. Internal marker/config
+artifacts owned by the bridge are excluded from the returned files. Per-file,
+file-count, and aggregate UTF-8 byte bounds are enforced. Any list/read/
+validation failure causes `SANDBOX_BRIDGE_CHECKPOINT_FAILED`. Empty content is
+never substituted. Returns a complete deterministic sorted snapshot and base
+revision/fingerprint only; does not publish durable data.
+
+### OpenCode process supervision
+
+OpenCode is started as a background command with:
+
+```
+opencode serve --hostname 127.0.0.1 --port 13009
+```
+
+The password is passed only through the `OPENCODE_SERVER_PASSWORD` environment
+variable (matching the web lifecycle and VS Code conventions). The username
+defaults to `opencode` via `OPENCODE_SERVER_USERNAME`. The config directory is
+set via `OPENCODE_CONFIG_DIR`. The working directory is `/workspace/project`
+set via the execd `cwd` field. No `--password`, `--username`, `--cwd`, or
+`--config-dir` CLI flags are used.
+
+The password is generated with `crypto.randomBytes(32).toString('base64url')`
+and stored only in bridge memory keyed by `leaseId::generation`. It is never
+persisted, returned to public callers, or included in operation results.
+
+Readiness is probed via `GET /global/health` through the provider endpoint
+resolved with `provider.getEndpoint(providerHandle, { port: 13009, useServerProxy: true })`,
+using the endpoint-supplied transient headers plus Basic auth
+(`opencode:<password>`). Each readiness fetch has its own composed abort
+deadline (caller signal + remaining polling deadline); a hung fetch cannot
+hang forever. The probe polls at 500ms intervals with a 30-second overall
+timeout. Health response must be bounded JSON (max 4096 bytes) with
+`healthy === true` and a non-empty `version` string. Redirects and
+malformed/oversized responses are rejected.
+
+**Supervision record**: `openCodeStart` returns an internal supervision record
+containing `commandId`, `providerHandle`, `generation`, `port`, and `username`.
+This record carries no password, access token, or transient endpoint headers.
+It is the trusted durable identity for the launched OpenCode process and is
+required by `openCodeStop` and `openCodeReconcile`.
+
+**Stop**: `openCodeStop` accepts the supervision record, validates that
+`providerHandle` and `generation` match the claim input, interrupts the exact
+command, and clears credentials. Provider not-found is treated as already
+absent.
+
+**Reconcile**: `openCodeReconcile` accepts the supervision record and queries
+the provider command status. If bridge credentials are missing (process
+restart), it returns `status: 'unavailable'` — never guesses auth or
+duplicates a start. If the provider reports the command not found, it also
+returns `'unavailable'`. Otherwise it returns the provider's canonical status
+and exit code.
+
+**Startup failure cleanup**: Any failure after command acceptance (endpoint
+resolution failure, readiness timeout, caller abort) clears credentials and
+best-effort interrupts the exact command without masking the primary error.
+The primary error (timeout, provider failure, etc.) is always preserved.
+
+### Credential management
+
+Runtime credentials (OpenCode username/password/port) are stored in bridge
+memory keyed by `leaseId::generation`. They are cleared on:
+- `openCodeStop`
+- `destroy`
+- `openCodeStart` failure or timeout
+- `dispose`
+
+Credentials are never persisted, logged, serialized into operation results, or
+returned to public callers. The supervision record carries no secrets.
+
+### Failure taxonomy additions
+
+| Code | Meaning |
+| --- | --- |
+| `SANDBOX_BRIDGE_DISABLED` | Bridge is not enabled in configuration. |
+| `SANDBOX_BRIDGE_REAL_CREATE_UNSUPPORTED` | Provider does not support real create. |
+| `SANDBOX_BRIDGE_OPERATION_INVALID` | Bridge operation input is invalid or capability is missing. |
+| `SANDBOX_BRIDGE_FILE_INVALID` | File path is invalid or rejected (absolute, traversal, backslash, control chars). |
+| `SANDBOX_BRIDGE_HYDRATION_FAILED` | File hydration failed (any write, directory, or validation error). |
+| `SANDBOX_BRIDGE_CHECKPOINT_FAILED` | File checkpoint failed (any list, read, or validation error). |
+| `SANDBOX_BRIDGE_COMMAND_FAILED` | Command execution in sandbox failed. |
+| `SANDBOX_BRIDGE_OPENCODE_FAILED` | OpenCode failed to start or become ready within the timeout. |
+
+### Factory and exports
+
+`createSandboxBridgeFromEnvironment(options)` composes the bridge using the
+private provider registry/factory pattern. It reads bridge config from the
+environment, resolves the sandbox provider, and returns a `SandboxBridge` or
+`null` when disabled. It does not perform startup I/O or register server routes.
+
+The bridge factory, `createSandboxBridge`, and error codes are exported from
+`packages/web/server/lib/sandbox/index.js`.
+
+### Limitations and roadmap
+
+- The bridge is a trusted effect executor only. It does not perform claim
+  validation, durable recovery, or crash-recovery reconciliation.
+- Provider idempotency for real create must be proven before
+  `OPENCHAMBER_SANDBOX_BRIDGE_REAL_CREATE` can be enabled for any provider.
+- Lease renewal, automatic TTL extension, and endpoint expiration management are
+  not implemented.
+- The bridge does not expose provider handles, endpoint headers, passwords, or
+  bridge credentials. The final BFF must respect these boundaries.

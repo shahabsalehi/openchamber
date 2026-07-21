@@ -8,7 +8,7 @@ vi.mock('@openchamber/ui/lib/runtime-fetch', () => ({
   runtimeFetch: runtimeFetchMock,
 }));
 
-import { createWebV2API, WebV2APIError } from './webV2';
+import { createWebV2API, createWebV2RuntimeAPI, WebV2APIError } from './webV2';
 
 const PROJECT_ID = 'project_0001';
 const SESSION_ID = 'session_0001';
@@ -60,6 +60,39 @@ const credential = {
   createdAt: 1,
   updatedAt: 2,
 };
+
+const runtimeStatus = {
+  projectId: PROJECT_ID,
+  exists: true,
+  sessionId: SESSION_ID,
+  leaseId: 'lease_runtime_0001',
+  status: 'running' as const,
+  generation: 1,
+  lifecycleRevision: 2,
+  outcomeUnknown: false,
+  activeOperation: null,
+  checkpoint: null,
+  readiness: 'disabled' as const,
+  updatedAt: 3,
+};
+
+const runtimeReservation = (
+  kind: 'ensure' | 'pause' | 'resume' | 'destroy' | 'checkpoint' | 'replace',
+  effect: 'start' | 'stop' | 'resume' | 'destroy' | 'checkpoint',
+  workspaceRevision: number | null = null,
+) => ({
+  operationId: OPERATION_ID,
+  kind,
+  effect,
+  sessionId: SESSION_ID,
+  leaseId: 'lease_runtime_0001',
+  generation: 1,
+  lifecycleRevision: 3,
+  status: 'pending' as const,
+  workspaceRevision,
+  readiness: 'disabled' as const,
+  acceptedAt: 4,
+});
 
 const fileResponse = (content = 'hello', status = 200): Response => new Response(content, {
   status,
@@ -338,6 +371,123 @@ describe('createWebV2API', () => {
         r2Etag: null,
         r2Version: null,
       },
+    });
+  });
+});
+
+describe('createWebV2RuntimeAPI', () => {
+  it('uses only runtimeFetch with the exact named paths, methods, headers, and lifecycle bodies', async () => {
+    runtimeFetchMock.mockImplementation(async (path, init) => {
+      if (init.method === 'GET') return Response.json(runtimeStatus);
+      const operation = path.split('/').at(-1);
+      if (operation === 'ensure') return Response.json(runtimeReservation('ensure', 'start'), { status: 202 });
+      if (operation === 'pause') return Response.json(runtimeReservation('pause', 'stop'), { status: 202 });
+      if (operation === 'resume') return Response.json(runtimeReservation('resume', 'resume'), { status: 202 });
+      if (operation === 'destroy') return Response.json(runtimeReservation('destroy', 'destroy'), { status: 202 });
+      if (operation === 'checkpoint') {
+        return Response.json(runtimeReservation('checkpoint', 'checkpoint', 7), { status: 202 });
+      }
+      if (operation === 'replace') return Response.json(runtimeReservation('replace', 'start'), { status: 202 });
+      throw new Error('Unexpected runtime request');
+    });
+    const api = createWebV2RuntimeAPI();
+    const lifecycle = { sessionId: SESSION_ID, expectedGeneration: 1, expectedRevision: 2 };
+    const options = { operationId: OPERATION_ID };
+
+    await api.getStatus(PROJECT_ID);
+    await api.ensure(PROJECT_ID, lifecycle, options);
+    await api.pause(PROJECT_ID, lifecycle, options);
+    await api.resume(PROJECT_ID, lifecycle, options);
+    await api.destroy(PROJECT_ID, lifecycle, options);
+    await api.checkpoint(PROJECT_ID, { ...lifecycle, workspaceRevision: 7 }, options);
+    await api.replace(PROJECT_ID, lifecycle, options);
+
+    expect(runtimeFetchMock.mock.calls.map(([path, init]) => [init.method, path])).toEqual([
+      ['GET', `/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime`],
+      ['POST', `/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime/ensure`],
+      ['POST', `/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime/pause`],
+      ['POST', `/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime/resume`],
+      ['POST', `/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime/destroy`],
+      ['POST', `/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime/checkpoint`],
+      ['POST', `/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime/replace`],
+    ]);
+    for (let index = 1; index < runtimeFetchMock.mock.calls.length; index += 1) {
+      expect(headersForCall(index).get('x-operation-id')).toBe(OPERATION_ID);
+      expect(runtimeFetchMock.mock.calls[index]?.[1]?.redirect).toBe('error');
+    }
+    expect(JSON.parse(String(runtimeFetchMock.mock.calls[1]?.[1]?.body))).toEqual(lifecycle);
+    expect(JSON.parse(String(runtimeFetchMock.mock.calls[5]?.[1]?.body))).toEqual({
+      ...lifecycle,
+      workspaceRevision: 7,
+    });
+  });
+
+  it('passes an exact operation replay through without changing its reservation', async () => {
+    const reservation = runtimeReservation('ensure', 'start');
+    runtimeFetchMock.mockImplementation(async () => Response.json(reservation, { status: 202 }));
+    const api = createWebV2RuntimeAPI();
+    const input = { sessionId: SESSION_ID, expectedGeneration: 0, expectedRevision: 0 };
+
+    const first = await api.ensure(PROJECT_ID, input, { operationId: OPERATION_ID });
+    const replay = await api.ensure(PROJECT_ID, input, { operationId: OPERATION_ID });
+
+    expect(first).toEqual(reservation);
+    expect(replay).toEqual(first);
+    expect(headersForCall(0).get('x-operation-id')).toBe(OPERATION_ID);
+    expect(headersForCall(1).get('x-operation-id')).toBe(OPERATION_ID);
+  });
+
+  it('rejects extra private input and response fields before they cross the typed boundary', async () => {
+    const api = createWebV2RuntimeAPI();
+    const unsafeInput = {
+      sessionId: SESSION_ID,
+      expectedGeneration: 0,
+      expectedRevision: 0,
+      provider: { providerHandle: 'private-provider' },
+    };
+    await expect(api.ensure(PROJECT_ID, unsafeInput, { operationId: OPERATION_ID })).rejects.toMatchObject({
+      code: 'INVALID_INPUT',
+    });
+    expect(runtimeFetchMock).not.toHaveBeenCalled();
+
+    for (const extra of ['provider', 'supervision', 'endpoint', 'capability']) {
+      runtimeFetchMock.mockResolvedValueOnce(Response.json({ ...runtimeStatus, [extra]: 'private-value' }));
+      await expect(api.getStatus(PROJECT_ID)).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+
+      runtimeFetchMock.mockResolvedValueOnce(Response.json({
+        ...runtimeReservation('ensure', 'start'),
+        [extra]: 'private-value',
+      }, { status: 202 }));
+      await expect(api.ensure(PROJECT_ID, {
+        sessionId: SESSION_ID,
+        expectedGeneration: 0,
+        expectedRevision: 0,
+      }, { operationId: OPERATION_ID })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    }
+  });
+
+  it('rejects malformed status/reservation identities, readiness, and checkpoint rules', async () => {
+    const api = createWebV2RuntimeAPI();
+    runtimeFetchMock.mockResolvedValueOnce(Response.json({ ...runtimeStatus, projectId: 'project_other' }));
+    await expect(api.getStatus(PROJECT_ID)).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+
+    runtimeFetchMock.mockResolvedValueOnce(Response.json({
+      ...runtimeReservation('pause', 'stop'),
+      readiness: 'ready',
+    }, { status: 202 }));
+    await expect(api.pause(PROJECT_ID, {
+      sessionId: SESSION_ID,
+      expectedGeneration: 1,
+      expectedRevision: 2,
+    }, { operationId: OPERATION_ID })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+
+    const missingWorkspaceRevision = {
+      sessionId: SESSION_ID,
+      expectedGeneration: 1,
+      expectedRevision: 2,
+    };
+    await expect(Reflect.apply(api.checkpoint, api, [PROJECT_ID, missingWorkspaceRevision])).rejects.toMatchObject({
+      code: 'INVALID_INPUT',
     });
   });
 });

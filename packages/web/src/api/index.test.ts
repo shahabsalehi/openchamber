@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { RuntimeUrlQuery, RuntimeUrlResolver } from '@openchamber/ui/lib/runtime-url';
 
-const { createWebV2APIMock, runtimeFetchMock, webV2Api } = vi.hoisted(() => ({
+const { createWebV2APIMock, createWebV2RuntimeAPIMock, runtimeFetchMock, webV2Api, webV2RuntimeApi } = vi.hoisted(() => ({
   createWebV2APIMock: vi.fn(),
+  createWebV2RuntimeAPIMock: vi.fn(),
   runtimeFetchMock: vi.fn(),
   webV2Api: {
     listProjects: vi.fn(),
@@ -20,6 +21,15 @@ const { createWebV2APIMock, runtimeFetchMock, webV2Api } = vi.hoisted(() => ({
     rotateCredential: vi.fn(),
     revokeCredential: vi.fn(),
     deleteCredential: vi.fn(),
+  },
+  webV2RuntimeApi: {
+    getStatus: vi.fn(),
+    ensure: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    destroy: vi.fn(),
+    checkpoint: vi.fn(),
+    replace: vi.fn(),
   },
 }));
 
@@ -50,6 +60,7 @@ vi.mock('./clientAuth', () => ({ createWebClientAuthAPI: vi.fn(() => ({})) }));
 
 vi.mock('./webV2', () => ({
   createWebV2API: createWebV2APIMock,
+  createWebV2RuntimeAPI: createWebV2RuntimeAPIMock,
 }));
 
 import { createWebAPIs } from './index';
@@ -74,6 +85,8 @@ beforeEach(() => {
   runtimeFetchMock.mockReset();
   createWebV2APIMock.mockReset();
   createWebV2APIMock.mockReturnValue(webV2Api);
+  createWebV2RuntimeAPIMock.mockReset();
+  createWebV2RuntimeAPIMock.mockReturnValue(webV2RuntimeApi);
 });
 
 describe('createWebAPIs WebV2 capability', () => {
@@ -82,6 +95,7 @@ describe('createWebAPIs WebV2 capability', () => {
 
     expect(apis).not.toHaveProperty('webV2');
     expect(createWebV2APIMock).not.toHaveBeenCalled();
+    expect(createWebV2RuntimeAPIMock).not.toHaveBeenCalled();
     expect(runtimeFetchMock).not.toHaveBeenCalled();
   });
 
@@ -105,6 +119,28 @@ describe('createWebAPIs WebV2 capability', () => {
       deleteCredential: expect.any(Function),
     }));
     expect(createWebV2APIMock).toHaveBeenCalledTimes(1);
+    expect(apis.webV2).not.toHaveProperty('runtime');
+    expect(createWebV2RuntimeAPIMock).not.toHaveBeenCalled();
+    expect(runtimeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('constructs the independently gated inert runtime client only with both gates', () => {
+    const missingControlPlane = createWebAPIs({ urls, enableWebV2Runtime: true });
+    expect(missingControlPlane).not.toHaveProperty('webV2');
+    expect(createWebV2RuntimeAPIMock).not.toHaveBeenCalled();
+
+    const apis = createWebAPIs({ urls, enableWebV2: true, enableWebV2Runtime: true });
+    expect(apis.webV2?.runtime).toEqual(expect.objectContaining({
+      getStatus: expect.any(Function),
+      ensure: expect.any(Function),
+      pause: expect.any(Function),
+      resume: expect.any(Function),
+      destroy: expect.any(Function),
+      checkpoint: expect.any(Function),
+      replace: expect.any(Function),
+    }));
+    expect(apis).not.toHaveProperty('webV2Runtime');
+    expect(createWebV2RuntimeAPIMock).toHaveBeenCalledTimes(1);
     expect(runtimeFetchMock).not.toHaveBeenCalled();
   });
 });

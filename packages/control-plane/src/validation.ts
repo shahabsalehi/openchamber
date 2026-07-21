@@ -1,6 +1,11 @@
 import {
   SANDBOX_CLEANUP_STATES,
+  SANDBOX_RUNTIME_COMPLETION_OUTCOMES,
+  SANDBOX_RUNTIME_OPERATION_KINDS,
   SANDBOX_STATUSES,
+  type BeginSandboxRuntimeEffectInput,
+  type ClaimSandboxRuntimeOperationInput,
+  type CompleteSandboxRuntimeOperationInput,
   type CreateSandboxLeaseInput,
   type CreateSessionInput,
   type DeleteFileInput,
@@ -12,7 +17,12 @@ import {
   type PutProjectInput,
   type ReadFileInput,
   type SandboxCleanupState,
+  type SandboxRuntimeCompletionOutcome,
+  type SandboxRuntimeOperationKind,
+  type SandboxRuntimePrivateSupervision,
+  type SandboxRuntimeProviderCompletion,
   type SandboxStatus,
+  type ReserveSandboxRuntimeOperationInput,
   type UpdateSandboxLeaseInput,
   type UpdateSessionInput,
   type VerifiedPrincipal,
@@ -91,6 +101,13 @@ export function validateExpectedVersion(value: unknown, nullable: boolean): numb
     return null
   }
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new ControlPlaneFault('VALIDATION_FAILED')
+  }
+  return value
+}
+
+export function validateRuntimeCounter(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new ControlPlaneFault('VALIDATION_FAILED')
   }
   return value
@@ -192,6 +209,26 @@ export function validateSandboxCleanupState(value: unknown): SandboxCleanupState
   for (const state of SANDBOX_CLEANUP_STATES) {
     if (value === state) {
       return state
+    }
+  }
+  throw new ControlPlaneFault('VALIDATION_FAILED')
+}
+
+function validateSandboxRuntimeOperationKind(value: unknown): SandboxRuntimeOperationKind {
+  for (const kind of SANDBOX_RUNTIME_OPERATION_KINDS) {
+    if (value === kind) {
+      return kind
+    }
+  }
+  throw new ControlPlaneFault('VALIDATION_FAILED')
+}
+
+function validateSandboxRuntimeCompletionOutcome(
+  value: unknown,
+): SandboxRuntimeCompletionOutcome {
+  for (const outcome of SANDBOX_RUNTIME_COMPLETION_OUTCOMES) {
+    if (value === outcome) {
+      return outcome
     }
   }
   throw new ControlPlaneFault('VALIDATION_FAILED')
@@ -378,4 +415,132 @@ export function validateDeleteSandboxLeaseInput(value: unknown): DeleteSandboxLe
     leaseId: validateOpaqueId(value.leaseId),
     expectedRevision: validateExpectedVersion(value.expectedRevision, false),
   }
+}
+
+export function validateReserveSandboxRuntimeOperationInput(
+  value: unknown,
+): ReserveSandboxRuntimeOperationInput {
+  assertExactObject(value, [
+    'operationId',
+    'requestFingerprint',
+    'kind',
+    'sessionId',
+    'expectedGeneration',
+    'expectedRevision',
+    'workspaceRevision',
+  ])
+  const kind = validateSandboxRuntimeOperationKind(value.kind)
+  const workspaceRevision =
+    value.workspaceRevision === null
+      ? null
+      : validateExpectedVersion(value.workspaceRevision, false)
+  if ((kind === 'checkpoint') !== (workspaceRevision !== null)) {
+    throw new ControlPlaneFault('VALIDATION_FAILED')
+  }
+  return {
+    operationId: validateOpaqueId(value.operationId),
+    requestFingerprint: validateSha256(value.requestFingerprint),
+    kind,
+    sessionId: validateOpaqueId(value.sessionId),
+    expectedGeneration: validateRuntimeCounter(value.expectedGeneration),
+    expectedRevision: validateRuntimeCounter(value.expectedRevision),
+    workspaceRevision,
+  }
+}
+
+export function validateClaimSandboxRuntimeOperationInput(
+  value: unknown,
+): ClaimSandboxRuntimeOperationInput {
+  assertExactObject(value, ['operationId', 'expectedGeneration', 'expectedRevision'])
+  return {
+    operationId: validateOpaqueId(value.operationId),
+    expectedGeneration: validateRuntimeCounter(value.expectedGeneration),
+    expectedRevision: validateRuntimeCounter(value.expectedRevision),
+  }
+}
+
+export function validateBeginSandboxRuntimeEffectInput(
+  value: unknown,
+): BeginSandboxRuntimeEffectInput {
+  assertExactObject(value, [
+    'operationId',
+    'expectedGeneration',
+    'expectedRevision',
+    'claimFence',
+  ])
+  return {
+    operationId: validateOpaqueId(value.operationId),
+    expectedGeneration: validateRuntimeCounter(value.expectedGeneration),
+    expectedRevision: validateRuntimeCounter(value.expectedRevision),
+    claimFence: validateExpectedVersion(value.claimFence, false),
+  }
+}
+
+function validateSandboxRuntimeProviderCompletion(
+  value: unknown,
+): SandboxRuntimeProviderCompletion {
+  assertExactObject(value, ['providerId', 'providerHandle', 'status', 'expiresAt'])
+  return {
+    providerId: validateProviderValue(value.providerId, 128),
+    providerHandle: validateProviderValue(value.providerHandle, 512),
+    status: validateSandboxStatus(value.status),
+    expiresAt: validateTimestamp(value.expiresAt, true),
+  }
+}
+
+export function validateSandboxRuntimePrivateSupervision(
+  value: unknown,
+): SandboxRuntimePrivateSupervision {
+  assertExactObject(value, [
+    'commandId',
+    'providerHandle',
+    'generation',
+    'port',
+    'username',
+  ])
+  const port = validateExpectedVersion(value.port, false)
+  if (port > 65_535) {
+    throw new ControlPlaneFault('VALIDATION_FAILED')
+  }
+  return {
+    commandId: validateProviderValue(value.commandId, 512),
+    providerHandle: validateProviderValue(value.providerHandle, 512),
+    generation: validateExpectedVersion(value.generation, false),
+    port,
+    username: validateProviderValue(value.username, 128),
+  }
+}
+
+export function validateCompleteSandboxRuntimeOperationInput(
+  value: unknown,
+): CompleteSandboxRuntimeOperationInput {
+  assertExactObject(value, [
+    'operationId',
+    'expectedGeneration',
+    'expectedRevision',
+    'claimFence',
+    'outcome',
+    'provider',
+    'supervision',
+  ])
+  const provider =
+    value.provider === null ? null : validateSandboxRuntimeProviderCompletion(value.provider)
+  const supervision =
+    value.supervision === null
+      ? null
+      : validateSandboxRuntimePrivateSupervision(value.supervision)
+  if (provider === null && supervision !== null) {
+    throw new ControlPlaneFault('VALIDATION_FAILED')
+  }
+  const common = {
+    operationId: validateOpaqueId(value.operationId),
+    expectedGeneration: validateRuntimeCounter(value.expectedGeneration),
+    expectedRevision: validateRuntimeCounter(value.expectedRevision),
+    claimFence: validateExpectedVersion(value.claimFence, false),
+    outcome: validateSandboxRuntimeCompletionOutcome(value.outcome),
+  }
+  if (provider === null) {
+    return { ...common, provider: null, supervision: null }
+  }
+  return { ...common, provider, supervision }
 }

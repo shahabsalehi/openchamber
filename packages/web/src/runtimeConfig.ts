@@ -28,19 +28,42 @@ interface ConfiguredWebAPIsOptions {
   surface?: 'main-web';
 }
 
-export const hasWebV2ServerCapability = (value: unknown): boolean => {
+export interface WebV2ServerCapabilities {
+  controlPlaneV2: true;
+  sandboxRuntimeV2?: true;
+}
+
+export const parseWebV2ServerCapabilities = (value: unknown): WebV2ServerCapabilities | null => {
   try {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
     const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return false;
+    if (prototype !== Object.prototype && prototype !== null) return null;
     const keys = Reflect.ownKeys(value);
-    if (keys.length !== 1 || keys[0] !== 'controlPlaneV2') return false;
-    const descriptor = Object.getOwnPropertyDescriptor(value, 'controlPlaneV2');
-    return descriptor !== undefined && 'value' in descriptor && descriptor.value === true;
+    if (
+      (keys.length !== 1 && keys.length !== 2)
+      || !keys.includes('controlPlaneV2')
+      || keys.some((key) => key !== 'controlPlaneV2' && key !== 'sandboxRuntimeV2')
+    ) {
+      return null;
+    }
+    const controlPlane = Object.getOwnPropertyDescriptor(value, 'controlPlaneV2');
+    if (controlPlane === undefined || !('value' in controlPlane) || controlPlane.value !== true) return null;
+    if (!keys.includes('sandboxRuntimeV2')) return { controlPlaneV2: true };
+    const sandboxRuntime = Object.getOwnPropertyDescriptor(value, 'sandboxRuntimeV2');
+    if (sandboxRuntime === undefined || !('value' in sandboxRuntime) || sandboxRuntime.value !== true) return null;
+    return { controlPlaneV2: true, sandboxRuntimeV2: true };
   } catch {
-    return false;
+    return null;
   }
 };
+
+export const hasWebV2ServerCapability = (value: unknown): boolean => (
+  parseWebV2ServerCapabilities(value) !== null
+);
+
+export const hasWebV2RuntimeServerCapability = (value: unknown): boolean => (
+  parseWebV2ServerCapabilities(value)?.sandboxRuntimeV2 === true
+);
 
 const isElectronRuntime = (): boolean => {
   try {
@@ -98,8 +121,15 @@ export const createConfiguredWebAPIs = (options: ConfiguredWebAPIsOptions = {}) 
     // Never hold the app hostage: a stuck probe/tunnel gives up to the UI.
     new Promise<void>((resolve) => { window.setTimeout(resolve, 10_000); }),
   ]);
+  const serverCapabilities = parseWebV2ServerCapabilities(window.__OPENCHAMBER_SERVER_CAPABILITIES__);
   const enableWebV2 = options.surface === 'main-web'
     && !isElectronRuntime()
-    && hasWebV2ServerCapability(window.__OPENCHAMBER_SERVER_CAPABILITIES__);
-  return createWebAPIs({ urls, enableWebV2 });
+    && serverCapabilities !== null;
+  return createWebAPIs({
+    urls,
+    enableWebV2,
+    ...(enableWebV2 && serverCapabilities?.sandboxRuntimeV2 === true
+      ? { enableWebV2Runtime: true }
+      : {}),
+  });
 };

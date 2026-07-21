@@ -41,7 +41,12 @@ vi.mock('./api', () => ({
   createWebAPIs: mocks.createWebAPIs,
 }));
 
-import { createConfiguredWebAPIs, hasWebV2ServerCapability } from './runtimeConfig';
+import {
+  createConfiguredWebAPIs,
+  hasWebV2RuntimeServerCapability,
+  hasWebV2ServerCapability,
+  parseWebV2ServerCapabilities,
+} from './runtimeConfig';
 
 const originalWindow = globalThis.window;
 const urls = { api: vi.fn() };
@@ -71,11 +76,17 @@ afterEach(() => {
 describe('hasWebV2ServerCapability', () => {
   it('accepts only the exact boolean descriptor', () => {
     expect(hasWebV2ServerCapability(Object.freeze({ controlPlaneV2: true }))).toBe(true);
+    expect(hasWebV2ServerCapability(Object.freeze({ controlPlaneV2: true, sandboxRuntimeV2: true }))).toBe(true);
+    expect(hasWebV2RuntimeServerCapability(Object.freeze({ controlPlaneV2: true }))).toBe(false);
+    expect(hasWebV2RuntimeServerCapability(Object.freeze({ controlPlaneV2: true, sandboxRuntimeV2: true }))).toBe(true);
     expect(hasWebV2ServerCapability(undefined)).toBe(false);
     expect(hasWebV2ServerCapability({ controlPlaneV2: false })).toBe(false);
     expect(hasWebV2ServerCapability({ controlPlaneV2: 'true' })).toBe(false);
     expect(hasWebV2ServerCapability({ controlPlaneV2: true, url: 'https://secret.example' })).toBe(false);
     expect(hasWebV2ServerCapability({ controlPlaneV2: true, token: 'secret' })).toBe(false);
+    expect(hasWebV2ServerCapability({ controlPlaneV2: true, sandboxRuntimeV2: false })).toBe(false);
+    expect(hasWebV2ServerCapability({ controlPlaneV2: true, sandboxRuntimeV2: 'true' })).toBe(false);
+    expect(parseWebV2ServerCapabilities(Object.create({ controlPlaneV2: true }))).toBeNull();
   });
 
   it('does not invoke descriptor getters and fails closed on hostile objects', () => {
@@ -89,6 +100,17 @@ describe('hasWebV2ServerCapability', () => {
       },
     });
     expect(hasWebV2ServerCapability(accessor)).toBe(false);
+    expect(getterCalled).toBe(false);
+
+    const runtimeAccessor = { controlPlaneV2: true } as Record<string, unknown>;
+    Object.defineProperty(runtimeAccessor, 'sandboxRuntimeV2', {
+      enumerable: true,
+      get() {
+        getterCalled = true;
+        return true;
+      },
+    });
+    expect(hasWebV2ServerCapability(runtimeAccessor)).toBe(false);
     expect(getterCalled).toBe(false);
 
     const hostile = new Proxy({}, {
@@ -107,6 +129,18 @@ describe('createConfiguredWebAPIs WebV2 surface gating', () => {
     createConfiguredWebAPIs({ surface: 'main-web' });
 
     expect(mocks.createWebAPIs).toHaveBeenLastCalledWith({ urls, enableWebV2: true });
+  });
+
+  it('enables the independently gated runtime API only for the exact two-key descriptor', () => {
+    installWindow(Object.freeze({ controlPlaneV2: true, sandboxRuntimeV2: true }));
+
+    createConfiguredWebAPIs({ surface: 'main-web' });
+
+    expect(mocks.createWebAPIs).toHaveBeenLastCalledWith({
+      urls,
+      enableWebV2: true,
+      enableWebV2Runtime: true,
+    });
   });
 
   it('keeps absent/default mobile and mini-chat configuration unsupported', () => {

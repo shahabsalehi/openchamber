@@ -12,7 +12,11 @@ describe('bootstrap control-plane ordering', () => {
       registerCommonRequestMiddleware: () => order.push('common'),
       registerControlPlaneRoutes: (_app, dependencies) => {
         order.push('control-plane');
-        expect(dependencies).toEqual({ client: controlPlaneClient, uiAuthController });
+        expect(dependencies).toEqual({
+          client: controlPlaneClient,
+          sandboxRuntimeEnabled: true,
+          uiAuthController,
+        });
       },
       registerAuthAndAccessRoutes: () => order.push('api-auth'),
       registerTtsRoutes: () => order.push('tts'),
@@ -35,6 +39,7 @@ describe('bootstrap control-plane ordering', () => {
         markUserMessageSent: vi.fn(),
       },
       controlPlaneClient,
+      sandboxRuntimeEnabled: true,
     });
 
     expect(result.uiAuthController).toBe(uiAuthController);

@@ -127,6 +127,8 @@ When enabled, the server exposes only named project, text-file, session-metadata
 
 Only an authenticated hosted main web shell can receive the non-secret `controlPlaneV2: true` capability. The configured origin, Access assertion, auth tokens, identities, projects, credentials, and file contents are never injected. Mobile, mini-chat, Electron, Capacitor, VS Code, and API-only output do not receive the descriptor. Removing `OPENCHAMBER_CONTROL_PLANE_URL` removes the BFF routes and injection and performs no v2 control-plane network work.
 
+Hosted sandbox-runtime status and lifecycle reservation routes are independently gated and currently remain disabled in production. A process-local sandbox runtime is not sufficient: rollout requires real OpenSandbox creation/reconciliation plus a durable trusted fenced dispatcher. Until those dependencies exist, no sandbox-runtime route or `sandboxRuntimeV2` descriptor is exposed and startup performs no runtime control-plane I/O.
+
 <details>
 <summary>Bind managed OpenCode to LAN / Tailscale</summary>
 

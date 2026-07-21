@@ -3,6 +3,9 @@ import type {
   SandboxFailureSummary,
   SandboxProvider,
   SandboxProviderRegistry,
+  SandboxBridge,
+  SandboxBridgeConfig,
+  SandboxBridgeProvider,
   SandboxRuntime,
   SandboxRuntimeFactoryOptions,
   SandboxStatus,
@@ -27,6 +30,37 @@ export type {
   SandboxRuntime,
   SandboxRuntimeFactoryOptions,
   SandboxStatus,
+  BridgeClaimFields,
+  BridgeOperationKind,
+  BridgeFileEntry,
+  BridgeFileSnapshot,
+  BridgeHydrationInput,
+  BridgeHydrationResult,
+  BridgeCheckpointInput,
+  BridgeFileRecord,
+  BridgeCheckpointResult,
+  BridgeLifecycleInput,
+  BridgeLifecycleResult,
+  BridgeDestroyInput,
+  BridgeDestroyResult,
+  BridgeOpenCodeSupervision,
+  BridgeOpenCodeStartInput,
+  BridgeOpenCodeStartResult,
+  BridgeOpenCodeStopInput,
+  BridgeOpenCodeStopResult,
+  BridgeOpenCodeReconcileInput,
+  BridgeOpenCodeReconcileResult,
+  BridgeCommandResult,
+  BridgeCommandOutput,
+  BridgeSSECommandResult,
+  SandboxProviderLifecycle,
+  SandboxProviderCommand,
+  SandboxProviderFiles,
+  SandboxProviderDirectories,
+  SandboxProviderExecd,
+  SandboxBridgeProvider,
+  SandboxBridgeConfig,
+  SandboxBridge,
 } from './types.js';
 
 export declare const SANDBOX_ERROR_CODES: Readonly<{
@@ -42,6 +76,14 @@ export declare const SANDBOX_ERROR_CODES: Readonly<{
   RESPONSE_INVALID: 'SANDBOX_RESPONSE_INVALID';
   RUNTIME_DISPOSING: 'SANDBOX_RUNTIME_DISPOSING';
   DISPOSE_FAILED: 'SANDBOX_DISPOSE_FAILED';
+  BRIDGE_DISABLED: 'SANDBOX_BRIDGE_DISABLED';
+  BRIDGE_REAL_CREATE_UNSUPPORTED: 'SANDBOX_BRIDGE_REAL_CREATE_UNSUPPORTED';
+  BRIDGE_OPERATION_INVALID: 'SANDBOX_BRIDGE_OPERATION_INVALID';
+  BRIDGE_FILE_INVALID: 'SANDBOX_BRIDGE_FILE_INVALID';
+  BRIDGE_HYDRATION_FAILED: 'SANDBOX_BRIDGE_HYDRATION_FAILED';
+  BRIDGE_CHECKPOINT_FAILED: 'SANDBOX_BRIDGE_CHECKPOINT_FAILED';
+  BRIDGE_COMMAND_FAILED: 'SANDBOX_BRIDGE_COMMAND_FAILED';
+  BRIDGE_OPENCODE_FAILED: 'SANDBOX_BRIDGE_OPENCODE_FAILED';
 }>;
 
 export declare class SandboxRuntimeError extends Error {
@@ -74,3 +116,14 @@ export declare function createSandboxRuntime(options: {
 export declare function createSandboxRuntimeFromEnvironment(
   options?: SandboxRuntimeFactoryOptions,
 ): SandboxRuntime | null;
+
+export declare function createSandboxBridge(options: {
+  provider: SandboxBridgeProvider;
+  bridgeConfig: SandboxBridgeConfig;
+  clock: import('./types.js').SandboxClock;
+  fetchImpl: import('./types.js').SandboxFetch;
+}): SandboxBridge;
+
+export declare function createSandboxBridgeFromEnvironment(
+  options?: SandboxRuntimeFactoryOptions,
+): SandboxBridge | null;

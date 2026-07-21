@@ -18,6 +18,13 @@ import type {
   WebV2RequestOptions,
   WebV2RevokeCredentialInput,
   WebV2RotateCredentialInput,
+  WebV2RuntimeAPI,
+  WebV2RuntimeCheckpoint,
+  WebV2RuntimeEffect,
+  WebV2RuntimeOperationKind,
+  WebV2RuntimeReservation,
+  WebV2RuntimeStatus,
+  WebV2RuntimeStatusValue,
   WebV2SessionRecord,
   WebV2UpdateSessionInput,
   WebV2WriteFileInput,
@@ -35,6 +42,34 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const HTTP_ETAG_PATTERN = /^(?:\*|"[^"\p{Cc}]{1,128}")$/u;
 const JSON_CONTENT_TYPE_PATTERN = /^application\/json(?:\s*;\s*charset=utf-8)?$/i;
 const UTF8_TEXT_CONTENT_TYPE_PATTERN = /^(?:text\/[!#$%&'*+.^_`|~0-9A-Za-z-]+|application\/(?:json|javascript|xml|yaml|x-yaml|toml))(?:\s*;\s*charset=utf-8)?$/i;
+const RUNTIME_STATUSES: readonly WebV2RuntimeStatusValue[] = [
+  'pending',
+  'running',
+  'pausing',
+  'paused',
+  'resuming',
+  'stopping',
+  'terminated',
+  'failed',
+  'unknown',
+];
+const RUNTIME_OPERATION_KINDS: readonly WebV2RuntimeOperationKind[] = [
+  'ensure',
+  'pause',
+  'resume',
+  'destroy',
+  'checkpoint',
+  'replace',
+];
+const RUNTIME_EFFECTS: readonly WebV2RuntimeEffect[] = ['start', 'stop', 'resume', 'destroy', 'checkpoint'];
+const RUNTIME_EFFECT_BY_KIND: Readonly<Record<WebV2RuntimeOperationKind, WebV2RuntimeEffect>> = {
+  ensure: 'start',
+  pause: 'stop',
+  resume: 'resume',
+  destroy: 'destroy',
+  checkpoint: 'checkpoint',
+  replace: 'start',
+};
 
 const ERROR_DEFINITIONS: Readonly<Record<WebV2FailureCode, { status: number | null; message: string }>> = {
   ABORTED: { status: null, message: 'The request was cancelled.' },
@@ -265,6 +300,162 @@ const validateCredentialMetadata = (value: unknown): WebV2CredentialMetadata => 
     status: record.status,
     createdAt: safeInteger(record.createdAt),
     updatedAt: safeInteger(record.updatedAt),
+  };
+};
+
+const runtimeStatusValue = (value: unknown): WebV2RuntimeStatusValue => {
+  const status = RUNTIME_STATUSES.find((candidate) => candidate === value);
+  return status ?? fail('INVALID_RESPONSE');
+};
+
+const runtimeOperationKind = (value: unknown): WebV2RuntimeOperationKind => {
+  const kind = RUNTIME_OPERATION_KINDS.find((candidate) => candidate === value);
+  return kind ?? fail('INVALID_RESPONSE');
+};
+
+const runtimeEffect = (value: unknown): WebV2RuntimeEffect => {
+  const effect = RUNTIME_EFFECTS.find((candidate) => candidate === value);
+  return effect ?? fail('INVALID_RESPONSE');
+};
+
+const nullableRuntimeId = (value: unknown): string | null => (
+  value === null ? null : boundedString(value, 128, { pattern: OPAQUE_ID_PATTERN })
+);
+
+const validateRuntimeCheckpoint = (value: unknown): WebV2RuntimeCheckpoint | null => {
+  if (value === null) return null;
+  const checkpoint = exactRecord(value, [
+    'state',
+    'generation',
+    'workspaceRevision',
+    'lifecycleRevision',
+    'createdAt',
+    'updatedAt',
+  ]);
+  if (
+    checkpoint.state !== 'requested'
+    && checkpoint.state !== 'ready'
+    && checkpoint.state !== 'failed'
+    && checkpoint.state !== 'outcomeUnknown'
+  ) {
+    fail('INVALID_RESPONSE');
+  }
+  return {
+    state: checkpoint.state,
+    generation: safeInteger(checkpoint.generation),
+    workspaceRevision: safeInteger(checkpoint.workspaceRevision, { minimum: 1 }),
+    lifecycleRevision: safeInteger(checkpoint.lifecycleRevision),
+    createdAt: safeInteger(checkpoint.createdAt),
+    updatedAt: safeInteger(checkpoint.updatedAt),
+  };
+};
+
+const validateRuntimeStatus = (value: unknown): WebV2RuntimeStatus => {
+  const record = exactRecord(value, [
+    'projectId',
+    'exists',
+    'sessionId',
+    'leaseId',
+    'status',
+    'generation',
+    'lifecycleRevision',
+    'outcomeUnknown',
+    'activeOperation',
+    'checkpoint',
+    'readiness',
+    'updatedAt',
+  ]);
+  if (typeof record.exists !== 'boolean' || typeof record.outcomeUnknown !== 'boolean') fail('INVALID_RESPONSE');
+  if (record.readiness !== 'disabled') fail('INVALID_RESPONSE');
+  let activeOperation: WebV2RuntimeStatus['activeOperation'] = null;
+  if (record.activeOperation !== null) {
+    const active = exactRecord(record.activeOperation, ['operationId', 'kind', 'state']);
+    if (active.state !== 'pending' && active.state !== 'inProgress') fail('INVALID_RESPONSE');
+    activeOperation = {
+      operationId: boundedString(active.operationId, 128, { pattern: OPAQUE_ID_PATTERN }),
+      kind: runtimeOperationKind(active.kind),
+      state: active.state,
+    };
+  }
+  return {
+    projectId: boundedString(record.projectId, 128, { pattern: OPAQUE_ID_PATTERN }),
+    exists: record.exists,
+    sessionId: nullableRuntimeId(record.sessionId),
+    leaseId: nullableRuntimeId(record.leaseId),
+    status: runtimeStatusValue(record.status),
+    generation: safeInteger(record.generation),
+    lifecycleRevision: safeInteger(record.lifecycleRevision),
+    outcomeUnknown: record.outcomeUnknown,
+    activeOperation,
+    checkpoint: validateRuntimeCheckpoint(record.checkpoint),
+    readiness: 'disabled',
+    updatedAt: record.updatedAt === null ? null : safeInteger(record.updatedAt),
+  };
+};
+
+const validateRuntimeReservation = (value: unknown): WebV2RuntimeReservation => {
+  const record = exactRecord(value, [
+    'operationId',
+    'kind',
+    'effect',
+    'sessionId',
+    'leaseId',
+    'generation',
+    'lifecycleRevision',
+    'status',
+    'workspaceRevision',
+    'readiness',
+    'acceptedAt',
+  ]);
+  if (record.readiness !== 'disabled') fail('INVALID_RESPONSE');
+  return {
+    operationId: boundedString(record.operationId, 128, { pattern: OPAQUE_ID_PATTERN }),
+    kind: runtimeOperationKind(record.kind),
+    effect: runtimeEffect(record.effect),
+    sessionId: boundedString(record.sessionId, 128, { pattern: OPAQUE_ID_PATTERN }),
+    leaseId: nullableRuntimeId(record.leaseId),
+    generation: safeInteger(record.generation),
+    lifecycleRevision: safeInteger(record.lifecycleRevision),
+    status: runtimeStatusValue(record.status),
+    workspaceRevision: record.workspaceRevision === null
+      ? null
+      : safeInteger(record.workspaceRevision, { minimum: 1 }),
+    readiness: 'disabled',
+    acceptedAt: safeInteger(record.acceptedAt),
+  };
+};
+
+type ValidatedRuntimeInput = {
+  body: Record<string, unknown>;
+  sessionId: string;
+  workspaceRevision: number | null;
+};
+
+const validateRuntimeInput = (value: unknown, kind: WebV2RuntimeOperationKind): ValidatedRuntimeInput => {
+  const checkpoint = kind === 'checkpoint';
+  const record = exactRecord(
+    value,
+    checkpoint
+      ? ['sessionId', 'expectedGeneration', 'expectedRevision', 'workspaceRevision']
+      : ['sessionId', 'expectedGeneration', 'expectedRevision'],
+    undefined,
+    'INVALID_INPUT',
+  );
+  const sessionId = validateOpaqueId(record.sessionId);
+  const expectedGeneration = safeInteger(record.expectedGeneration, { code: 'INVALID_INPUT' });
+  const expectedRevision = safeInteger(record.expectedRevision, { code: 'INVALID_INPUT' });
+  if (!checkpoint) {
+    return {
+      body: { sessionId, expectedGeneration, expectedRevision },
+      sessionId,
+      workspaceRevision: null,
+    };
+  }
+  const workspaceRevision = validatePositiveVersion(record.workspaceRevision);
+  return {
+    body: { sessionId, expectedGeneration, expectedRevision, workspaceRevision },
+    sessionId,
+    workspaceRevision,
   };
 };
 
@@ -506,6 +697,71 @@ const readFileResponse = async (response: Response): Promise<WebV2FileReadResult
     metadata: fileResponseMetadata(response),
   };
 };
+
+const requestRuntimeOperation = async (
+  projectId: string,
+  kind: WebV2RuntimeOperationKind,
+  input: unknown,
+  options: WebV2OperationRequestOptions,
+): Promise<WebV2RuntimeReservation> => {
+  const validatedProjectId = validateOpaqueId(projectId);
+  const validatedInput = validateRuntimeInput(input, kind);
+  const operationId = resolveOperationId(options);
+  return requestJson(
+    `${BFF_PREFIX}/projects/${encodeURIComponent(validatedProjectId)}/sandbox-runtime/${kind}`,
+    jsonRequestInit('POST', validatedInput.body, { 'X-Operation-Id': operationId }),
+    [202],
+    (value) => {
+      const reservation = validateRuntimeReservation(value);
+      if (
+        reservation.operationId !== operationId
+        || reservation.kind !== kind
+        || reservation.effect !== RUNTIME_EFFECT_BY_KIND[kind]
+        || reservation.sessionId !== validatedInput.sessionId
+        || reservation.workspaceRevision !== validatedInput.workspaceRevision
+      ) {
+        fail('INVALID_RESPONSE');
+      }
+      return reservation;
+    },
+    options.signal,
+  );
+};
+
+export const createWebV2RuntimeAPI = (): WebV2RuntimeAPI => ({
+  async getStatus(projectId, options = {}) {
+    const validatedProjectId = validateOpaqueId(projectId);
+    return requestJson(
+      `${BFF_PREFIX}/projects/${encodeURIComponent(validatedProjectId)}/sandbox-runtime`,
+      { method: 'GET', headers: { Accept: 'application/json' } },
+      [200],
+      (value) => {
+        const status = validateRuntimeStatus(value);
+        if (status.projectId !== validatedProjectId) fail('INVALID_RESPONSE');
+        return status;
+      },
+      options.signal,
+    );
+  },
+  async ensure(projectId, input, options = {}) {
+    return requestRuntimeOperation(projectId, 'ensure', input, options);
+  },
+  async pause(projectId, input, options = {}) {
+    return requestRuntimeOperation(projectId, 'pause', input, options);
+  },
+  async resume(projectId, input, options = {}) {
+    return requestRuntimeOperation(projectId, 'resume', input, options);
+  },
+  async destroy(projectId, input, options = {}) {
+    return requestRuntimeOperation(projectId, 'destroy', input, options);
+  },
+  async checkpoint(projectId, input, options = {}) {
+    return requestRuntimeOperation(projectId, 'checkpoint', input, options);
+  },
+  async replace(projectId, input, options = {}) {
+    return requestRuntimeOperation(projectId, 'replace', input, options);
+  },
+});
 
 export const createWebV2API = (): WebV2API => ({
   async listProjects(options: WebV2RequestOptions = {}): Promise<WebV2ProjectRecord[]> {

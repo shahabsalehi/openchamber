@@ -2,6 +2,7 @@ import { registerPwaManifestRoute } from './pwa-manifest-routes.js';
 import { resolveControlPlaneRequestAuth } from '../control-plane/routes.js';
 
 export const CONTROL_PLANE_CAPABILITY_SCRIPT = '<script>window.__OPENCHAMBER_SERVER_CAPABILITIES__=Object.freeze({"controlPlaneV2":true});</script>';
+export const CONTROL_PLANE_SANDBOX_RUNTIME_CAPABILITY_SCRIPT = '<script>window.__OPENCHAMBER_SERVER_CAPABILITIES__=Object.freeze({"controlPlaneV2":true,"sandboxRuntimeV2":true});</script>';
 
 export const createStaticRoutesRuntime = (dependencies) => {
   const {
@@ -28,6 +29,7 @@ export const createStaticRoutesRuntime = (dependencies) => {
 
   const registerStaticRoutes = (app, {
     controlPlaneEnabled = false,
+    sandboxRuntimeEnabled = false,
     uiAuthController = null,
   } = {}) => {
     const distPath = resolveDistPath();
@@ -54,7 +56,10 @@ export const createStaticRoutesRuntime = (dependencies) => {
         if (markerIndex < 0) {
           return res.sendFile(indexPath);
         }
-        const injected = `${html.slice(0, markerIndex)}${CONTROL_PLANE_CAPABILITY_SCRIPT}${html.slice(markerIndex)}`;
+        const capabilityScript = sandboxRuntimeEnabled === true
+          ? CONTROL_PLANE_SANDBOX_RUNTIME_CAPABILITY_SCRIPT
+          : CONTROL_PLANE_CAPABILITY_SCRIPT;
+        const injected = `${html.slice(0, markerIndex)}${capabilityScript}${html.slice(markerIndex)}`;
         res.setHeader('Cache-Control', 'no-store');
         return res.status(200).type('html').send(injected);
       };

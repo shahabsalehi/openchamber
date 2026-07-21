@@ -31,6 +31,38 @@ const createClient = () => ({
   listSessions: vi.fn(async () => result([])),
   createSession: vi.fn(async () => result({ sessionId: 'session_0001' }, 201)),
   updateSession: vi.fn(async () => result({ sessionId: 'session_0001', revision: 2 })),
+  getSandboxRuntimeStatus: vi.fn(async () => result({
+    projectId: PROJECT_ID,
+    exists: false,
+    sessionId: null,
+    leaseId: null,
+    status: 'terminated',
+    generation: 0,
+    lifecycleRevision: 0,
+    outcomeUnknown: false,
+    activeOperation: null,
+    checkpoint: null,
+    readiness: 'disabled',
+    updatedAt: null,
+  })),
+  ensureSandboxRuntime: vi.fn(async () => result({
+    operationId: OPERATION_ID,
+    kind: 'ensure',
+    effect: 'start',
+    sessionId: 'session_0001',
+    leaseId: null,
+    generation: 1,
+    lifecycleRevision: 1,
+    status: 'pending',
+    workspaceRevision: null,
+    readiness: 'disabled',
+    acceptedAt: 1,
+  }, 202)),
+  pauseSandboxRuntime: vi.fn(async () => result({}, 202)),
+  resumeSandboxRuntime: vi.fn(async () => result({}, 202)),
+  destroySandboxRuntime: vi.fn(async () => result({}, 202)),
+  checkpointSandboxRuntime: vi.fn(async () => result({}, 202)),
+  replaceSandboxRuntime: vi.fn(async () => result({}, 202)),
   listCredentials: vi.fn(async () => result([])),
   createCredential: vi.fn(async () => result({ credentialId: 'credential_0001' }, 201)),
   rotateCredential: vi.fn(async () => result({ credentialId: 'credential_0001', generation: 2 })),
@@ -45,11 +77,17 @@ const createAuth = () => ({
 
 const createApp = ({
   client = createClient(),
+  sandboxRuntimeEnabled = false,
   uiAuthController = createAuth(),
   requestTimeoutMs,
 } = {}) => {
   const app = express();
-  registerControlPlaneRoutes(app, { client, uiAuthController, requestTimeoutMs });
+  registerControlPlaneRoutes(app, {
+    client,
+    sandboxRuntimeEnabled,
+    uiAuthController,
+    requestTimeoutMs,
+  });
   return { app, client, uiAuthController };
 };
 
@@ -83,6 +121,115 @@ describe('control-plane BFF routes', () => {
     };
     expect(registerControlPlaneRoutes(app, { client: null, uiAuthController: createAuth() })).toBe(false);
     expect(calls).toEqual([]);
+  });
+
+  it('keeps every runtime route absent unless its independent gate is true', async () => {
+    const { app, client } = createApp();
+    const status = await request(app)
+      .get(`/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime`)
+      .set('Cf-Access-Jwt-Assertion', ASSERTION);
+    const ensure = await request(app)
+      .post(`/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime/ensure`)
+      .set('Cf-Access-Jwt-Assertion', ASSERTION)
+      .set('X-Operation-Id', OPERATION_ID)
+      .send({ sessionId: 'session_0001', expectedGeneration: 0, expectedRevision: 0 });
+
+    expect(status.status).toBe(404);
+    expect(ensure.status).toBe(404);
+    expect(client.getSandboxRuntimeStatus).not.toHaveBeenCalled();
+    expect(client.ensureSandboxRuntime).not.toHaveBeenCalled();
+  });
+
+  it('applies same-origin-before-auth ordering to the gated runtime routes', async () => {
+    const { app, client, uiAuthController } = createApp({ sandboxRuntimeEnabled: true });
+    const response = await request(app)
+      .get(`/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime`)
+      .set('Host', 'app.example')
+      .set('Origin', 'https://evil.example')
+      .set('Cf-Access-Jwt-Assertion', ASSERTION);
+
+    expect(response.status).toBe(403);
+    expect(uiAuthController.resolveAuthContext).not.toHaveBeenCalled();
+    expect(client.getSandboxRuntimeStatus).not.toHaveBeenCalled();
+  });
+
+  it('maps only exact named runtime operations and preserves replay responses', async () => {
+    const { app, client } = createApp({ sandboxRuntimeEnabled: true });
+    const lifecycle = { sessionId: 'session_0001', expectedGeneration: 0, expectedRevision: 0 };
+
+    const status = await request(app)
+      .get(`/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime`)
+      .set('Cf-Access-Jwt-Assertion', ASSERTION);
+    expect(status.status).toBe(200);
+
+    const first = await request(app)
+      .post(`/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime/ensure`)
+      .set('Cf-Access-Jwt-Assertion', ASSERTION)
+      .set('X-Operation-Id', OPERATION_ID)
+      .send(lifecycle);
+    const replay = await request(app)
+      .post(`/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime/ensure`)
+      .set('Cf-Access-Jwt-Assertion', ASSERTION)
+      .set('X-Operation-Id', OPERATION_ID)
+      .send(lifecycle);
+
+    expect(first.status).toBe(202);
+    expect(replay.status).toBe(202);
+    expect(replay.body).toEqual(first.body);
+    expect(client.ensureSandboxRuntime).toHaveBeenCalledTimes(2);
+    expect(client.ensureSandboxRuntime.mock.calls[0]?.slice(0, 2)).toEqual([PROJECT_ID, lifecycle]);
+    expect(client.ensureSandboxRuntime.mock.calls[0]?.[2]).toMatchObject({
+      assertion: ASSERTION,
+      operationId: OPERATION_ID,
+    });
+
+    for (const [operation, methodName, body] of [
+      ['pause', 'pauseSandboxRuntime', lifecycle],
+      ['resume', 'resumeSandboxRuntime', lifecycle],
+      ['destroy', 'destroySandboxRuntime', lifecycle],
+      ['checkpoint', 'checkpointSandboxRuntime', { ...lifecycle, workspaceRevision: 7 }],
+      ['replace', 'replaceSandboxRuntime', lifecycle],
+    ]) {
+      const response = await request(app)
+        .post(`/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime/${operation}`)
+        .set('Cf-Access-Jwt-Assertion', ASSERTION)
+        .set('X-Operation-Id', OPERATION_ID)
+        .send(body);
+      expect(response.status, operation).toBe(202);
+      expect(client[methodName]).toHaveBeenCalledTimes(1);
+      expect(client[methodName].mock.calls[0]?.slice(0, 2)).toEqual([PROJECT_ID, body]);
+    }
+  });
+
+  it('rejects malformed runtime headers, bodies, methods, queries, and unknown suffixes', async () => {
+    const { app, client } = createApp({ sandboxRuntimeEnabled: true });
+    const route = `/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime/ensure`;
+    const missingHeader = await request(app)
+      .post(route)
+      .set('Cf-Access-Jwt-Assertion', ASSERTION)
+      .send({ sessionId: 'session_0001', expectedGeneration: 0, expectedRevision: 0 });
+    const malformedBody = await request(app)
+      .post(route)
+      .set('Cf-Access-Jwt-Assertion', ASSERTION)
+      .set('X-Operation-Id', OPERATION_ID)
+      .set('Content-Type', 'application/json')
+      .send('{');
+    const query = await request(app)
+      .get(`/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime?endpoint=private`)
+      .set('Cf-Access-Jwt-Assertion', ASSERTION);
+    const wrongMethod = await request(app)
+      .put(route)
+      .set('Cf-Access-Jwt-Assertion', ASSERTION);
+    const unknown = await request(app)
+      .post(`/api/openchamber/v2/projects/${PROJECT_ID}/sandbox-runtime/claim`)
+      .set('Cf-Access-Jwt-Assertion', ASSERTION);
+
+    expect(missingHeader.status).toBe(400);
+    expect(malformedBody.status).toBe(400);
+    expect(query.status).toBe(400);
+    expect(wrongMethod.status).toBe(405);
+    expect(unknown.status).toBe(404);
+    expect(client.ensureSandboxRuntime).not.toHaveBeenCalled();
   });
 
   it('requires a bounded Access assertion before consuming UI auth state', async () => {

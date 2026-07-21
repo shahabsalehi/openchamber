@@ -419,3 +419,406 @@ describe('OpenSandbox provider adapter', () => {
     expect(clock.clearTimeout).toHaveBeenCalledWith(2);
   });
 });
+
+describe('OpenSandbox bridge adapter', () => {
+  it('supportsRealCreate is false', () => {
+    const provider = createProvider(mock(async () => new Response('{}', { status: 200 })));
+    expect(provider.supportsRealCreate).toBe(false);
+  });
+
+  describe('lifecycle', () => {
+    it('pause sends POST to /sandboxes/{id}/pause', async () => {
+      const fetchImpl = mock(async (url, init) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/pause')) {
+          return Response.json(sandboxPayload({ status: { state: 'Paused' } }));
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      const record = await provider.lifecycle.pause('sandbox-123');
+      expect(record.status).toBe('paused');
+      const pauseCall = fetchImpl.mock.calls.find(([u]) => String(u).includes('/pause'));
+      expect(pauseCall).toBeDefined();
+      expect(pauseCall[1].method).toBe('POST');
+      expect(pauseCall[1].headers['OPEN-SANDBOX-API-KEY']).toBe(API_KEY);
+      expect(pauseCall[1].redirect).toBe('error');
+      expect(JSON.stringify(record)).not.toContain(API_KEY);
+    });
+
+    it('resume sends POST to /sandboxes/{id}/resume', async () => {
+      const fetchImpl = mock(async (url) => {
+        if (String(url).includes('/resume')) {
+          return Response.json(sandboxPayload({ status: { state: 'Running' } }));
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      const record = await provider.lifecycle.resume('sandbox-123');
+      expect(record.status).toBe('running');
+      const resumeCall = fetchImpl.mock.calls.find(([u]) => String(u).includes('/resume'));
+      expect(resumeCall).toBeDefined();
+      expect(resumeCall[1].method).toBe('POST');
+    });
+  });
+
+  describe('execd', () => {
+    it('getExecdEndpoint resolves port 44772', async () => {
+      const execdSecret = 'execd-access-token-123';
+      const fetchImpl = mock(async (url) => {
+        if (String(url).includes('endpoints/44772')) {
+          return Response.json({
+            endpoint: 'https://execd-sandbox.example',
+            headers: { 'X-EXECD-ACCESS-TOKEN': execdSecret },
+          });
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      const connection = await provider.execd.getExecdEndpoint('sandbox-123');
+      expect(connection.endpoint).toBe('https://execd-sandbox.example');
+      expect(connection.headers['X-EXECD-ACCESS-TOKEN']).toBe(execdSecret);
+      const execdCall = fetchImpl.mock.calls.find(([u]) => String(u).includes('44772'));
+      expect(execdCall).toBeDefined();
+      expect(execdCall[1].redirect).toBe('error');
+    });
+  });
+
+  describe('command', () => {
+    it('runBackground sends POST /command with command string and SSE accept', async () => {
+      const execdToken = 'execd-token-run';
+      const fetchImpl = mock(async (url, init) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        if (urlStr.endsWith('/command') || urlStr.includes('/command')) {
+          return new Response('data: {"commandId":"cmd-bg-1","event":"accepted"}\n\n', {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          });
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      const result = await provider.command.runBackground('sandbox-123', {
+        command: 'echo hello',
+        cwd: '/workspace/project',
+        envs: { HOME: '/root' },
+      });
+      expect(result.commandId).toBe('cmd-bg-1');
+      expect(result.event).toBe('accepted');
+
+      const commandCall = fetchImpl.mock.calls.find(([u]) => {
+        const s = String(u);
+        return s.endsWith('/command') || s.includes('/command');
+      });
+      expect(commandCall).toBeDefined();
+      const body = JSON.parse(commandCall[1].body);
+      expect(body.command).toBe('echo hello');
+      expect(body.background).toBe(true);
+      expect(body.cwd).toBe('/workspace/project');
+      expect(body.envs).toEqual({ HOME: '/root' });
+      expect(commandCall[1].headers['X-EXECD-ACCESS-TOKEN']).toBe(execdToken);
+      expect(commandCall[1].headers['Accept']).toBe('text/event-stream');
+      expect(commandCall[1].headers['OPEN-SANDBOX-API-KEY']).toBeUndefined();
+    });
+
+    it('commandStatus fetches GET /command/status/{id}', async () => {
+      const execdToken = 'execd-token-status';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        if (urlStr.includes('/status')) {
+          return Response.json({ commandId: 'cmd-1', status: 'completed', exitCode: 0 });
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      const result = await provider.command.commandStatus('sandbox-123', 'cmd-1');
+      expect(result.status).toBe('completed');
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('commandLog fetches GET /command/{id}/logs with text/plain accept', async () => {
+      const execdToken = 'execd-token-log';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        if (urlStr.includes('/logs')) {
+          return new Response('hello world\n', {
+            status: 200,
+            headers: { 'EXECD-COMMANDS-TAIL-CURSOR': 'cursor-123' },
+          });
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      const result = await provider.command.commandLog('sandbox-123', 'cmd-1');
+      expect(result.commandId).toBe('cmd-1');
+      expect(result.log).toBe('hello world\n');
+      expect(result.tailCursor).toBe('cursor-123');
+    });
+
+    it('commandLog returns empty for 404', async () => {
+      const execdToken = 'execd-token-log';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        if (urlStr.includes('/logs')) {
+          return new Response('', { status: 404 });
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      const result = await provider.command.commandLog('sandbox-123', 'cmd-1');
+      expect(result.log).toBe('');
+    });
+
+    it('interruptCommand sends DELETE /command?id=...', async () => {
+      const execdToken = 'execd-token-interrupt';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      await expect(provider.command.interruptCommand('sandbox-123', 'cmd-1')).resolves.toBeUndefined();
+      const interruptCall = fetchImpl.mock.calls.find(([u, init]) => init?.method === 'DELETE');
+      expect(interruptCall).toBeDefined();
+      expect(String(interruptCall[0])).toContain('command?id=cmd-1');
+    });
+  });
+
+  describe('files', () => {
+    it('searchFiles returns array response', async () => {
+      const execdToken = 'execd-token-search';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        if (urlStr.includes('files/search')) {
+          return Response.json([
+            { path: '/workspace/project/a.txt', content: 'a', size: 1 },
+            { path: '/workspace/project/sub/b.txt', content: 'b', size: 1 },
+          ]);
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      const files = await provider.files.searchFiles('sandbox-123', '', '**');
+      expect(files.length).toBe(2);
+      expect(files[0].path).toBe('a.txt');
+      expect(files[1].path).toBe('sub/b.txt');
+    });
+
+    it('uploadFile sends multipart with correct boundary', async () => {
+      const execdToken = 'execd-token-upload';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      await expect(provider.files.uploadFile('sandbox-123', 'test.txt', Buffer.from('content'))).resolves.toBeUndefined();
+      const uploadCall = fetchImpl.mock.calls.find(([u, init]) => init?.method === 'POST' && String(u).includes('upload'));
+      expect(uploadCall).toBeDefined();
+      expect(uploadCall[1].headers['Content-Type']).toMatch(/^multipart\/form-data; boundary=----FormBoundary\d+$/);
+    });
+
+    it('downloadFile returns Buffer', async () => {
+      const execdToken = 'execd-token-dl';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        if (urlStr.includes('files/download')) {
+          return new Response('file content', { status: 200, headers: { 'Content-Length': '12' } });
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      const buffer = await provider.files.downloadFile('sandbox-123', 'test.txt');
+      expect(Buffer.isBuffer(buffer)).toBe(true);
+      expect(buffer.toString()).toBe('file content');
+    });
+
+    it('deleteFile sends DELETE /files?path=...', async () => {
+      const execdToken = 'execd-token-del';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      await expect(provider.files.deleteFile('sandbox-123', 'old.txt')).resolves.toBeUndefined();
+      const deleteCall = fetchImpl.mock.calls.find(([u, init]) => init?.method === 'DELETE' && String(u).includes('files?path='));
+      expect(deleteCall).toBeDefined();
+    });
+
+    it('rejects absolute paths', async () => {
+      const provider = createProvider(mock(async () => new Response('{}', { status: 200 })));
+      await expect(provider.files.downloadFile('sandbox-123', '/etc/passwd')).rejects.toMatchObject({
+        code: SANDBOX_ERROR_CODES.BRIDGE_FILE_INVALID,
+      });
+    });
+
+    it('rejects traversal paths', async () => {
+      const provider = createProvider(mock(async () => new Response('{}', { status: 200 })));
+      await expect(provider.files.downloadFile('sandbox-123', '../../../etc/passwd')).rejects.toMatchObject({
+        code: SANDBOX_ERROR_CODES.BRIDGE_FILE_INVALID,
+      });
+    });
+  });
+
+  describe('directories', () => {
+    it('listDirectory returns array response', async () => {
+      const execdToken = 'execd-token-dir';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        if (urlStr.includes('directories/list')) {
+          return Response.json([
+            { path: '/workspace/project/a.txt', type: 'file' },
+            { path: '/workspace/project/sub', type: 'directory' },
+          ]);
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      const entries = await provider.directories.listDirectory('sandbox-123', '', 1);
+      expect(entries.length).toBe(2);
+      expect(entries[0].path).toBe('a.txt');
+      expect(entries[0].type).toBe('file');
+      expect(entries[1].path).toBe('sub');
+      expect(entries[1].type).toBe('directory');
+    });
+
+    it('createDirectory sends POST /directories with map body', async () => {
+      const execdToken = 'execd-token-mkdir';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      await expect(provider.directories.createDirectory('sandbox-123', 'subdir')).resolves.toBeUndefined();
+      const mkdirCall = fetchImpl.mock.calls.find(([u, init]) => init?.method === 'POST' && String(u).includes('directories'));
+      expect(mkdirCall).toBeDefined();
+      const body = JSON.parse(mkdirCall[1].body);
+      expect(body).toHaveProperty('/workspace/project/subdir');
+      expect(body['/workspace/project/subdir']).toEqual({ mode: 755 });
+    });
+
+    it('createDirectory with empty string maps to /workspace/project', async () => {
+      const execdToken = 'execd-token-root';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      await expect(provider.directories.createDirectory('sandbox-123', '')).resolves.toBeUndefined();
+      const mkdirCall = fetchImpl.mock.calls.find(([u, init]) => init?.method === 'POST' && String(u).includes('directories'));
+      const body = JSON.parse(mkdirCall[1].body);
+      expect(body).toHaveProperty('/workspace/project');
+    });
+
+    it('deleteDirectory sends DELETE /directories?path=...', async () => {
+      const execdToken = 'execd-token-rmdir';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      await expect(provider.directories.deleteDirectory('sandbox-123', 'subdir')).resolves.toBeUndefined();
+      const rmdirCall = fetchImpl.mock.calls.find(([u, init]) => init?.method === 'DELETE' && String(u).includes('directories?path='));
+      expect(rmdirCall).toBeDefined();
+    });
+
+    it('deleteDirectory with empty string maps to /workspace/project', async () => {
+      const execdToken = 'execd-token-root-rm';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        return new Response('{}', { status: 200 });
+      });
+      const provider = createProvider(fetchImpl);
+      await expect(provider.directories.deleteDirectory('sandbox-123', '')).resolves.toBeUndefined();
+      const rmdirCall = fetchImpl.mock.calls.find(([u, init]) => init?.method === 'DELETE' && String(u).includes('directories?path='));
+      expect(rmdirCall).toBeDefined();
+      expect(String(rmdirCall[0])).toContain(encodeURIComponent('/workspace/project'));
+    });
+  });
+
+  describe('request isolation', () => {
+    it('execd requests do not carry API key header', async () => {
+      const execdToken = 'execd-token-iso';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        return new Response('data: {"commandId":"cmd-iso","event":"accepted"}\n\n', {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      });
+      const provider = createProvider(fetchImpl);
+      await provider.command.runBackground('sandbox-123', { command: 'echo test' });
+      for (const call of fetchImpl.mock.calls) {
+        const [, init] = call;
+        if (init && init.headers && init.headers['X-EXECD-ACCESS-TOKEN'] === execdToken) {
+          expect(init.headers['OPEN-SANDBOX-API-KEY']).toBeUndefined();
+        }
+      }
+    });
+
+    it('redirect is always error for execd requests', async () => {
+      const execdToken = 'execd-token-redirect';
+      const fetchImpl = mock(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('endpoints/44772')) {
+          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+        }
+        return new Response('data: {"commandId":"cmd-redirect","event":"accepted"}\n\n', {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      });
+      const provider = createProvider(fetchImpl);
+      await provider.command.runBackground('sandbox-123', { command: 'echo test' });
+      for (const call of fetchImpl.mock.calls) {
+        const [, init] = call;
+        if (init && init.headers && init.headers['X-EXECD-ACCESS-TOKEN'] === execdToken) {
+          expect(init.redirect).toBe('error');
+        }
+      }
+    });
+  });
+});

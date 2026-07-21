@@ -1188,6 +1188,9 @@ async function main(options = {}) {
   const controlPlaneClient = controlPlaneConfig
     ? createControlPlaneClient({ origin: controlPlaneConfig.origin })
     : null;
+  // The public runtime reservation boundary must remain dark until hosted WebV2
+  // has a durable trusted dispatcher and a provider with real create support.
+  const sandboxRuntimeEnabled = false;
   sandboxRuntime = createSandboxRuntimeFromEnvironment();
   const port = Number.isFinite(options.port) && options.port >= 0 ? Math.trunc(options.port) : DEFAULT_PORT;
   const host = typeof options.host === 'string' && options.host.length > 0 ? options.host : undefined;
@@ -1478,6 +1481,7 @@ async function main(options = {}) {
     getCachedZenModels,
     setAutoAcceptSession,
     controlPlaneClient,
+    sandboxRuntimeEnabled,
   });
   uiAuthController = bootstrapResult.uiAuthController;
   realtimeProxyRuntime = attachRealtimeProxy({
@@ -1623,6 +1627,7 @@ async function main(options = {}) {
     apiOnly,
     dictationModelsDir: path.join(OPENCHAMBER_USER_CONFIG_ROOT, 'speech-models'),
     controlPlaneEnabled: controlPlaneClient !== null,
+    sandboxRuntimeEnabled,
   });
   terminalRuntime = startupPipelineResult.terminalRuntime;
   dictationRuntime = startupPipelineResult.dictationRuntime;

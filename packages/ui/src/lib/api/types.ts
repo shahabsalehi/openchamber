@@ -1349,7 +1349,123 @@ export interface WebV2DeleteCredentialInput {
   expectedGeneration: number;
 }
 
+export type WebV2RuntimeStatusValue =
+  | 'pending'
+  | 'running'
+  | 'pausing'
+  | 'paused'
+  | 'resuming'
+  | 'stopping'
+  | 'terminated'
+  | 'failed'
+  | 'unknown';
+
+export type WebV2RuntimeOperationKind =
+  | 'ensure'
+  | 'pause'
+  | 'resume'
+  | 'destroy'
+  | 'checkpoint'
+  | 'replace';
+
+export type WebV2RuntimeEffect = 'start' | 'stop' | 'resume' | 'destroy' | 'checkpoint';
+export type WebV2RuntimeReadiness = 'disabled';
+
+export interface WebV2RuntimeActiveOperation {
+  operationId: string;
+  kind: WebV2RuntimeOperationKind;
+  state: 'pending' | 'inProgress';
+}
+
+export interface WebV2RuntimeCheckpoint {
+  state: 'requested' | 'ready' | 'failed' | 'outcomeUnknown';
+  generation: number;
+  workspaceRevision: number;
+  lifecycleRevision: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface WebV2RuntimeStatus {
+  projectId: string;
+  exists: boolean;
+  sessionId: string | null;
+  leaseId: string | null;
+  status: WebV2RuntimeStatusValue;
+  generation: number;
+  lifecycleRevision: number;
+  outcomeUnknown: boolean;
+  activeOperation: WebV2RuntimeActiveOperation | null;
+  checkpoint: WebV2RuntimeCheckpoint | null;
+  readiness: WebV2RuntimeReadiness;
+  updatedAt: number | null;
+}
+
+export interface WebV2RuntimeLifecycleInput {
+  sessionId: string;
+  expectedGeneration: number;
+  expectedRevision: number;
+  workspaceRevision?: never;
+}
+
+export interface WebV2RuntimeCheckpointInput {
+  sessionId: string;
+  expectedGeneration: number;
+  expectedRevision: number;
+  workspaceRevision: number;
+}
+
+export interface WebV2RuntimeReservation {
+  operationId: string;
+  kind: WebV2RuntimeOperationKind;
+  effect: WebV2RuntimeEffect;
+  sessionId: string;
+  leaseId: string | null;
+  generation: number;
+  lifecycleRevision: number;
+  status: WebV2RuntimeStatusValue;
+  workspaceRevision: number | null;
+  readiness: WebV2RuntimeReadiness;
+  acceptedAt: number;
+}
+
+export interface WebV2RuntimeAPI {
+  getStatus(projectId: string, options?: WebV2RequestOptions): Promise<WebV2RuntimeStatus>;
+  ensure(
+    projectId: string,
+    input: WebV2RuntimeLifecycleInput,
+    options?: WebV2OperationRequestOptions,
+  ): Promise<WebV2RuntimeReservation>;
+  pause(
+    projectId: string,
+    input: WebV2RuntimeLifecycleInput,
+    options?: WebV2OperationRequestOptions,
+  ): Promise<WebV2RuntimeReservation>;
+  resume(
+    projectId: string,
+    input: WebV2RuntimeLifecycleInput,
+    options?: WebV2OperationRequestOptions,
+  ): Promise<WebV2RuntimeReservation>;
+  destroy(
+    projectId: string,
+    input: WebV2RuntimeLifecycleInput,
+    options?: WebV2OperationRequestOptions,
+  ): Promise<WebV2RuntimeReservation>;
+  checkpoint(
+    projectId: string,
+    input: WebV2RuntimeCheckpointInput,
+    options?: WebV2OperationRequestOptions,
+  ): Promise<WebV2RuntimeReservation>;
+  replace(
+    projectId: string,
+    input: WebV2RuntimeLifecycleInput,
+    options?: WebV2OperationRequestOptions,
+  ): Promise<WebV2RuntimeReservation>;
+}
+
 export interface WebV2API {
+  /** Optional independently gated sandbox runtime lifecycle boundary. */
+  runtime?: WebV2RuntimeAPI;
   listProjects(options?: WebV2RequestOptions): Promise<WebV2ProjectRecord[]>;
   createProject(input: WebV2CreateProjectInput, options?: WebV2OperationRequestOptions): Promise<WebV2ProjectRecord>;
   listFiles(projectId: string, options?: WebV2RequestOptions): Promise<WebV2FileRecord[]>;

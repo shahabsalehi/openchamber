@@ -48,6 +48,33 @@ const credential = {
   createdAt: 1,
   updatedAt: 2,
 };
+const runtimeStatus = {
+  projectId: PROJECT_ID,
+  exists: true,
+  sessionId: SESSION_ID,
+  leaseId: 'lease_runtime_0001',
+  status: 'running',
+  generation: 1,
+  lifecycleRevision: 2,
+  outcomeUnknown: false,
+  activeOperation: null,
+  checkpoint: null,
+  readiness: 'disabled',
+  updatedAt: 3,
+};
+const runtimeReservation = (kind, effect, workspaceRevision = null) => ({
+  operationId: OPERATION_ID,
+  kind,
+  effect,
+  sessionId: SESSION_ID,
+  leaseId: 'lease_runtime_0001',
+  generation: 1,
+  lifecycleRevision: 3,
+  status: 'pending',
+  workspaceRevision,
+  readiness: 'disabled',
+  acceptedAt: 4,
+});
 
 const jsonResponse = (body, status = 200, extraHeaders = {}) => new Response(JSON.stringify(body), {
   status,
@@ -93,6 +120,13 @@ describe('control-plane client named operations', () => {
       if (parsed.pathname.endsWith('/sessions') && init.method === 'GET') return jsonResponse([]);
       if (parsed.pathname.endsWith('/sessions') && init.method === 'POST') return jsonResponse(session, 201);
       if (parsed.pathname.endsWith(`/sessions/${SESSION_ID}`) && init.method === 'PUT') return jsonResponse({ ...session, revision: 2 });
+      if (parsed.pathname.endsWith('/sandbox-runtime') && init.method === 'GET') return jsonResponse(runtimeStatus);
+      if (parsed.pathname.endsWith('/sandbox-runtime/ensure')) return jsonResponse(runtimeReservation('ensure', 'start'), 202);
+      if (parsed.pathname.endsWith('/sandbox-runtime/pause')) return jsonResponse(runtimeReservation('pause', 'stop'), 202);
+      if (parsed.pathname.endsWith('/sandbox-runtime/resume')) return jsonResponse(runtimeReservation('resume', 'resume'), 202);
+      if (parsed.pathname.endsWith('/sandbox-runtime/destroy')) return jsonResponse(runtimeReservation('destroy', 'destroy'), 202);
+      if (parsed.pathname.endsWith('/sandbox-runtime/checkpoint')) return jsonResponse(runtimeReservation('checkpoint', 'checkpoint', 7), 202);
+      if (parsed.pathname.endsWith('/sandbox-runtime/replace')) return jsonResponse(runtimeReservation('replace', 'start'), 202);
       if (parsed.pathname === '/v2/credentials' && init.method === 'GET') return jsonResponse([]);
       if (parsed.pathname === '/v2/credentials' && init.method === 'POST') return jsonResponse(credential, 201);
       if (parsed.pathname === `/v2/credentials/${CREDENTIAL_ID}` && init.method === 'PUT') return jsonResponse({ ...credential, generation: 2 });
@@ -129,6 +163,14 @@ describe('control-plane client named operations', () => {
     await client.listSessions(PROJECT_ID, auth);
     await client.createSession(PROJECT_ID, { title: 'Session' }, auth);
     await client.updateSession(PROJECT_ID, SESSION_ID, { title: 'Updated', expectedRevision: 1 }, auth);
+    await client.getSandboxRuntimeStatus(PROJECT_ID, auth);
+    const runtimeInput = { sessionId: SESSION_ID, expectedGeneration: 1, expectedRevision: 2 };
+    await client.ensureSandboxRuntime(PROJECT_ID, runtimeInput, { ...auth, operationId: OPERATION_ID });
+    await client.pauseSandboxRuntime(PROJECT_ID, runtimeInput, { ...auth, operationId: OPERATION_ID });
+    await client.resumeSandboxRuntime(PROJECT_ID, runtimeInput, { ...auth, operationId: OPERATION_ID });
+    await client.destroySandboxRuntime(PROJECT_ID, runtimeInput, { ...auth, operationId: OPERATION_ID });
+    await client.checkpointSandboxRuntime(PROJECT_ID, { ...runtimeInput, workspaceRevision: 7 }, { ...auth, operationId: OPERATION_ID });
+    await client.replaceSandboxRuntime(PROJECT_ID, runtimeInput, { ...auth, operationId: OPERATION_ID });
     await client.listCredentials(auth);
     await client.createCredential({ name: 'Primary', provider: 'openai', value: 'provider-secret' }, auth);
     await client.rotateCredential(CREDENTIAL_ID, { expectedGeneration: 1, value: 'rotated-secret' }, auth);
@@ -145,6 +187,13 @@ describe('control-plane client named operations', () => {
       ['GET', `/v2/projects/${PROJECT_ID}/sessions`],
       ['POST', `/v2/projects/${PROJECT_ID}/sessions`],
       ['PUT', `/v2/projects/${PROJECT_ID}/sessions/${SESSION_ID}`],
+      ['GET', `/v2/projects/${PROJECT_ID}/sandbox-runtime`],
+      ['POST', `/v2/projects/${PROJECT_ID}/sandbox-runtime/ensure`],
+      ['POST', `/v2/projects/${PROJECT_ID}/sandbox-runtime/pause`],
+      ['POST', `/v2/projects/${PROJECT_ID}/sandbox-runtime/resume`],
+      ['POST', `/v2/projects/${PROJECT_ID}/sandbox-runtime/destroy`],
+      ['POST', `/v2/projects/${PROJECT_ID}/sandbox-runtime/checkpoint`],
+      ['POST', `/v2/projects/${PROJECT_ID}/sandbox-runtime/replace`],
       ['GET', '/v2/credentials'],
       ['POST', '/v2/credentials'],
       ['PUT', `/v2/credentials/${CREDENTIAL_ID}`],
@@ -189,6 +238,63 @@ describe('control-plane client named operations', () => {
       fetchImpl: async () => { throw new Error('network secret'); },
     });
     expect(await errorCode(unavailable.listProjects({ assertion: ASSERTION }))).toBe('PROVIDER_UNAVAILABLE');
+  });
+
+  it('strictly validates public runtime records and rejects private provider fields', async () => {
+    for (const extra of ['provider', 'supervision', 'endpoint', 'capability']) {
+      const statusClient = createControlPlaneClient({
+        origin: 'https://control.example',
+        fetchImpl: async () => jsonResponse({ ...runtimeStatus, [extra]: 'private-value' }),
+      });
+      expect(await errorCode(statusClient.getSandboxRuntimeStatus(PROJECT_ID, {
+        assertion: ASSERTION,
+      }))).toBe('PROVIDER_RESPONSE_INVALID');
+
+      const reservationClient = createControlPlaneClient({
+        origin: 'https://control.example',
+        fetchImpl: async () => jsonResponse({
+          ...runtimeReservation('ensure', 'start'),
+          [extra]: 'private-value',
+        }, 202),
+      });
+      expect(await errorCode(reservationClient.ensureSandboxRuntime(PROJECT_ID, {
+        sessionId: SESSION_ID,
+        expectedGeneration: 1,
+        expectedRevision: 2,
+      }, {
+        assertion: ASSERTION,
+        operationId: OPERATION_ID,
+      }))).toBe('PROVIDER_RESPONSE_INVALID');
+    }
+  });
+
+  it('mirrors the exact lifecycle body and checkpoint workspace-revision rules', async () => {
+    let fetchCalls = 0;
+    const client = createControlPlaneClient({
+      origin: 'https://control.example',
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return jsonResponse(runtimeReservation('ensure', 'start'), 202);
+      },
+    });
+    const base = { sessionId: SESSION_ID, expectedGeneration: 0, expectedRevision: 0 };
+    expect(await errorCode(Promise.resolve().then(() => client.ensureSandboxRuntime(PROJECT_ID, {
+      ...base,
+      workspaceRevision: null,
+    }, { assertion: ASSERTION, operationId: OPERATION_ID })))).toBe('VALIDATION_FAILED');
+    expect(await errorCode(Promise.resolve().then(() => client.ensureSandboxRuntime(PROJECT_ID, {
+      ...base,
+      provider: { providerHandle: 'private' },
+    }, { assertion: ASSERTION, operationId: OPERATION_ID })))).toBe('VALIDATION_FAILED');
+    expect(await errorCode(Promise.resolve().then(() => client.checkpointSandboxRuntime(PROJECT_ID, base, {
+      assertion: ASSERTION,
+      operationId: OPERATION_ID,
+    })))).toBe('VALIDATION_FAILED');
+    expect(await errorCode(Promise.resolve().then(() => client.checkpointSandboxRuntime(PROJECT_ID, {
+      ...base,
+      workspaceRevision: null,
+    }, { assertion: ASSERTION, operationId: OPERATION_ID })))).toBe('VALIDATION_FAILED');
+    expect(fetchCalls).toBe(0);
   });
 
   it('rejects redirects manually, cancels their body, and exposes no redirect details', async () => {

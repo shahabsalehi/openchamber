@@ -42,10 +42,12 @@ Project SQLite never stores a credential, encrypted envelope, or capability.
 
 This package does not alter `packages/web/server/lib/sandbox`. The milestone-1
 module remains the server-side OpenSandbox adapter and ephemeral provider
-lifecycle owner. A later trusted adapter may apply provider results to the lease
-RPCs here. Milestone 3 adds only one fixed OpenAI-compatible Chat Completions
-HTTP operation; it does not expose provider credentials/handles/endpoints to
-browsers, import provider SDKs, or add generic provider/sandbox orchestration.
+lifecycle owner. Milestone 5 adds provider-neutral durable runtime intent,
+operation fencing, and recovery metadata in `ProjectDurableObject`; no provider
+SDK, provider HTTP call, endpoint resolution, or real provisioning bridge runs
+inside the control plane. Milestone 3's fixed OpenAI-compatible Chat Completions
+operation remains independent and does not expose provider credentials,
+handles, or endpoints to browsers.
 
 ## Authentication and routing boundary
 
@@ -89,7 +91,7 @@ The independently optional `workspace.authenticator` enables the verified
 catalog/workspace routes. Those routes authenticate and validate the verified
 principal before obtaining `CATALOGS`, and validate route/method/body/header
 inputs before obtaining a binding whenever no durable read is needed. Every
-subordinate file or session operation reads this verified tenant/user's catalog
+subordinate file, session, or sandbox-runtime operation reads this verified tenant/user's catalog
 and requires an `active` membership before obtaining `PROJECTS`. The handler then
 constructs a one-project trusted RPC context from that catalog result. The
 verified principal's legacy `projectScopes` are not consulted and cannot bypass
@@ -269,6 +271,45 @@ Responses contain only session ID, title, optimistic revision, and timestamps.
 Execution/live/status/messages/permissions/model/agent/directory fields are
 rejected. Sessions are durable metadata only; there is deliberately no verified
 session deletion route.
+
+### Catalog-gated sandbox runtime
+
+- `GET /v2/projects/:projectId/sandbox-runtime`
+- `POST /v2/projects/:projectId/sandbox-runtime/ensure`
+- `POST /v2/projects/:projectId/sandbox-runtime/pause`
+- `POST /v2/projects/:projectId/sandbox-runtime/resume`
+- `POST /v2/projects/:projectId/sandbox-runtime/destroy`
+- `POST /v2/projects/:projectId/sandbox-runtime/checkpoint`
+- `POST /v2/projects/:projectId/sandbox-runtime/replace`
+
+These routes are part of the independently optional verified workspace surface.
+They authenticate a `VerifiedPrincipal`, require active catalog membership, and
+then derive the one-project RPC context. The GET returns only project ID,
+provider-neutral status, opaque lease/session IDs, generation, lifecycle
+revision, ambiguity state, active browser operation metadata, checkpoint state,
+timestamps, and fixed readiness `disabled`. Its serializer is constructed from
+an allowlist and never includes provider ID/handle, endpoint, headers, R2 key,
+capability, credential, secret, claim fence, or retry internals.
+
+Every POST requires `X-Operation-Id` and exact JSON containing `sessionId`,
+non-negative `expectedGeneration`, and non-negative `expectedRevision`.
+Checkpoint additionally requires a positive `workspaceRevision`; every other
+action rejects that field. Unknown fields and query parameters are rejected.
+Reservations return `202` with an immutable sanitized reservation record.
+`ensure` starts generation 1 from the absent `0/0` state, resumes a paused
+runtime, or records a no-effect ensure for already-started state. `pause`,
+`resume`, `destroy`, and `checkpoint` enforce the corresponding provider-neutral
+state and exact session. A terminal ensure or explicit `replace` advances
+generation; `replace` is required after an ambiguous start and records cleanup
+for a displaced private handle.
+
+The canonical request fingerprint binds operation kind, verified principal,
+tenant/project/session, operation ID, expected generation/revision, and optional
+workspace revision. Reusing an operation ID with the same fingerprint returns
+the original reservation; a different fingerprint returns
+`OPERATION_CONFLICT`. Expected counters are checked only for a new operation, so
+replay remains deterministic after state advances. One partial SQLite index
+allows at most one active lifecycle operation in a Project DO.
 
 ## Verified credential and capability HTTP surface
 
@@ -531,6 +572,9 @@ and gateway service-key/BYOK modes are never silently substituted.
 - `writeFile`, streaming `readFile`, `listFiles`, `listFileVersions`, `deleteFile`;
 - `createSandboxLease`, `updateSandboxLease`, `getSandboxLease`,
   `listSandboxLeases`, `deleteSandboxLease`; and
+- `getSandboxRuntimeStatus`, `reserveSandboxRuntimeOperation`,
+  `claimSandboxRuntimeOperation`, `beginSandboxRuntimeEffect`, and
+  `completeSandboxRuntimeOperation`; and
 - `recoverProjectStorage`.
 
 The alarm invokes the same internal storage recovery without inventing a
@@ -558,18 +602,41 @@ reading or changing membership.
 - `file_delete_operations`: deterministic delete replay result.
 - `cleanup_jobs`: exact R2 key plus optional file-version reference and attempts.
 - `sandbox_leases`: optional session association, provider id/opaque handle,
-  provider-neutral status, lifecycle revision, expiry, and cleanup state.
+  provider-neutral status, lifecycle revision, generation, optional
+  workspace/recovery metadata, retry count, expiry, cleanup state, and one
+  nullable all-or-none private OpenCode supervision tuple: command ID,
+  provider-handle binding, generation, bounded port, and bounded username.
+- `sandbox_runtime_state`: project runtime singleton, current generation,
+  lifecycle revision, public provider-neutral state, current lease/session,
+  ambiguity flag, and active operation/checkpoint pointers.
+- `sandbox_runtime_operations`: immutable browser intent/fingerprint and target
+  fences plus mutable claim fence, effect-start, completion, and bounded retry
+  metadata. Provider results are server-private columns.
+- `sandbox_runtime_checkpoints`: durable checkpoint intent bound to runtime
+  generation, workspace revision, lifecycle revision, and public metadata state;
+  checkpoint bytes/R2 publication are deliberately deferred.
+- `sandbox_runtime_orphan_cleanup_jobs`: private stale/displaced provider handles
+  and exact operation/generation/revision/claim fences for later trusted cleanup.
 - Catalog `catalog_scope`: immutable verified tenant/user/hash binding.
 - Catalog `catalog_projects`: opaque project ID, safe name, pending/active
   membership, unique operation ID, canonical fingerprint, and timestamps.
 
 Schema initialization is the only work inside `blockConcurrencyWhile`.
+`initializeProjectSchema` first preserves/creates the original tables, inspects
+`PRAGMA table_info(sandbox_leases)`, and adds missing generation, workspace,
+recovery, retry, and nullable supervision columns one at a time before creating
+runtime tables/indexes. Existing Project DOs with the old lease table and rows
+therefore initialize without a destructive table rebuild; legacy supervision
+is absent only when all five columns are null. A table check protects newly
+created databases and insert/update triggers provide the same all-null or
+all-present invariant for migrated tables.
 Mutation/query cursors are synchronously consumed. Related multi-row changes
 use `transactionSync`; no `await`, external I/O, manual `BEGIN`, or savepoint is
 placed inside a transaction.
 
-Deleting an associated session detaches each lease and increments its lifecycle
-revision rather than deleting provider coordination. SQLite contains no file
+Deleting an associated session detaches each non-runtime-owned lease and
+increments its lifecycle revision rather than deleting provider coordination or
+its complete private supervision tuple. SQLite contains no file
 bodies, credentials, endpoint URLs/headers, raw provider errors, or production
 orchestration payloads.
 
@@ -686,6 +753,88 @@ allowed only from `terminated`/`failed` after cleanup is confirmed `complete`.
 No provider call, credential, endpoint, browser token, or authority over actual
 sandbox processes exists here.
 
+## Durable sandbox runtime authority
+
+The public runtime singleton is intentionally distinct from legacy private lease
+records. A legacy lease does not become browser-visible runtime state by
+heuristic migration. Generation starts at zero while absent and increases only
+when a new runtime incarnation is reserved. Lifecycle revision starts at zero
+and increases for each accepted new lifecycle intent. Every new reservation
+checks both expected values atomically; claim, effect start, and completion then
+repeat the operation ID, target generation/revision, and monotonically
+increasing claim fence.
+
+The trusted bridge sequence is:
+
+1. browser intent is transactionally reserved before any external effect;
+2. `claimSandboxRuntimeOperation` changes `reserved` to `claimed`, increments
+   attempt and claim fence, and returns the private provider reference plus any
+   complete adopted supervision tuple only when an existing lease effect needs
+   it; a partially populated or invalid persisted tuple is an integrity error;
+3. `beginSandboxRuntimeEffect` permits exactly one `claimed` to `effectStarted`
+   transition before the bridge may do provider I/O; a repeated begin for the
+   same claim fence returns `INVALID_TRANSITION` and never authorizes another
+   effect; and
+4. `completeSandboxRuntimeOperation` exact-object validates provider and
+   supervision data, binds supervision generation to the operation target and
+   its provider handle to the completion provider, fingerprints every field,
+   stores any returned handle in the private operation row, then applies state
+   only if operation, generation, lifecycle revision, active pointer, and claim
+   fence still match.
+
+All four SQLite transitions use `transactionSync`; the bridge performs external
+I/O outside the DO. Completion never accepts an endpoint, credential,
+capability, header, or provider error payload. A stale completion containing a
+handle writes an orphan-cleanup job and returns `accepted: false` instead of
+activating that handle. Failed starts and conflicting late completions also
+record every supplied handle that is not already the active lease. A matching
+failed or explicitly ambiguous completion is sanitized to durable
+provider-neutral state.
+
+Successful start requires both a provider completion and a complete supervision
+tuple and publishes them atomically. Successful resume requires a fresh tuple
+and a `running` provider result because the OpenCode process endpoint is
+regenerated; the accepted provider expiry replaces the lease expiry. Successful
+pause/stop and destroy clear all five supervision columns; checkpoint preserves them. Failed
+or `outcomeUnknown` starts never create an active lease from supplied
+supervision. Failed or ambiguous non-start effects keep the last adopted tuple
+for trusted reconciliation but never make public readiness authoritative.
+Stale or fingerprint-conflicting completions cannot replace current supervision;
+a differing unadopted provider handle is recorded for orphan cleanup. The
+currently adopted provider identity is excluded from orphan cleanup, and a
+successful start retires any pending orphan record for the identity it adopts.
+If that identity is displaced again later, the unique cleanup row is atomically
+refreshed and returned to `pending` with the new operation fences and zero
+attempts.
+Completion fingerprint v2 covers supervision while exact v1 no-supervision
+replays remain idempotent for rows written before this migration.
+
+Runtime-owned lease rows remain compatible with the legacy private lease RPCs,
+but those RPCs cannot race an active runtime operation or move the lease to a
+different session. A safe lease status update with no active operation mirrors
+status and a new lifecycle revision into the runtime singleton, allowing a
+persisted pending create handle to be hydrated to running without exposing it.
+Deleting the referenced session is rejected while runtime state owns it.
+Ordinary `ensure` cannot abandon a failed lease whose cleanup is incomplete;
+the caller must complete cleanup or use explicit replacement, which records the
+displaced handle for cleanup.
+
+Recovery is bounded to 64 runtime rows per pass. An expired claim whose effect
+never began returns to `reserved` with the same intent and a higher future claim
+fence. Once an effect began, recovery never dispatches it again: it records
+`outcomeUnknown`, clears the active pointer, and requires explicit replacement
+for a create/start. Checkpoint ambiguity remains bound to the original runtime
+generation and workspace revision. Orphan cleanup remains durable and
+at-least-once safe for a later trusted bridge; this milestone makes no provider
+call and does not pretend cleanup completed.
+
+Runtime work shares the Project DO's one alarm with file publication and R2
+cleanup. Scheduling retains an existing earlier alarm. Recovery reports file,
+cleanup, runtime-requeue, runtime-ambiguity, active-runtime, and orphan counts,
+and reschedules only for actionable file/cleanup or claimed/begun runtime work.
+An unclaimed reservation and an orphan awaiting the later trusted bridge remain
+durable without causing a no-op alarm every 30 seconds.
+
 ## Browser and future sandbox flows
 
 A browser flow is deliberately narrow:
@@ -702,13 +851,14 @@ The independently disabled workspace caller can later list/create catalog
 projects and use only the catalog-active file/session routes through this same
 verified HTTP boundary; it never receives a Durable Object binding.
 
-The future sandbox flow uses the same pattern: a trusted orchestration service
-must verify tenant/user/project/session authority and request a narrowly scoped
-capability, while the sandbox receives at most that short-lived capability for
-the one fixed operation. It must not receive vault credentials, encryption or
-HMAC keys, provider endpoints, `PROJECTS`, `VAULTS`, or `CATALOGS`. The existing
-provider-neutral sandbox lease records remain unchanged; the milestone-1
-OpenSandbox adapter continues to own ephemeral lifecycle calls.
+The sandbox flow uses the same boundary: the browser can reserve sanitized
+durable lifecycle intent, while a separately trusted bridge must verify the
+fenced RPC claim before performing an effect. A sandbox may receive at most a
+short-lived capability for the one fixed broker operation. It must not receive
+vault credentials, encryption or HMAC keys, provider endpoints, `PROJECTS`,
+`VAULTS`, or `CATALOGS`. The milestone-1 OpenSandbox adapter continues to own
+ephemeral lifecycle calls; real provider enablement remains disabled because
+create reconciliation is not implemented here.
 
 Non-goals remain billing, OAuth, generic provider proxying/selection, arbitrary
 URL/header forwarding, endpoint delivery, automatic key re-encryption, full

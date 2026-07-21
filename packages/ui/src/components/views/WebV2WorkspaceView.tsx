@@ -1,28 +1,40 @@
 import React from 'react';
 
+import type { WebV2SessionRecord } from '@/lib/api/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Icon } from '@/components/icon/Icon';
 import { useI18n } from '@/lib/i18n';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
+import { useWebV2RuntimeStore } from '@/stores/useWebV2RuntimeStore';
 import { useWebV2WorkspaceStore } from '@/stores/useWebV2WorkspaceStore';
 import { cn } from '@/lib/utils';
-import { areWorkspaceResourceControlsDisabled } from './webV2WorkspaceViewState';
+import {
+  areWorkspaceResourceControlsDisabled,
+  getWebV2RuntimePanelState,
+  hasWebV2RuntimePanelCapability,
+  selectWebV2RuntimeSessionId,
+} from './webV2WorkspaceViewState';
 
 const errorKey = (error: ReturnType<typeof useWebV2WorkspaceStore.getState>['error']) => {
   if (error === 'conflict') return 'workspace.error.conflict';
   return 'workspace.error.operation';
 };
 
+const EMPTY_RUNTIME_SESSIONS: ReadonlyArray<WebV2SessionRecord> = [];
+
 export const WebV2WorkspaceView: React.FC = () => {
   const { t } = useI18n();
   const { webV2 } = useRuntimeAPIs();
   const runtimeKey = getRuntimeKey();
+  const runtimeApi = webV2?.runtime;
   const [projectName, setProjectName] = React.useState('');
   const [newFilePath, setNewFilePath] = React.useState('');
   const [sessionTitle, setSessionTitle] = React.useState('');
+  const [selectedRuntimeSessionId, setSelectedRuntimeSessionId] = React.useState<string | null>(null);
 
   const projects = useWebV2WorkspaceStore((state) => state.projects);
   const projectsResolved = useWebV2WorkspaceStore((state) => state.projectsResolved);
@@ -45,6 +57,28 @@ export const WebV2WorkspaceView: React.FC = () => {
   const createSession = useWebV2WorkspaceStore((state) => state.createSession);
   const updateSession = useWebV2WorkspaceStore((state) => state.updateSession);
   const retryMutation = useWebV2WorkspaceStore((state) => state.retryMutation);
+  const runtimeStatus = useWebV2RuntimeStore((state) => state.status);
+  const runtimeStatusResolved = useWebV2RuntimeStore((state) => state.statusResolved);
+  const runtimeStatusLoading = useWebV2RuntimeStore((state) => state.statusLoading);
+  const runtimeStatusFailed = useWebV2RuntimeStore((state) => state.statusFailed);
+  const runtimePendingOperation = useWebV2RuntimeStore((state) => state.pendingOperation);
+  const runtimeOperationFailed = useWebV2RuntimeStore((state) => state.operationFailed);
+  const configureRuntime = useWebV2RuntimeStore((state) => state.configure);
+  const resetRuntime = useWebV2RuntimeStore((state) => state.reset);
+  const refreshRuntimeStatus = useWebV2RuntimeStore((state) => state.refreshStatus);
+  const ensureRuntime = useWebV2RuntimeStore((state) => state.ensure);
+  const pauseRuntime = useWebV2RuntimeStore((state) => state.pause);
+  const resumeRuntime = useWebV2RuntimeStore((state) => state.resume);
+  const destroyRuntime = useWebV2RuntimeStore((state) => state.destroy);
+  const checkpointRuntime = useWebV2RuntimeStore((state) => state.checkpoint);
+  const replaceRuntime = useWebV2RuntimeStore((state) => state.replace);
+
+  const selectedProject = projects.find((item) => item.projectId === selectedProjectId) ?? null;
+  const workspace = selectedProjectId ? projectWorkspaces[selectedProjectId] : undefined;
+  const isPending = selectedProject?.membershipState === 'pending';
+  const activeRuntimeProjectId = selectedProject?.membershipState === 'active' ? selectedProject.projectId : null;
+  const runtimeSessions = activeRuntimeProjectId ? workspace?.sessions ?? EMPTY_RUNTIME_SESSIONS : EMPTY_RUNTIME_SESSIONS;
+  const runtimeSessionId = selectWebV2RuntimeSessionId(runtimeSessions, selectedRuntimeSessionId, runtimeStatus?.sessionId);
 
   React.useEffect(() => {
     configure(webV2, runtimeKey);
@@ -59,11 +93,22 @@ export const WebV2WorkspaceView: React.FC = () => {
     void loadSessions(selectedProjectId);
   }, [loadFiles, loadSessions, projects, selectedProjectId]);
 
+  React.useEffect(() => {
+    setSelectedRuntimeSessionId((current) => selectWebV2RuntimeSessionId(runtimeSessions, current, runtimeStatus?.sessionId));
+  }, [runtimeSessions, runtimeStatus?.sessionId]);
+
+  React.useEffect(() => {
+    if (!runtimeApi) {
+      resetRuntime();
+      return;
+    }
+    configureRuntime(runtimeApi, runtimeKey, activeRuntimeProjectId, runtimeSessionId);
+    if (activeRuntimeProjectId) void refreshRuntimeStatus();
+    return resetRuntime;
+  }, [activeRuntimeProjectId, configureRuntime, refreshRuntimeStatus, resetRuntime, runtimeApi, runtimeKey, runtimeSessionId]);
+
   if (!webV2) return null;
 
-  const selectedProject = projects.find((item) => item.projectId === selectedProjectId) ?? null;
-  const workspace = selectedProjectId ? projectWorkspaces[selectedProjectId] : undefined;
-  const isPending = selectedProject?.membershipState === 'pending';
   const controlsDisabled = areWorkspaceResourceControlsDisabled(selectedProject?.membershipState, workspace?.mutation);
   const retrySelectedWorkspaceFailure = (failure: 'files' | 'file' | 'sessions' | 'mutation') => {
     if (!selectedProjectId) return;
@@ -118,6 +163,26 @@ export const WebV2WorkspaceView: React.FC = () => {
             {t('workspace.actions.refresh')}
           </Button>
         </header>
+
+        {hasWebV2RuntimePanelCapability(webV2) ? <RuntimePanel
+          projectActive={activeRuntimeProjectId !== null}
+          sessions={runtimeSessions}
+          selectedSessionId={runtimeSessionId}
+          onSessionChange={setSelectedRuntimeSessionId}
+          status={runtimeStatus}
+          statusResolved={runtimeStatusResolved}
+          statusLoading={runtimeStatusLoading}
+          statusFailed={runtimeStatusFailed}
+          pendingOperation={runtimePendingOperation}
+          operationFailed={runtimeOperationFailed}
+          onRefresh={refreshRuntimeStatus}
+          onEnsure={ensureRuntime}
+          onPause={pauseRuntime}
+          onResume={resumeRuntime}
+          onDestroy={destroyRuntime}
+          onCheckpoint={checkpointRuntime}
+          onReplace={replaceRuntime}
+        /> : null}
 
         {storeError ? <p role="alert" className="rounded-lg border border-[var(--status-error-border)] bg-[var(--status-error-background)] p-3 text-sm text-[var(--status-error-foreground)]">{t(errorKey(storeError))}</p> : null}
         {workspaceFailures.map((failure) => <div key={failure} role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--status-error-border)] bg-[var(--status-error-background)] p-3 text-sm text-[var(--status-error-foreground)]"><span>{t('workspace.error.operation')}</span><Button variant="outline" size="xs" onClick={() => retrySelectedWorkspaceFailure(failure)} disabled={controlsDisabled}>{failure === 'file' ? t('workspace.actions.reload') : t('workspace.actions.refresh')}</Button></div>)}
@@ -201,4 +266,143 @@ const SessionMetadataCard: React.FC<{ title: string; disabled: boolean; onSave: 
   const [draft, setDraft] = React.useState(title);
   React.useEffect(() => setDraft(title), [title]);
   return <div className="flex gap-2 rounded-lg border border-border/60 p-2"><Input value={draft} onChange={(event) => setDraft(event.target.value)} aria-label={t('workspace.sessions.editAria')} disabled={disabled} /><Button variant="outline" size="sm" onClick={() => onSave(draft)} disabled={disabled || !draft.trim()}>{t('workspace.actions.save')}</Button></div>;
+};
+
+type RuntimePanelProps = {
+  projectActive: boolean;
+  sessions: ReadonlyArray<{ sessionId: string; title: string }>;
+  selectedSessionId: string | null;
+  onSessionChange: (sessionId: string) => void;
+  status: ReturnType<typeof useWebV2RuntimeStore.getState>['status'];
+  statusResolved: boolean;
+  statusLoading: boolean;
+  statusFailed: boolean;
+  pendingOperation: ReturnType<typeof useWebV2RuntimeStore.getState>['pendingOperation'];
+  operationFailed: boolean;
+  onRefresh: () => Promise<void>;
+  onEnsure: () => Promise<void>;
+  onPause: () => Promise<void>;
+  onResume: () => Promise<void>;
+  onDestroy: () => Promise<void>;
+  onCheckpoint: (workspaceRevision: number) => Promise<void>;
+  onReplace: () => Promise<void>;
+};
+
+const runtimeStatusTone = (status: RuntimePanelProps['status']): string => {
+  if (status?.status === 'failed') return 'text-[var(--status-error)]';
+  if (status?.status === 'unknown') return 'text-[var(--status-warning)]';
+  if (status?.status === 'running') return 'text-[var(--status-success)]';
+  if (status?.status === 'pending' || status?.status === 'pausing' || status?.status === 'resuming' || status?.status === 'stopping') return 'text-[var(--status-info)]';
+  return 'text-muted-foreground';
+};
+
+const runtimeOperationLabelKey = (kind: NonNullable<RuntimePanelProps['pendingOperation']>) => {
+  switch (kind) {
+    case 'ensure': return 'workspace.runtime.operation.ensure';
+    case 'pause': return 'workspace.runtime.operation.pause';
+    case 'resume': return 'workspace.runtime.operation.resume';
+    case 'destroy': return 'workspace.runtime.operation.destroy';
+    case 'checkpoint': return 'workspace.runtime.operation.checkpoint';
+    case 'replace': return 'workspace.runtime.operation.replace';
+  }
+};
+
+const runtimeOperationStateLabelKey = (state: 'pending' | 'inProgress') => {
+  switch (state) {
+    case 'pending': return 'workspace.runtime.operationState.pending';
+    case 'inProgress': return 'workspace.runtime.operationState.inProgress';
+  }
+};
+
+const runtimeCheckpointLabelKey = (state: NonNullable<NonNullable<RuntimePanelProps['status']>['checkpoint']>['state']) => {
+  switch (state) {
+    case 'requested': return 'workspace.runtime.checkpointState.requested';
+    case 'ready': return 'workspace.runtime.checkpointState.ready';
+    case 'failed': return 'workspace.runtime.checkpointState.failed';
+    case 'outcomeUnknown': return 'workspace.runtime.checkpointState.outcomeUnknown';
+  }
+};
+
+const RuntimePanel: React.FC<RuntimePanelProps> = ({
+  projectActive,
+  sessions,
+  selectedSessionId,
+  onSessionChange,
+  status,
+  statusResolved,
+  statusLoading,
+  statusFailed,
+  pendingOperation,
+  operationFailed,
+  onRefresh,
+  onEnsure,
+  onPause,
+  onResume,
+  onDestroy,
+  onCheckpoint,
+  onReplace,
+}) => {
+  const { t } = useI18n();
+  // File revisions are per-file storage versions, not a coherent workspace revision.
+  const workspaceRevision = null;
+  const panelState = getWebV2RuntimePanelState({
+    projectActive,
+    sessionId: selectedSessionId,
+    status,
+    statusResolved,
+    statusLoading,
+    statusFailed,
+    pendingOperation,
+    workspaceRevision,
+  });
+  const activeOperation = status?.activeOperation;
+
+  return (
+    <section className="rounded-xl border border-border/60 bg-[var(--surface-elevated)] p-3" aria-labelledby="workspace-runtime-title">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h2 id="workspace-runtime-title" className="typography-ui-label font-semibold text-foreground">{t('workspace.runtime.title')}</h2>
+          <p className={cn('text-sm font-medium', runtimeStatusTone(status))}>{t(panelState.statusLabelKey)}</p>
+        </div>
+        <Button variant="ghost" size="icon" onClick={() => void onRefresh()} disabled={!projectActive || statusLoading} aria-label={t('workspace.runtime.refreshAria')}>
+          <Icon name="refresh" className={cn('size-4', statusLoading && 'animate-spin')} />
+        </Button>
+      </div>
+
+      {!projectActive ? <p className="mt-2 text-sm text-muted-foreground">{t('workspace.runtime.noProject')}</p> : <>
+        <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+          <span className="typography-meta text-muted-foreground">{t('workspace.runtime.session')}</span>
+          <Select value={selectedSessionId ?? ''} onValueChange={onSessionChange} disabled={sessions.length === 0}>
+            <SelectTrigger size="sm" className="w-full min-w-0 sm:w-56" aria-label={t('workspace.runtime.selectSessionAria')}>
+              <SelectValue placeholder={t('workspace.runtime.noSession')} />
+            </SelectTrigger>
+            <SelectContent align="end">
+              {sessions.map((session) => <SelectItem key={session.sessionId} value={session.sessionId}>{session.title}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {status ? <div className="mt-3 grid gap-2 text-sm sm:grid-cols-3">
+          <p className="min-w-0 text-muted-foreground">{t('workspace.runtime.generationRevision', { generation: status.generation, revision: status.lifecycleRevision })}</p>
+          <p className="min-w-0 text-muted-foreground">{t('workspace.runtime.activeOperation')}: {activeOperation ? <><span className="text-foreground">{t(runtimeOperationLabelKey(activeOperation.kind))}</span><span aria-hidden="true"> · </span>{t(runtimeOperationStateLabelKey(activeOperation.state))}</> : pendingOperation ? <><span className="text-foreground">{t(runtimeOperationLabelKey(pendingOperation))}</span><span aria-hidden="true"> · </span>{t('workspace.runtime.operationState.pending')}</> : t('workspace.runtime.none')}</p>
+          <p className="min-w-0 text-muted-foreground">{t('workspace.runtime.checkpoint')}: {status.checkpoint ? t(runtimeCheckpointLabelKey(status.checkpoint.state)) : t('workspace.runtime.none')}</p>
+        </div> : null}
+
+        {!selectedSessionId ? <p className="mt-3 text-sm text-muted-foreground">{t('workspace.runtime.noSession')}</p> : null}
+        {panelState.showReadinessNotice ? <p role="status" className="mt-3 rounded-lg border border-[var(--status-info-border)] bg-[var(--status-info-background)] p-2 text-sm text-[var(--status-info-foreground)]">{t('workspace.runtime.readinessDisabled')}</p> : null}
+        {panelState.showOutcomeUnknownWarning ? <p role="alert" className="mt-3 rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-background)] p-2 text-sm text-[var(--status-warning-foreground)]">{t('workspace.runtime.outcomeUnknown')}</p> : null}
+        {operationFailed ? <div role="alert" className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-background)] p-2 text-sm text-[var(--status-warning-foreground)]"><span>{t('workspace.runtime.operationFailed')}</span><Button variant="outline" size="xs" onClick={() => void onRefresh()} disabled={statusLoading}>{t('workspace.actions.refresh')}</Button></div> : null}
+        {panelState.showRefreshRetry ? <Button variant="outline" size="xs" className="mt-3" onClick={() => void onRefresh()} disabled={statusLoading}>{t('workspace.actions.refresh')}</Button> : null}
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button size="xs" onClick={() => void onEnsure()} disabled={!panelState.actions.ensure.enabled}>{t('workspace.runtime.action.ensure')}</Button>
+          <Button variant="outline" size="xs" onClick={() => void onPause()} disabled={!panelState.actions.pause.enabled}>{t('workspace.runtime.action.pause')}</Button>
+          <Button variant="outline" size="xs" onClick={() => void onResume()} disabled={!panelState.actions.resume.enabled}>{t('workspace.runtime.action.resume')}</Button>
+          <Button variant="outline" size="xs" onClick={() => { if (workspaceRevision !== null) void onCheckpoint(workspaceRevision); }} disabled={!panelState.actions.checkpoint.enabled}>{t('workspace.runtime.action.checkpoint')}</Button>
+          <Button variant="secondary" size="xs" onClick={() => void onReplace()} disabled={!panelState.actions.replace.enabled}>{t('workspace.runtime.action.replace')}</Button>
+          <Button variant="destructive" size="xs" onClick={() => void onDestroy()} disabled={!panelState.actions.destroy.enabled}>{t('workspace.runtime.action.destroy')}</Button>
+        </div>
+      </>}
+    </section>
+  );
 };

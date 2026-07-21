@@ -1,7 +1,8 @@
-import { resolveSandboxEnvironment } from './config.js';
+import { resolveSandboxEnvironment, resolveBridgeConfig } from './config.js';
 import { SANDBOX_ERROR_CODES, SandboxRuntimeError } from './errors.js';
 import { createSandboxProviderRegistry } from './registry.js';
 import { createSandboxRuntime } from './runtime.js';
+import { createSandboxBridge } from './bridge.js';
 import { createOpenSandboxProviderFromEnvironment } from './providers/opensandbox.js';
 
 const SYSTEM_CLOCK = Object.freeze({
@@ -57,5 +58,41 @@ export const createSandboxRuntimeFromEnvironment = (options = {}) => {
     provider,
     maxActiveSandboxes: selection.maxActiveSandboxes,
     logger,
+  });
+};
+
+export const createSandboxBridgeFromEnvironment = (options = {}) => {
+  const environment = options.environment ?? process.env;
+  const bridgeConfig = resolveBridgeConfig(environment);
+  if (!bridgeConfig.enabled) return null;
+
+  const selection = resolveSandboxEnvironment(environment);
+  if (!selection.enabled) return null;
+
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const clock = options.clock ?? SYSTEM_CLOCK;
+  const logger = options.logger ?? DEFAULT_LOGGER;
+  const createProviderRegistry = options.createProviderRegistry ?? createDefaultSandboxProviderRegistry;
+  const registry = createProviderRegistry({
+    providerId: selection.providerId,
+    environment,
+    fetchImpl,
+    clock,
+    logger,
+  });
+  const provider = registry.get(selection.providerId);
+  if (!provider) {
+    throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.PROVIDER_UNSUPPORTED);
+  }
+
+  if (bridgeConfig.realCreateSupported && !provider.supportsRealCreate) {
+    throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.BRIDGE_REAL_CREATE_UNSUPPORTED);
+  }
+
+  return createSandboxBridge({
+    provider,
+    bridgeConfig,
+    clock,
+    fetchImpl,
   });
 };

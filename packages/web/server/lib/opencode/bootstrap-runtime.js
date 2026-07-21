@@ -61,6 +61,7 @@ export const createBootstrapRuntime = (dependencies) => {
       getCachedZenModels,
       setAutoAcceptSession,
       controlPlaneClient,
+      sandboxRuntimeEnabled = false,
     } = options;
 
     const uiAuthController = createUiAuth({
@@ -90,6 +91,7 @@ export const createBootstrapRuntime = (dependencies) => {
     if (runtimeName === 'web' && controlPlaneClient) {
       registerControlPlaneRoutes(app, {
         client: controlPlaneClient,
+        sandboxRuntimeEnabled: sandboxRuntimeEnabled === true,
         uiAuthController,
       });
     }

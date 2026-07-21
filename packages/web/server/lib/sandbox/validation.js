@@ -29,8 +29,32 @@ const SANDBOX_STATUSES = new Set([
 ]);
 const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/;
 
+const MAX_FILE_PATH_LENGTH = 4096;
+const MAX_FILE_COUNT = 8192;
+const MAX_FILE_CONTENT_BYTES = 1024 * 1024;
+const MAX_AGGREGATE_HYDRATION_BYTES = 64 * 1024 * 1024;
+const MAX_AGGREGATE_CHECKPOINT_BYTES = 256 * 1024 * 1024;
+const TRAVERSAL_PATTERN = /(?:^|\/)\.\.(?:\/|$)/;
+const hasControlChars = (s) => {
+  for (let i = 0; i < s.length; i += 1) {
+    const cp = s.codePointAt(i);
+    if (cp !== undefined && (cp <= 0x1f || cp === 0x7f)) return true;
+  }
+  return false;
+};
+const URL_SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+const MIN_ID_LENGTH = 8;
+const MAX_ID_LENGTH = 128;
+const KNOWN_BRIDGE_KINDS = new Set(['hydrate', 'checkpoint', 'pause', 'resume', 'destroy', 'openCodeStart', 'openCodeStop', 'openCodeReconcile']);
+const CLAIM_FIELD_NAMES = ['leaseId', 'generation', 'operationId', 'claimFence', 'providerHandle', 'kind'];
+
 const validationError = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.VALIDATION_FAILED);
+const bridgeOperationError = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.BRIDGE_OPERATION_INVALID);
+const bridgeFileError = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.BRIDGE_FILE_INVALID);
 const responseError = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+const hydrationFailedError = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.BRIDGE_HYDRATION_FAILED);
+const checkpointFailedError = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.BRIDGE_CHECKPOINT_FAILED);
+
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isLeapYear = (year) => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
 
@@ -213,4 +237,205 @@ export const normalizeEndpointConnection = (value) => {
     endpoint: value.endpoint,
     headers: Object.freeze(Object.fromEntries(headerEntries)),
   });
+};
+
+const normalizeIdField = (value, fieldName) => {
+  if (typeof value !== 'string') throw bridgeOperationError();
+  const trimmed = value.trim();
+  if (trimmed.length < MIN_ID_LENGTH || trimmed.length > MAX_ID_LENGTH) throw bridgeOperationError();
+  if (!URL_SAFE_ID_PATTERN.test(trimmed)) throw bridgeOperationError();
+  return trimmed;
+};
+
+const normalizePositiveSafeInt = (value, fieldName) => {
+  if (!Number.isInteger(value) || value < 1 || !Number.isSafeInteger(value)) {
+    throw bridgeOperationError();
+  }
+  return value;
+};
+
+const assertExactKeys = (value, allowedKeys) => {
+  const actualKeys = Object.keys(value);
+  for (const key of actualKeys) {
+    if (!allowedKeys.includes(key)) throw bridgeOperationError();
+  }
+};
+
+export const normalizeBridgeClaimFields = (value) => {
+  if (!isRecord(value)) throw bridgeOperationError();
+  const baseFields = [...CLAIM_FIELD_NAMES];
+  if (value.kind === 'openCodeStop' || value.kind === 'openCodeReconcile') {
+    baseFields.push('supervision');
+  }
+  if (value.kind === 'hydrate') {
+    baseFields.push('snapshot');
+  }
+  if (value.kind === 'checkpoint') {
+    baseFields.push('baseRevision');
+  }
+  assertExactKeys(value, baseFields);
+
+  const leaseId = normalizeIdField(value.leaseId);
+  const generation = normalizePositiveSafeInt(value.generation);
+  const operationId = normalizeIdField(value.operationId);
+  const claimFence = normalizePositiveSafeInt(value.claimFence);
+  const kind = value.kind;
+
+  if (typeof kind !== 'string' || !KNOWN_BRIDGE_KINDS.has(kind)) {
+    throw bridgeOperationError();
+  }
+
+  const providerHandle = typeof value.providerHandle === 'string' ? value.providerHandle.trim() : '';
+  if (!providerHandle || providerHandle.length > MAX_HANDLE_LENGTH) throw bridgeOperationError();
+  if (hasControlChars(providerHandle)) throw bridgeOperationError();
+
+  const base = Object.freeze({ leaseId, generation, operationId, claimFence, providerHandle, kind });
+
+  if (kind === 'hydrate') {
+    const snapshot = normalizeBridgeFileSnapshot(value.snapshot);
+    return Object.freeze({ ...base, snapshot });
+  }
+
+  if (kind === 'checkpoint') {
+    const baseRevision = value.baseRevision !== undefined && value.baseRevision !== null
+      ? String(value.baseRevision)
+      : null;
+    return Object.freeze({ ...base, baseRevision });
+  }
+
+  if (kind === 'openCodeStop' || kind === 'openCodeReconcile') {
+    const supervision = normalizeBridgeSupervision(value.supervision);
+    return Object.freeze({ ...base, supervision });
+  }
+
+  return base;
+};
+
+export const normalizeBridgeSupervision = (value) => {
+  if (!isRecord(value)) throw bridgeOperationError();
+  const allowedKeys = ['commandId', 'providerHandle', 'generation', 'port', 'username'];
+  assertExactKeys(value, allowedKeys);
+
+  if (typeof value.commandId !== 'string' || !value.commandId.trim()) throw bridgeOperationError();
+  if (typeof value.providerHandle !== 'string' || !value.providerHandle.trim()) throw bridgeOperationError();
+  if (!Number.isInteger(value.generation) || value.generation < 1 || !Number.isSafeInteger(value.generation)) {
+    throw bridgeOperationError();
+  }
+  if (!Number.isInteger(value.port) || value.port < 1 || value.port > 65535) throw bridgeOperationError();
+  if (typeof value.username !== 'string' || !value.username.trim()) throw bridgeOperationError();
+
+  return Object.freeze({
+    commandId: value.commandId.trim(),
+    providerHandle: value.providerHandle.trim(),
+    generation: value.generation,
+    port: value.port,
+    username: value.username.trim(),
+  });
+};
+
+export const normalizeBridgeFilePath = (rawPath) => {
+  if (typeof rawPath !== 'string') throw bridgeFileError();
+  if (rawPath.length > MAX_FILE_PATH_LENGTH) throw bridgeFileError();
+  if (hasControlChars(rawPath)) throw bridgeFileError();
+  if (rawPath.includes('\\')) throw bridgeFileError();
+  if (TRAVERSAL_PATTERN.test(rawPath)) throw bridgeFileError();
+  if (rawPath.startsWith('/')) throw bridgeFileError();
+  let normalized = rawPath;
+  while (normalized.startsWith('./')) {
+    normalized = normalized.slice(2);
+  }
+  if (normalized === '.' || normalized.startsWith('../')) throw bridgeFileError();
+  if (!normalized || normalized.length > MAX_FILE_PATH_LENGTH) throw bridgeFileError();
+  return normalized;
+};
+
+export const normalizeBridgeFileContent = (content) => {
+  if (typeof content !== 'string') throw bridgeFileError();
+  const byteLength = Buffer.byteLength(content, 'utf-8');
+  if (byteLength > MAX_FILE_CONTENT_BYTES) throw bridgeFileError();
+  return content;
+};
+
+export const normalizeBridgeFileSnapshot = (value) => {
+  if (!isRecord(value)) throw bridgeOperationError();
+  if (!Array.isArray(value.files)) throw bridgeOperationError();
+  if (value.files.length > MAX_FILE_COUNT) throw bridgeOperationError();
+
+  const files = [];
+  let totalBytes = 0;
+
+  for (const entry of value.files) {
+    if (!isRecord(entry)) throw bridgeOperationError();
+    const entryKeys = Object.keys(entry);
+    if (entryKeys.length !== 2 || !entryKeys.includes('path') || !entryKeys.includes('content')) {
+      throw bridgeOperationError();
+    }
+    const path = normalizeBridgeFilePath(entry.path);
+    const content = normalizeBridgeFileContent(entry.content);
+    const byteLength = Buffer.byteLength(content, 'utf-8');
+    totalBytes += byteLength;
+    if (totalBytes > MAX_AGGREGATE_HYDRATION_BYTES) throw bridgeFileError();
+    files.push(Object.freeze({ path, content }));
+  }
+
+  const revision = value.revision !== undefined && value.revision !== null
+    ? String(value.revision)
+    : undefined;
+
+  const allowedKeys = revision !== undefined ? ['files', 'revision'] : ['files'];
+  assertExactKeys(value, allowedKeys);
+
+  return Object.freeze({ files: Object.freeze(files), revision });
+};
+
+export const normalizeBridgeFileRecord = (value) => {
+  if (!isRecord(value)) throw responseError();
+  if (typeof value.path !== 'string' || !value.path.trim()) throw responseError();
+  if (typeof value.content !== 'string') throw responseError();
+  if (!Number.isInteger(value.size) || value.size < 0) throw responseError();
+  return Object.freeze({ path: value.path, content: value.content, size: value.size });
+};
+
+export const normalizeBridgeCommandResult = (value) => {
+  if (!isRecord(value)) throw responseError();
+  if (typeof value.commandId !== 'string' || !value.commandId.trim()) throw responseError();
+  const status = value.status;
+  if (status !== 'running' && status !== 'completed' && status !== 'failed' && status !== 'unknown') {
+    throw responseError();
+  }
+  const exitCode = value.exitCode === null || value.exitCode === undefined
+    ? null
+    : (Number.isInteger(value.exitCode) ? value.exitCode : null);
+  return Object.freeze({ commandId: value.commandId.trim(), status, exitCode });
+};
+
+export const normalizeBridgeCommandOutput = (value) => {
+  if (!isRecord(value)) throw responseError();
+  if (typeof value.commandId !== 'string' || !value.commandId.trim()) throw responseError();
+  const log = typeof value.log === 'string' ? value.log : '';
+  const tailCursor = value.tailCursor !== undefined && value.tailCursor !== null
+    ? String(value.tailCursor)
+    : null;
+  return Object.freeze({ commandId: value.commandId.trim(), log, tailCursor });
+};
+
+export const normalizeSSECommandResult = (value) => {
+  if (!isRecord(value)) throw responseError();
+  if (typeof value.commandId !== 'string' || !value.commandId.trim()) throw responseError();
+  const event = value.event;
+  if (event !== 'accepted' && event !== 'completed' && event !== 'failed') {
+    throw responseError();
+  }
+  const exitCode = value.exitCode === null || value.exitCode === undefined
+    ? null
+    : (Number.isInteger(value.exitCode) ? value.exitCode : null);
+  return Object.freeze({ commandId: value.commandId.trim(), event, exitCode });
+};
+
+export const normalizeDirectoryEntry = (value) => {
+  if (!isRecord(value)) throw responseError();
+  if (typeof value.path !== 'string' || !value.path.trim()) throw responseError();
+  const type = value.type;
+  if (type !== 'file' && type !== 'directory' && type !== 'symlink') throw responseError();
+  return Object.freeze({ path: value.path, type });
 };

@@ -2,8 +2,16 @@ import { SANDBOX_ERROR_CODES, SandboxRuntimeError } from './errors.js';
 
 const DEFAULT_MAX_ACTIVE_SANDBOXES = 8;
 const MAX_ACTIVE_SANDBOXES = 64;
+const DEFAULT_OPENCODE_PORT = 13009;
 
 const configurationError = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.CONFIGURATION_INVALID);
+
+const requireBoolean = (value) => {
+  const lower = String(value ?? '').trim().toLowerCase();
+  if (lower === 'true') return true;
+  if (lower === 'false') return false;
+  throw configurationError();
+};
 
 export const resolveSandboxEnvironment = (environment) => {
   if (!environment || typeof environment !== 'object' || Array.isArray(environment)) {
@@ -37,5 +45,45 @@ export const resolveSandboxEnvironment = (environment) => {
     enabled: true,
     providerId,
     maxActiveSandboxes,
+  };
+};
+
+export const resolveBridgeConfig = (environment) => {
+  if (!environment || typeof environment !== 'object' || Array.isArray(environment)) {
+    return { enabled: false, realCreateSupported: false, openCodePort: DEFAULT_OPENCODE_PORT };
+  }
+
+  const rawBridge = environment.OPENCHAMBER_SANDBOX_BRIDGE_ENABLED;
+  if (rawBridge === undefined || rawBridge === null) {
+    return { enabled: false, realCreateSupported: false, openCodePort: DEFAULT_OPENCODE_PORT };
+  }
+
+  const bridgeEnabled = requireBoolean(rawBridge);
+
+  if (!bridgeEnabled) {
+    return { enabled: false, realCreateSupported: false, openCodePort: DEFAULT_OPENCODE_PORT };
+  }
+
+  const rawRealCreate = environment.OPENCHAMBER_SANDBOX_BRIDGE_REAL_CREATE;
+  const realCreateSupported = rawRealCreate !== undefined && rawRealCreate !== null
+    ? requireBoolean(rawRealCreate)
+    : false;
+
+  let openCodePort = DEFAULT_OPENCODE_PORT;
+  if (environment.OPENCHAMBER_SANDBOX_BRIDGE_OPENCODE_PORT !== undefined) {
+    const rawPort = environment.OPENCHAMBER_SANDBOX_BRIDGE_OPENCODE_PORT;
+    if (typeof rawPort !== 'string' || !/^\d+$/.test(rawPort.trim())) {
+      throw configurationError();
+    }
+    openCodePort = Number.parseInt(rawPort.trim(), 10);
+    if (openCodePort < 1 || openCodePort > 65535) {
+      throw configurationError();
+    }
+  }
+
+  return {
+    enabled: true,
+    realCreateSupported,
+    openCodePort,
   };
 };

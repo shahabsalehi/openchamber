@@ -167,12 +167,186 @@ export interface DeleteSandboxLeaseInput {
   expectedRevision: number
 }
 
+export const SANDBOX_RUNTIME_OPERATION_KINDS = [
+  'ensure',
+  'pause',
+  'resume',
+  'destroy',
+  'checkpoint',
+  'replace',
+] as const
+
+export type SandboxRuntimeOperationKind = (typeof SANDBOX_RUNTIME_OPERATION_KINDS)[number]
+
+export const SANDBOX_RUNTIME_EFFECTS = [
+  'start',
+  'stop',
+  'resume',
+  'destroy',
+  'checkpoint',
+] as const
+
+export type SandboxRuntimeEffect = (typeof SANDBOX_RUNTIME_EFFECTS)[number]
+
+export const SANDBOX_RUNTIME_OPERATION_STATES = [
+  'reserved',
+  'claimed',
+  'effectStarted',
+  'succeeded',
+  'failed',
+  'outcomeUnknown',
+  'superseded',
+] as const
+
+export type SandboxRuntimeOperationState = (typeof SANDBOX_RUNTIME_OPERATION_STATES)[number]
+
+export const SANDBOX_RUNTIME_CHECKPOINT_STATES = [
+  'requested',
+  'ready',
+  'failed',
+  'outcomeUnknown',
+] as const
+
+export type SandboxRuntimeCheckpointState = (typeof SANDBOX_RUNTIME_CHECKPOINT_STATES)[number]
+
+export type SandboxRuntimeReadiness = 'disabled'
+
+export interface PublicSandboxRuntimeCheckpoint {
+  state: SandboxRuntimeCheckpointState
+  generation: number
+  workspaceRevision: number
+  lifecycleRevision: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface PublicSandboxRuntimeActiveOperation {
+  operationId: string
+  kind: SandboxRuntimeOperationKind
+  state: 'pending' | 'inProgress'
+}
+
+export interface PublicSandboxRuntimeStatus {
+  projectId: string
+  exists: boolean
+  sessionId: string | null
+  leaseId: string | null
+  status: SandboxStatus
+  generation: number
+  lifecycleRevision: number
+  outcomeUnknown: boolean
+  activeOperation: PublicSandboxRuntimeActiveOperation | null
+  checkpoint: PublicSandboxRuntimeCheckpoint | null
+  readiness: SandboxRuntimeReadiness
+  updatedAt: number | null
+}
+
+export interface ReserveSandboxRuntimeOperationInput {
+  operationId: string
+  requestFingerprint: string
+  kind: SandboxRuntimeOperationKind
+  sessionId: string
+  expectedGeneration: number
+  expectedRevision: number
+  workspaceRevision: number | null
+}
+
+export interface SandboxRuntimeReservationRecord {
+  operationId: string
+  kind: SandboxRuntimeOperationKind
+  effect: SandboxRuntimeEffect
+  sessionId: string
+  leaseId: string | null
+  generation: number
+  lifecycleRevision: number
+  status: SandboxStatus
+  workspaceRevision: number | null
+  readiness: SandboxRuntimeReadiness
+  acceptedAt: number
+}
+
+export interface ClaimSandboxRuntimeOperationInput {
+  operationId: string
+  expectedGeneration: number
+  expectedRevision: number
+}
+
+export interface BeginSandboxRuntimeEffectInput extends ClaimSandboxRuntimeOperationInput {
+  claimFence: number
+}
+
+export interface SandboxRuntimePrivateProviderReference {
+  providerId: string
+  providerHandle: string
+}
+
+export interface SandboxRuntimePrivateSupervision {
+  commandId: string
+  providerHandle: string
+  generation: number
+  port: number
+  username: string
+}
+
+export interface SandboxRuntimeOperationClaim {
+  operationId: string
+  kind: SandboxRuntimeOperationKind
+  effect: SandboxRuntimeEffect
+  sessionId: string
+  leaseId: string | null
+  generation: number
+  lifecycleRevision: number
+  workspaceRevision: number | null
+  claimFence: number
+  attempt: number
+  provider: SandboxRuntimePrivateProviderReference | null
+  supervision: SandboxRuntimePrivateSupervision | null
+}
+
+export const SANDBOX_RUNTIME_COMPLETION_OUTCOMES = [
+  'succeeded',
+  'failed',
+  'outcomeUnknown',
+] as const
+
+export type SandboxRuntimeCompletionOutcome =
+  (typeof SANDBOX_RUNTIME_COMPLETION_OUTCOMES)[number]
+
+export interface SandboxRuntimeProviderCompletion extends SandboxRuntimePrivateProviderReference {
+  status: SandboxStatus
+  expiresAt: number | null
+}
+
+export type CompleteSandboxRuntimeOperationInput = BeginSandboxRuntimeEffectInput & {
+  outcome: SandboxRuntimeCompletionOutcome
+} & (
+    | {
+        provider: null
+        supervision: null
+      }
+    | {
+        provider: SandboxRuntimeProviderCompletion
+        supervision: SandboxRuntimePrivateSupervision | null
+      }
+  )
+
+export interface SandboxRuntimeOperationCompletion {
+  operationId: string
+  accepted: boolean
+  orphanCleanupRecorded: boolean
+  runtime: PublicSandboxRuntimeStatus
+}
+
 export interface RecoveryReport {
   operationsPublished: number
   operationsAborted: number
   operationsPending: number
   cleanupCompleted: number
   cleanupPending: number
+  runtimeOperationsRecovered: number
+  runtimeOperationsOutcomeUnknown: number
+  runtimeOperationsPending: number
+  orphanCleanupPending: number
 }
 
 export interface ProjectDurableObjectRpc {
@@ -205,5 +379,24 @@ export interface ProjectDurableObjectRpc {
     context: ProjectRpcContext,
     input: DeleteSandboxLeaseInput,
   ): Promise<RpcResult<SandboxLeaseRecord>>
+  getSandboxRuntimeStatus(
+    context: ProjectRpcContext,
+  ): Promise<RpcResult<PublicSandboxRuntimeStatus>>
+  reserveSandboxRuntimeOperation(
+    context: ProjectRpcContext,
+    input: ReserveSandboxRuntimeOperationInput,
+  ): Promise<RpcResult<SandboxRuntimeReservationRecord>>
+  claimSandboxRuntimeOperation(
+    context: ProjectRpcContext,
+    input: ClaimSandboxRuntimeOperationInput,
+  ): Promise<RpcResult<SandboxRuntimeOperationClaim>>
+  beginSandboxRuntimeEffect(
+    context: ProjectRpcContext,
+    input: BeginSandboxRuntimeEffectInput,
+  ): Promise<RpcResult<SandboxRuntimeOperationClaim>>
+  completeSandboxRuntimeOperation(
+    context: ProjectRpcContext,
+    input: CompleteSandboxRuntimeOperationInput,
+  ): Promise<RpcResult<SandboxRuntimeOperationCompletion>>
   recoverProjectStorage(context: ProjectRpcContext): Promise<RpcResult<RecoveryReport>>
 }

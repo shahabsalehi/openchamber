@@ -62,6 +62,8 @@ Verified catalog/workspace routes are independently additive and disabled unless
 - `GET|PUT|DELETE /v2/projects/:projectId/files/:nested/path`
 - `GET|POST /v2/projects/:projectId/sessions`
 - `PUT /v2/projects/:projectId/sessions/:sessionId`
+- `GET /v2/projects/:projectId/sandbox-runtime`
+- `POST /v2/projects/:projectId/sandbox-runtime/{ensure|pause|resume|destroy|checkpoint|replace}`
 
 `POST /v2/projects` accepts only `{ "name": "Project name" }` plus an
 `X-Operation-Id`; the server creates the opaque project ID. Creation reserves a
@@ -77,6 +79,32 @@ Project SQLite manifests in normalized path order; it never enumerates R2.
 Verified sessions are metadata only: create IDs are server-generated and the
 HTTP surface accepts/returns only title, revision, ID, and timestamps. There is
 no verified session deletion route.
+
+The sandbox-runtime routes reserve provider-neutral durable intent only. Every
+mutation requires `X-Operation-Id` plus exact expected generation/revision and
+session fields; checkpoint also requires a positive workspace revision. The
+public status and reservation DTOs never contain supervision command IDs,
+provider handles, usernames, ports, endpoints, object keys, capabilities,
+credentials, or secrets. Provisioning readiness is
+explicitly `disabled` until a separately trusted bridge uses the fenced
+claim/begin-effect/complete RPC sequence. The Durable Object performs no
+provider HTTP or SDK call. Only the caller whose begin-effect RPC performs the
+durable `claimed` to `effectStarted` transition may dispatch provider I/O;
+replayed begin calls are rejected. Returned handles that are failed, stale, or
+otherwise not adopted are retained only in private orphan-cleanup metadata.
+Successful start and resume completions atomically persist one exact, private
+supervision tuple (command ID, provider-handle binding, generation, bounded
+port, and bounded username) on the lease. Claims for existing leases return the
+tuple only to the trusted bridge. Pause and destroy success clear it, checkpoint
+success preserves it, and failed or ambiguous non-start effects retain only the
+last adopted tuple for reconciliation. Failed, ambiguous, stale, or conflicting
+start completions never publish supplied supervision as active lease state.
+All-or-none SQLite checks and triggers reject partial tuples, successful resume
+accepts only a running provider result and refreshes its expiry, and orphan
+cleanup can never remain pending for the provider identity currently adopted by
+the runtime. A later displacement atomically re-arms a previously completed
+cleanup row for the same provider identity. Exact legacy completion replays
+remain recognized after migration.
 
 Tenant/user IDs never come from verified route bodies. Credential values are
 write-only and limited to printable non-space ASCII suitable for the fixed

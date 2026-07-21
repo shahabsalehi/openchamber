@@ -4,7 +4,11 @@ import request from 'supertest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CONTROL_PLANE_CAPABILITY_SCRIPT, createStaticRoutesRuntime } from './static-routes-runtime.js';
+import {
+  CONTROL_PLANE_CAPABILITY_SCRIPT,
+  CONTROL_PLANE_SANDBOX_RUNTIME_CAPABILITY_SCRIPT,
+  createStaticRoutesRuntime,
+} from './static-routes-runtime.js';
 
 const createRuntime = () => createStaticRoutesRuntime({
   fs: { existsSync: () => false },
@@ -123,6 +127,7 @@ describe('static routes runtime', () => {
       expect(response.status).toBe(200);
       expect(response.headers['cache-control']).toBe('no-store');
       expect(response.text).toContain(CONTROL_PLANE_CAPABILITY_SCRIPT);
+      expect(response.text).not.toContain('sandboxRuntimeV2');
       expect(response.text).not.toContain(assertion);
       expect(response.text).not.toContain('secret-ui-token');
       expect(response.text).not.toContain('secret-session-cookie');
@@ -133,6 +138,36 @@ describe('static routes runtime', () => {
       expect.anything(),
       { allowClientAuth: true, allowUrlToken: false },
     );
+  });
+
+  it('injects the exact two-key descriptor only when the server-owned runtime gate is true', async () => {
+    const { runtime } = createBuiltRuntime();
+    const uiAuthController = {
+      enabled: true,
+      resolveAuthContext: vi.fn(async () => ({ type: 'session' })),
+    };
+    const enabledApp = express();
+    runtime.registerStaticRoutes(enabledApp, {
+      controlPlaneEnabled: true,
+      sandboxRuntimeEnabled: true,
+      uiAuthController,
+    });
+    const enabled = await request(enabledApp)
+      .get('/')
+      .set('Cf-Access-Jwt-Assertion', 'header.payload.signature');
+    expect(enabled.text).toContain(CONTROL_PLANE_SANDBOX_RUNTIME_CAPABILITY_SCRIPT);
+    expect(enabled.text).not.toContain(CONTROL_PLANE_CAPABILITY_SCRIPT);
+
+    const disabledApp = express();
+    runtime.registerStaticRoutes(disabledApp, {
+      controlPlaneEnabled: false,
+      sandboxRuntimeEnabled: true,
+      uiAuthController,
+    });
+    const disabled = await request(disabledApp)
+      .get('/')
+      .set('Cf-Access-Jwt-Assertion', 'header.payload.signature');
+    expect(disabled.text).not.toContain('__OPENCHAMBER_SERVER_CAPABILITIES__');
   });
 
   it('does not inject unauthenticated, assertion-free, mobile, or mini-chat HTML', async () => {

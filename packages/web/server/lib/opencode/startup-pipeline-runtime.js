@@ -55,6 +55,7 @@ export const createStartupPipelineRuntime = (dependencies) => {
       apiOnly,
       dictationModelsDir,
       controlPlaneEnabled,
+      sandboxRuntimeEnabled = false,
     } = options;
 
     const terminalRuntime = createTerminalRuntime({
@@ -107,6 +108,7 @@ export const createStartupPipelineRuntime = (dependencies) => {
     } else {
       staticRoutesRuntime.registerStaticRoutes(app, {
         controlPlaneEnabled,
+        sandboxRuntimeEnabled: sandboxRuntimeEnabled === true,
         uiAuthController,
       });
     }

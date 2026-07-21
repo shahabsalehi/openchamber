@@ -38,12 +38,21 @@ Examples:
 - `useFeatureFlagsStore.ts`
 - `useUpdateStore.ts`
 - `useWebV2WorkspaceStore.ts`
+- `useWebV2RuntimeStore.ts`
 
 These stores coordinate visible app state, navigation, selected tabs, dialogs, and lightweight feature flags.
 
 ### Durable Web V2 workspace
 
 `useWebV2WorkspaceStore.ts` owns only the optional Web V2 durable-workspace vertical slice: durable project metadata, selected durable project, files and selected text/version metadata scoped by durable project, and non-running durable session metadata. It never reads or writes local project paths, directory state, OpenCode sessions/messages, sync/realtime state, or credentials. Requests are visible-demand-driven, abort/reset when the API capability or runtime identity changes, and preserve the last successful records after refresh failures.
+
+### Hosted Web V2 sandbox runtime
+
+`useWebV2RuntimeStore.ts` is an independent optional store for the hosted Web V2 public sandbox-runtime boundary. It does not read or modify legacy directory, global session, sync, relay, or process-local sandbox stores. Its identity is the full runtime key plus durable project ID plus durable session ID; changing any member or removing/changing the optional runtime API aborts in-flight work and resets all runtime state.
+
+Status refreshes preserve the last successful authoritative status on failure, abort superseded requests, ignore completions from an old identity/request token, and reject records older by generation then lifecycle revision. Authoritative `activeOperation` determines pending operation state when no local mutation is in flight. Reservation completions are retained only when they are not older than the newest known status/reservation.
+
+Lifecycle actions require the separately advertised Web V2 runtime API, a complete project/session identity, an authoritative status, no pending action, and actionable readiness. The public readiness contract is currently exactly `disabled`, so no valid production status can issue ensure, pause, resume, destroy, checkpoint, or replace. This is intentional until real provider create/reconciliation and a durable trusted dispatcher are deployed; process-local runtime existence is never used as a fallback signal.
 
 ### Session / project coordination stores
 

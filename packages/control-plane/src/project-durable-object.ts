@@ -1,6 +1,9 @@
 import { DurableObject } from 'cloudflare:workers'
 
 import type {
+  BeginSandboxRuntimeEffectInput,
+  ClaimSandboxRuntimeOperationInput,
+  CompleteSandboxRuntimeOperationInput,
   CreateSandboxLeaseInput,
   CreateSessionInput,
   DeleteFileInput,
@@ -12,13 +15,25 @@ import type {
   ProjectRecord,
   ProjectDurableObjectRpc,
   ProjectRpcContext,
+  PublicSandboxRuntimeActiveOperation,
+  PublicSandboxRuntimeCheckpoint,
+  PublicSandboxRuntimeStatus,
   PutProjectInput,
   ReadFileInput,
   RecoveryReport,
   RpcResult,
   SandboxCleanupState,
   SandboxLeaseRecord,
+  SandboxRuntimeCheckpointState,
+  SandboxRuntimeEffect,
+  SandboxRuntimeOperationClaim,
+  SandboxRuntimeOperationCompletion,
+  SandboxRuntimeOperationKind,
+  SandboxRuntimeOperationState,
+  SandboxRuntimePrivateSupervision,
+  SandboxRuntimeReservationRecord,
   SandboxStatus,
+  ReserveSandboxRuntimeOperationInput,
   SessionRecord,
   UpdateSandboxLeaseInput,
   UpdateSessionInput,
@@ -38,13 +53,16 @@ import {
   projectObjectName,
   projectScopeHash,
 } from './routing'
-import { PROJECT_SCHEMA } from './schema'
+import { initializeProjectSchema } from './schema'
 import {
   consumeControlPlaneTestFault,
   type ControlPlaneTestFault,
 } from './test-support'
 import {
   normalizeFilePath,
+  validateBeginSandboxRuntimeEffectInput,
+  validateClaimSandboxRuntimeOperationInput,
+  validateCompleteSandboxRuntimeOperationInput,
   validateCreateSandboxLeaseInput,
   validateCreateSessionInput,
   validateDeleteFileInput,
@@ -53,7 +71,9 @@ import {
   validateOpaqueId,
   validatePutProjectInput,
   validateReadFileInput,
+  validateReserveSandboxRuntimeOperationInput,
   validateRpcContext,
+  validateSandboxRuntimePrivateSupervision,
   validateUpdateSandboxLeaseInput,
   validateUpdateSessionInput,
   validateWriteFileInput,
@@ -177,13 +197,131 @@ type LeaseRow = SqlRow & {
   provider_handle: string
   status: string
   lifecycle_revision: number
+  generation: number
+  workspace_revision: number | null
+  recovery_after: number | null
+  retry_count: number
+  supervision_command_id: string | null
+  supervision_provider_handle: string | null
+  supervision_generation: number | null
+  supervision_port: number | null
+  supervision_username: string | null
   expires_at: number | null
   cleanup_state: string
   created_at: number
   updated_at: number
 }
 
+type RuntimeStateRow = SqlRow & {
+  session_id: string | null
+  lease_id: string | null
+  generation: number
+  lifecycle_revision: number
+  status: string
+  outcome_unknown: number
+  active_operation_id: string | null
+  checkpoint_operation_id: string | null
+  created_at: number
+  updated_at: number
+}
+
+type RuntimeOperationRow = SqlRow & {
+  operation_id: string
+  request_fingerprint: string
+  kind: string
+  effect: string
+  session_id: string
+  expected_generation: number
+  expected_revision: number
+  target_generation: number
+  target_revision: number
+  target_lease_id: string | null
+  target_status: string
+  workspace_revision: number | null
+  state: string
+  claim_fence: number
+  attempt_count: number
+  retry_count: number
+  claimed_at: number | null
+  effect_started_at: number | null
+  recovery_after: number | null
+  completion_fingerprint: string | null
+  completion_accepted: number | null
+  orphan_cleanup_recorded: number
+  provider_id: string | null
+  provider_handle: string | null
+  created_at: number
+  updated_at: number
+}
+
+type RuntimeCheckpointRow = SqlRow & {
+  operation_id: string
+  generation: number
+  workspace_revision: number
+  lifecycle_revision: number
+  state: string
+  r2_key: string | null
+  created_at: number
+  updated_at: number
+}
+
+type RuntimeRecoveryCounts = {
+  recovered: number
+  outcomeUnknown: number
+}
+
+type RuntimeReservationTransition = {
+  effect: SandboxRuntimeEffect
+  state: SandboxRuntimeOperationState
+  generation: number
+  revision: number
+  leaseId: string | null
+  status: SandboxStatus
+  checkpointOperationId: string | null
+  outcomeUnknown: boolean
+}
+
 type RecoveryDisposition = 'aborted' | 'pending' | 'published'
+
+const ACTIVE_RUNTIME_OPERATION_STATES: readonly SandboxRuntimeOperationState[] = [
+  'reserved',
+  'claimed',
+  'effectStarted',
+]
+
+const RUNTIME_OPERATION_KINDS: ReadonlySet<string> = new Set([
+  'ensure',
+  'pause',
+  'resume',
+  'destroy',
+  'checkpoint',
+  'replace',
+])
+
+const RUNTIME_EFFECTS: ReadonlySet<string> = new Set([
+  'start',
+  'stop',
+  'resume',
+  'destroy',
+  'checkpoint',
+])
+
+const RUNTIME_OPERATION_STATES: ReadonlySet<string> = new Set([
+  'reserved',
+  'claimed',
+  'effectStarted',
+  'succeeded',
+  'failed',
+  'outcomeUnknown',
+  'superseded',
+])
+
+const RUNTIME_CHECKPOINT_STATES: ReadonlySet<string> = new Set([
+  'requested',
+  'ready',
+  'failed',
+  'outcomeUnknown',
+])
 
 const LEASE_TRANSITIONS: Readonly<Record<SandboxStatus, readonly SandboxStatus[]>> = {
   pending: ['running', 'stopping', 'terminated', 'failed', 'unknown'],
@@ -226,6 +364,22 @@ function isCleanupState(value: string): value is SandboxCleanupState {
   return Object.hasOwn(CLEANUP_TRANSITIONS, value)
 }
 
+function isRuntimeOperationKind(value: string): value is SandboxRuntimeOperationKind {
+  return RUNTIME_OPERATION_KINDS.has(value)
+}
+
+function isRuntimeEffect(value: string): value is SandboxRuntimeEffect {
+  return RUNTIME_EFFECTS.has(value)
+}
+
+function isRuntimeOperationState(value: string): value is SandboxRuntimeOperationState {
+  return RUNTIME_OPERATION_STATES.has(value)
+}
+
+function isRuntimeCheckpointState(value: string): value is SandboxRuntimeCheckpointState {
+  return RUNTIME_CHECKPOINT_STATES.has(value)
+}
+
 function isFileStorageState(value: string): value is FileStorageState {
   return value === 'live' || value === 'cleanupPending' || value === 'deleted'
 }
@@ -252,7 +406,7 @@ export class ProjectDurableObject
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env)
     void ctx.blockConcurrencyWhile(async () => {
-      ctx.storage.sql.exec(PROJECT_SCHEMA).toArray()
+      initializeProjectSchema(ctx.storage)
     })
   }
 
@@ -394,6 +548,10 @@ export class ProjectDurableObject
         }
         if (current.revision !== input.expectedRevision) {
           throw new ControlPlaneFault('VERSION_CONFLICT')
+        }
+        const runtime = this.#runtimeStateRow()
+        if (runtime?.session_id === input.sessionId) {
+          throw new ControlPlaneFault('INVALID_TRANSITION')
         }
         deleted = this.#sessionRecord(current)
         this.#execute(
@@ -650,7 +808,18 @@ export class ProjectDurableObject
         ) {
           throw new ControlPlaneFault('INVALID_TRANSITION')
         }
+        const runtime = this.#runtimeStateRow()
+        const runtimeOwnsLease = runtime?.lease_id === input.leaseId
+        if (
+          runtimeOwnsLease &&
+          (runtime.active_operation_id !== null || runtime.session_id !== input.sessionId)
+        ) {
+          throw new ControlPlaneFault('INVALID_TRANSITION')
+        }
         this.#assertSessionExists(input.sessionId)
+        const nextRevision = runtimeOwnsLease
+          ? runtime.lifecycle_revision + 1
+          : currentRecord.lifecycleRevision + 1
         this.#execute(
           `UPDATE sandbox_leases
               SET session_id = ?, status = ?, lifecycle_revision = ?, expires_at = ?,
@@ -658,12 +827,24 @@ export class ProjectDurableObject
             WHERE lease_id = ?`,
           input.sessionId,
           input.status,
-          currentRecord.lifecycleRevision + 1,
+          nextRevision,
           input.expiresAt,
           input.cleanupState,
           now,
           input.leaseId,
         )
+        if (runtimeOwnsLease) {
+          this.#execute(
+            `UPDATE sandbox_runtime_state
+                SET status = ?, lifecycle_revision = ?, outcome_unknown = ?, updated_at = ?
+              WHERE singleton = 1 AND lease_id = ? AND active_operation_id IS NULL`,
+            input.status,
+            nextRevision,
+            input.status === 'unknown' ? 1 : 0,
+            now,
+            input.leaseId,
+          )
+        }
       })
       return this.#requiredLease(input.leaseId)
     })
@@ -686,6 +867,9 @@ export class ProjectDurableObject
       await this.#authorizeContext(contextValue)
       return this.#query<LeaseRow>(
         `SELECT lease_id, session_id, provider_id, provider_handle, status, lifecycle_revision,
+                generation, workspace_revision, recovery_after, retry_count,
+                supervision_command_id, supervision_provider_handle, supervision_generation,
+                supervision_port, supervision_username,
                 expires_at, cleanup_state, created_at, updated_at
            FROM sandbox_leases ORDER BY created_at, lease_id`,
       ).map((row) => this.#leaseRecord(row))
@@ -715,13 +899,137 @@ export class ProjectDurableObject
         ) {
           throw new ControlPlaneFault('INVALID_TRANSITION')
         }
+        const runtime = this.#runtimeStateRow()
+        const runtimeOwnsLease = runtime?.lease_id === input.leaseId
+        if (runtimeOwnsLease && runtime.active_operation_id !== null) {
+          throw new ControlPlaneFault('INVALID_TRANSITION')
+        }
         deleted = record
         this.#execute('DELETE FROM sandbox_leases WHERE lease_id = ?', input.leaseId)
+        if (runtimeOwnsLease) {
+          this.#execute(
+            `UPDATE sandbox_runtime_state
+                SET session_id = NULL, lease_id = NULL, status = 'terminated',
+                    lifecycle_revision = lifecycle_revision + 1,
+                    outcome_unknown = 0, updated_at = ?
+              WHERE singleton = 1 AND lease_id = ? AND active_operation_id IS NULL`,
+            Date.now(),
+            input.leaseId,
+          )
+        }
       })
       if (deleted === null) {
         throw new ControlPlaneFault('INTEGRITY_ERROR')
       }
       return deleted
+    })
+  }
+
+  async getSandboxRuntimeStatus(
+    contextValue: ProjectRpcContext,
+  ): Promise<RpcResult<PublicSandboxRuntimeStatus>> {
+    return this.#withResult(async () => {
+      const context = await this.#authorizeContext(contextValue)
+      return this.#publicRuntimeStatus(context.scope.projectId)
+    })
+  }
+
+  async reserveSandboxRuntimeOperation(
+    contextValue: ProjectRpcContext,
+    inputValue: ReserveSandboxRuntimeOperationInput,
+  ): Promise<RpcResult<SandboxRuntimeReservationRecord>> {
+    return this.#withResult(async () => {
+      const context = await this.#authorizeContext(contextValue)
+      const input = validateReserveSandboxRuntimeOperationInput(inputValue)
+      const expectedFingerprint = await this.#runtimeOperationFingerprint(context, input)
+      if (expectedFingerprint !== input.requestFingerprint) {
+        throw new ControlPlaneFault('OPERATION_CONFLICT')
+      }
+      if (!(await this.#scheduleRecovery())) {
+        throw new ControlPlaneFault('STORAGE_FAILURE')
+      }
+      return this.#reserveRuntimeOperation(input)
+    })
+  }
+
+  async claimSandboxRuntimeOperation(
+    contextValue: ProjectRpcContext,
+    inputValue: ClaimSandboxRuntimeOperationInput,
+  ): Promise<RpcResult<SandboxRuntimeOperationClaim>> {
+    return this.#withResult(async () => {
+      await this.#authorizeContext(contextValue)
+      const input = validateClaimSandboxRuntimeOperationInput(inputValue)
+      if (!(await this.#scheduleRecovery())) {
+        throw new ControlPlaneFault('STORAGE_FAILURE')
+      }
+      return this.#claimRuntimeOperation(input)
+    })
+  }
+
+  async beginSandboxRuntimeEffect(
+    contextValue: ProjectRpcContext,
+    inputValue: BeginSandboxRuntimeEffectInput,
+  ): Promise<RpcResult<SandboxRuntimeOperationClaim>> {
+    return this.#withResult(async () => {
+      await this.#authorizeContext(contextValue)
+      const input = validateBeginSandboxRuntimeEffectInput(inputValue)
+      if (!(await this.#scheduleRecovery())) {
+        throw new ControlPlaneFault('STORAGE_FAILURE')
+      }
+      return this.#beginRuntimeEffect(input)
+    })
+  }
+
+  async completeSandboxRuntimeOperation(
+    contextValue: ProjectRpcContext,
+    inputValue: CompleteSandboxRuntimeOperationInput,
+  ): Promise<RpcResult<SandboxRuntimeOperationCompletion>> {
+    return this.#withResult(async () => {
+      const context = await this.#authorizeContext(contextValue)
+      const input = validateCompleteSandboxRuntimeOperationInput(inputValue)
+      const completionFingerprint = await operationFingerprint([
+        'sandbox-runtime-completion-v2',
+        context.scope.tenantId,
+        context.scope.projectId,
+        input.operationId,
+        String(input.expectedGeneration),
+        String(input.expectedRevision),
+        String(input.claimFence),
+        input.outcome,
+        input.provider?.providerId ?? 'null',
+        input.provider?.providerHandle ?? 'null',
+        input.provider?.status ?? 'null',
+        input.provider?.expiresAt === null || input.provider === null
+          ? 'null'
+          : String(input.provider.expiresAt),
+        input.supervision?.commandId ?? 'null',
+        input.supervision?.providerHandle ?? 'null',
+        input.supervision === null ? 'null' : String(input.supervision.generation),
+        input.supervision === null ? 'null' : String(input.supervision.port),
+        input.supervision?.username ?? 'null',
+      ])
+      const legacyCompletionFingerprint = await operationFingerprint([
+        'sandbox-runtime-completion-v1',
+        context.scope.tenantId,
+        context.scope.projectId,
+        input.operationId,
+        String(input.expectedGeneration),
+        String(input.expectedRevision),
+        String(input.claimFence),
+        input.outcome,
+        input.provider?.providerId ?? 'null',
+        input.provider?.providerHandle ?? 'null',
+        input.provider?.status ?? 'null',
+        input.provider?.expiresAt === null || input.provider === null
+          ? 'null'
+          : String(input.provider.expiresAt),
+      ])
+      return this.#completeRuntimeOperation(
+        context.scope.projectId,
+        input,
+        completionFingerprint,
+        legacyCompletionFingerprint,
+      )
     })
   }
 
@@ -1692,7 +2000,12 @@ export class ProjectDurableObject
         operationsAborted += 1
       }
     }
+    const runtimeRecovery = this.#recoverRuntimeOperations()
     const cleanupCompleted = await this.#processCleanup()
+    const actionableRuntimeRecovery = this.#count(
+      `SELECT COUNT(*) AS count FROM sandbox_runtime_operations
+        WHERE state IN ('claimed', 'effectStarted')`,
+    )
     const report: RecoveryReport = {
       operationsPublished,
       operationsAborted,
@@ -1700,8 +2013,22 @@ export class ProjectDurableObject
         WHERE state IN ('reserved', 'uploading', 'uploaded')`,),
       cleanupCompleted,
       cleanupPending: this.#cleanupCount(),
+      runtimeOperationsRecovered: runtimeRecovery.recovered,
+      runtimeOperationsOutcomeUnknown: runtimeRecovery.outcomeUnknown,
+      runtimeOperationsPending: this.#count(
+        `SELECT COUNT(*) AS count FROM sandbox_runtime_operations
+          WHERE state IN ('reserved', 'claimed', 'effectStarted')`,
+      ),
+      orphanCleanupPending: this.#count(
+        `SELECT COUNT(*) AS count FROM sandbox_runtime_orphan_cleanup_jobs
+          WHERE state = 'pending'`,
+      ),
     }
-    if (report.operationsPending > 0 || report.cleanupPending > 0) {
+    if (
+      report.operationsPending > 0 ||
+      report.cleanupPending > 0 ||
+      actionableRuntimeRecovery > 0
+    ) {
       if (!(await this.#scheduleRecovery())) {
         throw new ControlPlaneFault('STORAGE_FAILURE')
       }
@@ -1793,6 +2120,1134 @@ export class ProjectDurableObject
     }
   }
 
+  #runtimeStateRow(): RuntimeStateRow | null {
+    return this.#one<RuntimeStateRow>(
+      `SELECT session_id, lease_id, generation, lifecycle_revision, status,
+              outcome_unknown, active_operation_id, checkpoint_operation_id,
+              created_at, updated_at
+         FROM sandbox_runtime_state WHERE singleton = 1`,
+    )
+  }
+
+  #runtimeOperation(operationId: string): RuntimeOperationRow | null {
+    return this.#one<RuntimeOperationRow>(
+      `SELECT operation_id, request_fingerprint, kind, effect, session_id,
+              expected_generation, expected_revision, target_generation, target_revision,
+              target_lease_id, target_status, workspace_revision, state, claim_fence,
+              attempt_count, retry_count, claimed_at, effect_started_at, recovery_after,
+              completion_fingerprint, completion_accepted, orphan_cleanup_recorded,
+              provider_id, provider_handle, created_at, updated_at
+         FROM sandbox_runtime_operations WHERE operation_id = ?`,
+      operationId,
+    )
+  }
+
+  #runtimeCheckpoint(operationId: string): RuntimeCheckpointRow | null {
+    return this.#one<RuntimeCheckpointRow>(
+      `SELECT operation_id, generation, workspace_revision, lifecycle_revision,
+              state, r2_key, created_at, updated_at
+         FROM sandbox_runtime_checkpoints WHERE operation_id = ?`,
+      operationId,
+    )
+  }
+
+  #publicRuntimeStatus(projectId: string): PublicSandboxRuntimeStatus {
+    const state = this.#runtimeStateRow()
+    if (state === null) {
+      return {
+        projectId,
+        exists: false,
+        sessionId: null,
+        leaseId: null,
+        status: 'terminated',
+        generation: 0,
+        lifecycleRevision: 0,
+        outcomeUnknown: false,
+        activeOperation: null,
+        checkpoint: null,
+        readiness: 'disabled',
+        updatedAt: null,
+      }
+    }
+    if (!isSandboxStatus(state.status)) {
+      throw new ControlPlaneFault('INTEGRITY_ERROR')
+    }
+    let activeOperation: PublicSandboxRuntimeActiveOperation | null = null
+    if (state.active_operation_id !== null) {
+      const operation = this.#runtimeOperation(state.active_operation_id)
+      if (
+        operation === null ||
+        !isRuntimeOperationKind(operation.kind) ||
+        !isRuntimeOperationState(operation.state) ||
+        !ACTIVE_RUNTIME_OPERATION_STATES.includes(operation.state)
+      ) {
+        throw new ControlPlaneFault('INTEGRITY_ERROR')
+      }
+      activeOperation = {
+        operationId: operation.operation_id,
+        kind: operation.kind,
+        state: operation.state === 'reserved' ? 'pending' : 'inProgress',
+      }
+    }
+    let checkpoint: PublicSandboxRuntimeCheckpoint | null = null
+    if (state.checkpoint_operation_id !== null) {
+      const row = this.#runtimeCheckpoint(state.checkpoint_operation_id)
+      if (row === null || !isRuntimeCheckpointState(row.state)) {
+        throw new ControlPlaneFault('INTEGRITY_ERROR')
+      }
+      checkpoint = {
+        state: row.state,
+        generation: row.generation,
+        workspaceRevision: row.workspace_revision,
+        lifecycleRevision: row.lifecycle_revision,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }
+    }
+    return {
+      projectId,
+      exists: state.lease_id !== null || state.generation > 0,
+      sessionId: state.session_id,
+      leaseId: state.lease_id,
+      status: state.status,
+      generation: state.generation,
+      lifecycleRevision: state.lifecycle_revision,
+      outcomeUnknown: state.outcome_unknown === 1,
+      activeOperation,
+      checkpoint,
+      readiness: 'disabled',
+      updatedAt: state.updated_at,
+    }
+  }
+
+  async #runtimeOperationFingerprint(
+    context: ProjectRpcContext,
+    input: ReserveSandboxRuntimeOperationInput,
+  ): Promise<string> {
+    return operationFingerprint([
+      'sandbox-runtime-reservation-v1',
+      context.principal.id,
+      context.scope.tenantId,
+      context.scope.projectId,
+      input.operationId,
+      input.kind,
+      input.sessionId,
+      String(input.expectedGeneration),
+      String(input.expectedRevision),
+      input.workspaceRevision === null ? 'null' : String(input.workspaceRevision),
+    ])
+  }
+
+  #runtimeTransition(
+    current: RuntimeStateRow | null,
+    input: ReserveSandboxRuntimeOperationInput,
+    candidateLeaseId: string,
+  ): RuntimeReservationTransition {
+    const currentGeneration = current?.generation ?? 0
+    const currentRevision = current?.lifecycle_revision ?? 0
+    const nextRevision = currentRevision + 1
+    if (input.kind === 'ensure') {
+      if (current?.outcome_unknown === 1 || current?.status === 'unknown') {
+        throw new ControlPlaneFault('INVALID_TRANSITION')
+      }
+      if (current === null || current.lease_id === null) {
+        return {
+          effect: 'start',
+          state: 'reserved',
+          generation: currentGeneration + 1,
+          revision: nextRevision,
+          leaseId: candidateLeaseId,
+          status: 'pending',
+          checkpointOperationId: null,
+          outcomeUnknown: false,
+        }
+      }
+      if (current.status === 'terminated' || current.status === 'failed') {
+        const priorLease = this.#leaseRow(current.lease_id)
+        if (priorLease === null || priorLease.cleanup_state !== 'complete') {
+          throw new ControlPlaneFault('INVALID_TRANSITION')
+        }
+        return {
+          effect: 'start',
+          state: 'reserved',
+          generation: currentGeneration + 1,
+          revision: nextRevision,
+          leaseId: candidateLeaseId,
+          status: 'pending',
+          checkpointOperationId: null,
+          outcomeUnknown: false,
+        }
+      }
+      if (current.session_id !== input.sessionId) {
+        throw new ControlPlaneFault('INVALID_TRANSITION')
+      }
+      if (current.status === 'paused') {
+        return {
+          effect: 'resume',
+          state: 'reserved',
+          generation: currentGeneration,
+          revision: nextRevision,
+          leaseId: current.lease_id,
+          status: 'resuming',
+          checkpointOperationId: current.checkpoint_operation_id,
+          outcomeUnknown: false,
+        }
+      }
+      if (
+        current.status === 'pending' ||
+        current.status === 'running' ||
+        current.status === 'resuming'
+      ) {
+        return {
+          effect: 'start',
+          state: 'succeeded',
+          generation: currentGeneration,
+          revision: nextRevision,
+          leaseId: current.lease_id,
+          status: current.status,
+          checkpointOperationId: current.checkpoint_operation_id,
+          outcomeUnknown: false,
+        }
+      }
+      throw new ControlPlaneFault('INVALID_TRANSITION')
+    }
+    if (input.kind === 'replace') {
+      return {
+        effect: 'start',
+        state: 'reserved',
+        generation: currentGeneration + 1,
+        revision: nextRevision,
+        leaseId: candidateLeaseId,
+        status: 'pending',
+        checkpointOperationId: null,
+        outcomeUnknown: false,
+      }
+    }
+    if (current === null || current.lease_id === null || current.session_id !== input.sessionId) {
+      throw new ControlPlaneFault('INVALID_TRANSITION')
+    }
+    if (input.kind === 'pause' && current.status === 'running') {
+      return {
+        effect: 'stop',
+        state: 'reserved',
+        generation: currentGeneration,
+        revision: nextRevision,
+        leaseId: current.lease_id,
+        status: 'pausing',
+        checkpointOperationId: current.checkpoint_operation_id,
+        outcomeUnknown: false,
+      }
+    }
+    if (input.kind === 'resume' && current.status === 'paused') {
+      return {
+        effect: 'resume',
+        state: 'reserved',
+        generation: currentGeneration,
+        revision: nextRevision,
+        leaseId: current.lease_id,
+        status: 'resuming',
+        checkpointOperationId: current.checkpoint_operation_id,
+        outcomeUnknown: false,
+      }
+    }
+    if (
+      input.kind === 'destroy' &&
+      current.status !== 'terminated' &&
+      current.status !== 'failed'
+    ) {
+      return {
+        effect: 'destroy',
+        state: 'reserved',
+        generation: currentGeneration,
+        revision: nextRevision,
+        leaseId: current.lease_id,
+        status: 'stopping',
+        checkpointOperationId: current.checkpoint_operation_id,
+        outcomeUnknown: false,
+      }
+    }
+    if (
+      input.kind === 'checkpoint' &&
+      (current.status === 'running' || current.status === 'paused')
+    ) {
+      return {
+        effect: 'checkpoint',
+        state: 'reserved',
+        generation: currentGeneration,
+        revision: nextRevision,
+        leaseId: current.lease_id,
+        status: current.status,
+        checkpointOperationId: input.operationId,
+        outcomeUnknown: false,
+      }
+    }
+    throw new ControlPlaneFault('INVALID_TRANSITION')
+  }
+
+  #reserveRuntimeOperation(
+    input: ReserveSandboxRuntimeOperationInput,
+  ): SandboxRuntimeReservationRecord {
+    const candidateLeaseId = opaqueId()
+    const replacementOrphanJobId = opaqueId()
+    const now = Date.now()
+    this.ctx.storage.transactionSync(() => {
+      const existing = this.#runtimeOperation(input.operationId)
+      if (existing !== null) {
+        if (existing.request_fingerprint !== input.requestFingerprint) {
+          throw new ControlPlaneFault('OPERATION_CONFLICT')
+        }
+        return
+      }
+      const current = this.#runtimeStateRow()
+      if (
+        (current?.generation ?? 0) !== input.expectedGeneration ||
+        (current?.lifecycle_revision ?? 0) !== input.expectedRevision
+      ) {
+        throw new ControlPlaneFault('VERSION_CONFLICT')
+      }
+      if (
+        current?.active_operation_id !== null &&
+        current?.active_operation_id !== undefined
+      ) {
+        throw new ControlPlaneFault('INVALID_TRANSITION')
+      }
+      this.#assertSessionExists(input.sessionId)
+      const transition = this.#runtimeTransition(current, input, candidateLeaseId)
+      if (input.kind === 'replace' && current?.lease_id !== null && current?.lease_id !== undefined) {
+        const replacedLease = this.#leaseRow(current.lease_id)
+        if (
+          replacedLease !== null &&
+          !(
+            (replacedLease.status === 'terminated' || replacedLease.status === 'failed') &&
+            replacedLease.cleanup_state === 'complete'
+          )
+        ) {
+          this.#upsertRuntimeOrphan(
+            replacementOrphanJobId,
+            input.operationId,
+            replacedLease.provider_id,
+            replacedLease.provider_handle,
+            replacedLease.generation,
+            replacedLease.lifecycle_revision,
+            1,
+            now,
+          )
+          this.#execute(
+            `UPDATE sandbox_leases
+                SET status = 'stopping', lifecycle_revision = lifecycle_revision + 1,
+                    cleanup_state = 'requested', recovery_after = ?, updated_at = ?
+              WHERE lease_id = ?`,
+            now + RECOVERY_DELAY_MS,
+            now,
+            replacedLease.lease_id,
+          )
+        }
+      }
+      this.#execute(
+        `INSERT INTO sandbox_runtime_operations
+          (operation_id, request_fingerprint, kind, effect, session_id,
+           expected_generation, expected_revision, target_generation, target_revision,
+           target_lease_id, target_status, workspace_revision, state, claim_fence,
+           attempt_count, retry_count, claimed_at, effect_started_at, recovery_after,
+           completion_fingerprint, completion_accepted, orphan_cleanup_recorded,
+           provider_id, provider_handle, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0,
+                 NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, ?, ?)`,
+        input.operationId,
+        input.requestFingerprint,
+        input.kind,
+        transition.effect,
+        input.sessionId,
+        input.expectedGeneration,
+        input.expectedRevision,
+        transition.generation,
+        transition.revision,
+        transition.leaseId,
+        transition.status,
+        input.workspaceRevision,
+        transition.state,
+        now,
+        now,
+      )
+      if (input.kind === 'checkpoint' && input.workspaceRevision !== null) {
+        this.#execute(
+          `INSERT INTO sandbox_runtime_checkpoints
+            (operation_id, generation, workspace_revision, lifecycle_revision,
+             state, r2_key, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'requested', NULL, ?, ?)`,
+          input.operationId,
+          transition.generation,
+          input.workspaceRevision,
+          transition.revision,
+          now,
+          now,
+        )
+      }
+      const activeOperationId = ACTIVE_RUNTIME_OPERATION_STATES.includes(transition.state)
+        ? input.operationId
+        : null
+      if (current === null) {
+        this.#execute(
+          `INSERT INTO sandbox_runtime_state
+            (singleton, session_id, lease_id, generation, lifecycle_revision, status,
+             outcome_unknown, active_operation_id, checkpoint_operation_id, created_at, updated_at)
+           VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          input.sessionId,
+          transition.leaseId,
+          transition.generation,
+          transition.revision,
+          transition.status,
+          transition.outcomeUnknown ? 1 : 0,
+          activeOperationId,
+          transition.checkpointOperationId,
+          now,
+          now,
+        )
+      } else {
+        this.#execute(
+          `UPDATE sandbox_runtime_state
+              SET session_id = ?, lease_id = ?, generation = ?, lifecycle_revision = ?,
+                  status = ?, outcome_unknown = ?, active_operation_id = ?,
+                  checkpoint_operation_id = ?, updated_at = ?
+            WHERE singleton = 1`,
+          input.sessionId,
+          transition.leaseId,
+          transition.generation,
+          transition.revision,
+          transition.status,
+          transition.outcomeUnknown ? 1 : 0,
+          activeOperationId,
+          transition.checkpointOperationId,
+          now,
+        )
+      }
+    })
+    const operation = this.#runtimeOperation(input.operationId)
+    if (operation === null) {
+      throw new ControlPlaneFault('INTEGRITY_ERROR')
+    }
+    return this.#runtimeReservationRecord(operation)
+  }
+
+  #runtimeReservationRecord(operation: RuntimeOperationRow): SandboxRuntimeReservationRecord {
+    if (
+      !isRuntimeOperationKind(operation.kind) ||
+      !isRuntimeEffect(operation.effect) ||
+      !isSandboxStatus(operation.target_status)
+    ) {
+      throw new ControlPlaneFault('INTEGRITY_ERROR')
+    }
+    return {
+      operationId: operation.operation_id,
+      kind: operation.kind,
+      effect: operation.effect,
+      sessionId: operation.session_id,
+      leaseId: operation.target_lease_id,
+      generation: operation.target_generation,
+      lifecycleRevision: operation.target_revision,
+      status: operation.target_status,
+      workspaceRevision: operation.workspace_revision,
+      readiness: 'disabled',
+      acceptedAt: operation.created_at,
+    }
+  }
+
+  #assertRuntimeOperationFence(
+    operation: RuntimeOperationRow,
+    input: ClaimSandboxRuntimeOperationInput,
+  ): void {
+    if (
+      operation.target_generation !== input.expectedGeneration ||
+      operation.target_revision !== input.expectedRevision
+    ) {
+      throw new ControlPlaneFault('VERSION_CONFLICT')
+    }
+  }
+
+  #claimRuntimeOperation(
+    input: ClaimSandboxRuntimeOperationInput,
+  ): SandboxRuntimeOperationClaim {
+    const now = Date.now()
+    this.ctx.storage.transactionSync(() => {
+      const operation = this.#runtimeOperation(input.operationId)
+      if (operation === null) {
+        throw new ControlPlaneFault('NOT_FOUND')
+      }
+      this.#assertRuntimeOperationFence(operation, input)
+      if (operation.state !== 'reserved' && operation.state !== 'claimed') {
+        throw new ControlPlaneFault('INVALID_TRANSITION')
+      }
+      const state = this.#runtimeStateRow()
+      if (
+        state === null ||
+        state.active_operation_id !== input.operationId ||
+        state.generation !== operation.target_generation ||
+        state.lifecycle_revision !== operation.target_revision
+      ) {
+        throw new ControlPlaneFault('VERSION_CONFLICT')
+      }
+      if (operation.state === 'claimed') {
+        return
+      }
+      this.#execute(
+        `UPDATE sandbox_runtime_operations
+            SET state = 'claimed', claim_fence = claim_fence + 1,
+                attempt_count = attempt_count + 1, claimed_at = ?, recovery_after = ?, updated_at = ?
+          WHERE operation_id = ? AND state = 'reserved'`,
+        now,
+        now + RECOVERY_DELAY_MS,
+        now,
+        input.operationId,
+      )
+    })
+    const claimed = this.#runtimeOperation(input.operationId)
+    if (claimed === null || claimed.state !== 'claimed') {
+      throw new ControlPlaneFault('INTEGRITY_ERROR')
+    }
+    return this.#runtimeOperationClaim(claimed)
+  }
+
+  #beginRuntimeEffect(input: BeginSandboxRuntimeEffectInput): SandboxRuntimeOperationClaim {
+    const now = Date.now()
+    this.ctx.storage.transactionSync(() => {
+      const operation = this.#runtimeOperation(input.operationId)
+      if (operation === null) {
+        throw new ControlPlaneFault('NOT_FOUND')
+      }
+      this.#assertRuntimeOperationFence(operation, input)
+      if (operation.claim_fence !== input.claimFence) {
+        throw new ControlPlaneFault('VERSION_CONFLICT')
+      }
+      const state = this.#runtimeStateRow()
+      if (
+        state === null ||
+        state.active_operation_id !== input.operationId ||
+        state.generation !== operation.target_generation ||
+        state.lifecycle_revision !== operation.target_revision
+      ) {
+        throw new ControlPlaneFault('VERSION_CONFLICT')
+      }
+      if (operation.state !== 'claimed') {
+        throw new ControlPlaneFault('INVALID_TRANSITION')
+      }
+      this.#execute(
+        `UPDATE sandbox_runtime_operations
+            SET state = 'effectStarted', effect_started_at = ?, recovery_after = ?, updated_at = ?
+          WHERE operation_id = ? AND state = 'claimed' AND claim_fence = ?`,
+        now,
+        now + RECOVERY_DELAY_MS,
+        now,
+        input.operationId,
+        input.claimFence,
+      )
+    })
+    const started = this.#runtimeOperation(input.operationId)
+    if (started === null || started.state !== 'effectStarted') {
+      throw new ControlPlaneFault('INTEGRITY_ERROR')
+    }
+    return this.#runtimeOperationClaim(started)
+  }
+
+  #runtimeOperationClaim(operation: RuntimeOperationRow): SandboxRuntimeOperationClaim {
+    if (!isRuntimeOperationKind(operation.kind) || !isRuntimeEffect(operation.effect)) {
+      throw new ControlPlaneFault('INTEGRITY_ERROR')
+    }
+    let provider: SandboxRuntimeOperationClaim['provider'] = null
+    let supervision: SandboxRuntimePrivateSupervision | null = null
+    if (operation.effect !== 'start') {
+      if (operation.target_lease_id === null) {
+        throw new ControlPlaneFault('INTEGRITY_ERROR')
+      }
+      const lease = this.#leaseRow(operation.target_lease_id)
+      if (lease === null || lease.generation !== operation.target_generation) {
+        throw new ControlPlaneFault('INTEGRITY_ERROR')
+      }
+      provider = { providerId: lease.provider_id, providerHandle: lease.provider_handle }
+      supervision = this.#leaseSupervision(lease)
+    }
+    return {
+      operationId: operation.operation_id,
+      kind: operation.kind,
+      effect: operation.effect,
+      sessionId: operation.session_id,
+      leaseId: operation.target_lease_id,
+      generation: operation.target_generation,
+      lifecycleRevision: operation.target_revision,
+      workspaceRevision: operation.workspace_revision,
+      claimFence: operation.claim_fence,
+      attempt: operation.attempt_count,
+      provider,
+      supervision,
+    }
+  }
+
+  #assertRuntimeCompletionSupervision(
+    operation: RuntimeOperationRow,
+    input: CompleteSandboxRuntimeOperationInput,
+  ): void {
+    if (input.supervision === null) {
+      return
+    }
+    if (
+      input.provider === null ||
+      input.supervision.providerHandle !== input.provider.providerHandle ||
+      input.supervision.generation !== operation.target_generation
+    ) {
+      throw new ControlPlaneFault('OPERATION_CONFLICT')
+    }
+  }
+
+  #completeRuntimeOperation(
+    projectId: string,
+    input: CompleteSandboxRuntimeOperationInput,
+    completionFingerprint: string,
+    legacyCompletionFingerprint: string,
+  ): SandboxRuntimeOperationCompletion {
+    const now = Date.now()
+    const orphanJobId = opaqueId()
+    let accepted = false
+    let orphanCleanupRecorded = false
+    let completionConflict = false
+    this.ctx.storage.transactionSync(() => {
+      const operation = this.#runtimeOperation(input.operationId)
+      if (operation === null) {
+        throw new ControlPlaneFault('NOT_FOUND')
+      }
+      this.#assertRuntimeOperationFence(operation, input)
+      this.#assertRuntimeCompletionSupervision(operation, input)
+      if (operation.claim_fence !== input.claimFence) {
+        throw new ControlPlaneFault('VERSION_CONFLICT')
+      }
+      if (operation.completion_fingerprint !== null) {
+        const matchesLegacyCompletion =
+          input.supervision === null &&
+          operation.completion_fingerprint === legacyCompletionFingerprint
+        if (
+          operation.completion_fingerprint !== completionFingerprint &&
+          !matchesLegacyCompletion
+        ) {
+          if (
+            input.provider !== null &&
+            !this.#runtimeCompletionProviderIsAdopted(operation, input.provider)
+          ) {
+            orphanCleanupRecorded = this.#recordRuntimeOrphan(
+              operation,
+              input,
+              orphanJobId,
+              now,
+            )
+            if (orphanCleanupRecorded) {
+              return
+            }
+          }
+          throw new ControlPlaneFault('OPERATION_CONFLICT')
+        }
+        accepted = operation.completion_accepted === 1
+        orphanCleanupRecorded = operation.orphan_cleanup_recorded === 1
+        return
+      }
+      if (operation.state !== 'effectStarted' && operation.state !== 'outcomeUnknown') {
+        throw new ControlPlaneFault('INVALID_TRANSITION')
+      }
+      if (input.provider !== null) {
+        this.#execute(
+          `UPDATE sandbox_runtime_operations
+              SET provider_id = ?, provider_handle = ?, updated_at = ?
+            WHERE operation_id = ? AND claim_fence = ?`,
+          input.provider.providerId,
+          input.provider.providerHandle,
+          now,
+          input.operationId,
+          input.claimFence,
+        )
+      }
+      const state = this.#runtimeStateRow()
+      const stale =
+        state === null ||
+        state.active_operation_id !== input.operationId ||
+        state.generation !== operation.target_generation ||
+        state.lifecycle_revision !== operation.target_revision
+      if (stale) {
+        orphanCleanupRecorded = this.#recordRuntimeOrphan(
+          operation,
+          input,
+          orphanJobId,
+          now,
+        )
+        this.#execute(
+          `UPDATE sandbox_runtime_operations
+              SET state = 'superseded', completion_fingerprint = ?, completion_accepted = 0,
+                  orphan_cleanup_recorded = ?, recovery_after = NULL, updated_at = ?
+            WHERE operation_id = ? AND claim_fence = ?`,
+          completionFingerprint,
+          orphanCleanupRecorded ? 1 : 0,
+          now,
+          input.operationId,
+          input.claimFence,
+        )
+        return
+      }
+      if (input.outcome === 'outcomeUnknown') {
+        orphanCleanupRecorded = this.#recordRuntimeOrphan(
+          operation,
+          input,
+          orphanJobId,
+          now,
+        )
+        if (operation.effect === 'checkpoint') {
+          this.#execute(
+            `UPDATE sandbox_runtime_checkpoints
+                SET state = 'outcomeUnknown', updated_at = ?
+              WHERE operation_id = ? AND state = 'requested'`,
+            now,
+            operation.operation_id,
+          )
+        }
+        this.#execute(
+          `UPDATE sandbox_runtime_state
+              SET lease_id = CASE WHEN ? = 'start' THEN NULL ELSE lease_id END,
+                  status = CASE WHEN ? = 'checkpoint' THEN status ELSE 'unknown' END,
+                  outcome_unknown = 1, active_operation_id = NULL, updated_at = ?
+            WHERE singleton = 1 AND active_operation_id = ?`,
+          operation.effect,
+          operation.effect,
+          now,
+          operation.operation_id,
+        )
+        this.#execute(
+          `UPDATE sandbox_runtime_operations
+              SET state = 'outcomeUnknown', completion_fingerprint = ?, completion_accepted = 1,
+                  orphan_cleanup_recorded = ?, recovery_after = NULL, updated_at = ?
+            WHERE operation_id = ? AND claim_fence = ?`,
+          completionFingerprint,
+          orphanCleanupRecorded ? 1 : 0,
+          now,
+          operation.operation_id,
+          input.claimFence,
+        )
+        accepted = true
+        return
+      }
+      if (input.outcome === 'failed') {
+        if (
+          input.provider !== null &&
+          !this.#runtimeCompletionProviderIsAdopted(operation, input.provider)
+        ) {
+          orphanCleanupRecorded = this.#recordRuntimeOrphan(
+            operation,
+            input,
+            orphanJobId,
+            now,
+          )
+        }
+        if (operation.effect === 'checkpoint') {
+          this.#execute(
+            `UPDATE sandbox_runtime_checkpoints SET state = 'failed', updated_at = ?
+              WHERE operation_id = ? AND state = 'requested'`,
+            now,
+            operation.operation_id,
+          )
+        }
+        this.#execute(
+          `UPDATE sandbox_runtime_state
+              SET lease_id = CASE WHEN ? = 'start' THEN NULL ELSE lease_id END,
+                  status = CASE WHEN ? = 'checkpoint' THEN status ELSE 'failed' END,
+                  outcome_unknown = 0, active_operation_id = NULL, updated_at = ?
+            WHERE singleton = 1 AND active_operation_id = ?`,
+          operation.effect,
+          operation.effect,
+          now,
+          operation.operation_id,
+        )
+        this.#execute(
+          `UPDATE sandbox_runtime_operations
+              SET state = 'failed', completion_fingerprint = ?, completion_accepted = 1,
+                  orphan_cleanup_recorded = ?, recovery_after = NULL, updated_at = ?
+            WHERE operation_id = ? AND claim_fence = ?`,
+          completionFingerprint,
+          orphanCleanupRecorded ? 1 : 0,
+          now,
+          operation.operation_id,
+          input.claimFence,
+        )
+        accepted = true
+        return
+      }
+      if (
+        operation.effect !== 'start' &&
+        input.provider !== null &&
+        !this.#runtimeCompletionProviderIsAdopted(operation, input.provider)
+      ) {
+        orphanCleanupRecorded = this.#recordRuntimeOrphan(
+          operation,
+          input,
+          orphanJobId,
+          now,
+        )
+        completionConflict = true
+        return
+      }
+      this.#completeSuccessfulRuntimeEffect(operation, input, now)
+      this.#execute(
+        `UPDATE sandbox_runtime_operations
+            SET state = 'succeeded', completion_fingerprint = ?, completion_accepted = 1,
+                recovery_after = NULL, updated_at = ?
+          WHERE operation_id = ? AND claim_fence = ?`,
+        completionFingerprint,
+        now,
+        operation.operation_id,
+        input.claimFence,
+      )
+      accepted = true
+    })
+    if (completionConflict) {
+      throw new ControlPlaneFault('OPERATION_CONFLICT')
+    }
+    return {
+      operationId: input.operationId,
+      accepted,
+      orphanCleanupRecorded,
+      runtime: this.#publicRuntimeStatus(projectId),
+    }
+  }
+
+  #runtimeCompletionProviderIsAdopted(
+    operation: RuntimeOperationRow,
+    provider: NonNullable<CompleteSandboxRuntimeOperationInput['provider']>,
+  ): boolean {
+    if (operation.target_lease_id === null) {
+      return false
+    }
+    const lease = this.#leaseRow(operation.target_lease_id)
+    return (
+      lease !== null &&
+      lease.generation === operation.target_generation &&
+      lease.provider_id === provider.providerId &&
+      lease.provider_handle === provider.providerHandle
+    )
+  }
+
+  #runtimeCompletionProviderIsCurrentlyAdopted(
+    provider: NonNullable<CompleteSandboxRuntimeOperationInput['provider']>,
+  ): boolean {
+    const state = this.#runtimeStateRow()
+    if (state?.lease_id === null || state?.lease_id === undefined) {
+      return false
+    }
+    const lease = this.#leaseRow(state.lease_id)
+    return (
+      lease !== null &&
+      lease.generation === state.generation &&
+      lease.provider_id === provider.providerId &&
+      lease.provider_handle === provider.providerHandle
+    )
+  }
+
+  #recordRuntimeOrphan(
+    operation: RuntimeOperationRow,
+    input: CompleteSandboxRuntimeOperationInput,
+    jobId: string,
+    now: number,
+  ): boolean {
+    if (input.provider === null) {
+      return false
+    }
+    if (this.#runtimeCompletionProviderIsCurrentlyAdopted(input.provider)) {
+      return false
+    }
+    return this.#upsertRuntimeOrphan(
+      jobId,
+      operation.operation_id,
+      input.provider.providerId,
+      input.provider.providerHandle,
+      operation.target_generation,
+      operation.target_revision,
+      input.claimFence,
+      now,
+    )
+  }
+
+  #upsertRuntimeOrphan(
+    jobId: string,
+    operationId: string,
+    providerId: string,
+    providerHandle: string,
+    generation: number,
+    lifecycleRevision: number,
+    claimFence: number,
+    now: number,
+  ): boolean {
+    this.#execute(
+      `INSERT INTO sandbox_runtime_orphan_cleanup_jobs
+        (job_id, operation_id, provider_id, provider_handle, generation,
+         lifecycle_revision, claim_fence, state, attempts, retry_after, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+       ON CONFLICT(provider_id, provider_handle) DO UPDATE SET
+         operation_id = excluded.operation_id,
+         generation = excluded.generation,
+         lifecycle_revision = excluded.lifecycle_revision,
+         claim_fence = excluded.claim_fence,
+         state = 'pending',
+         attempts = 0,
+         retry_after = excluded.retry_after,
+         updated_at = excluded.updated_at`,
+      jobId,
+      operationId,
+      providerId,
+      providerHandle,
+      generation,
+      lifecycleRevision,
+      claimFence,
+      now + RECOVERY_DELAY_MS,
+      now,
+      now,
+    )
+    return (
+      this.#count(
+        `SELECT COUNT(*) AS count FROM sandbox_runtime_orphan_cleanup_jobs
+          WHERE provider_id = ? AND provider_handle = ? AND state = 'pending'`,
+        providerId,
+        providerHandle,
+      ) === 1
+    )
+  }
+
+  #completeSuccessfulRuntimeEffect(
+    operation: RuntimeOperationRow,
+    input: CompleteSandboxRuntimeOperationInput,
+    now: number,
+  ): void {
+    if (!isRuntimeEffect(operation.effect)) {
+      throw new ControlPlaneFault('INTEGRITY_ERROR')
+    }
+    if (operation.effect === 'start') {
+      if (
+        input.provider === null ||
+        input.supervision === null ||
+        operation.target_lease_id === null ||
+        (input.provider.status !== 'pending' &&
+          input.provider.status !== 'running' &&
+          input.provider.status !== 'unknown')
+      ) {
+        throw new ControlPlaneFault('INVALID_TRANSITION')
+      }
+      this.#assertLeaseExpiry(input.provider.status, input.provider.expiresAt, now)
+      this.#execute(
+        `UPDATE sandbox_runtime_orphan_cleanup_jobs
+            SET state = 'complete', retry_after = ?, updated_at = ?
+          WHERE provider_id = ? AND provider_handle = ? AND state = 'pending'`,
+        now,
+        now,
+        input.provider.providerId,
+        input.provider.providerHandle,
+      )
+      this.#execute(
+        `INSERT INTO sandbox_leases
+          (lease_id, session_id, provider_id, provider_handle, status, lifecycle_revision,
+           generation, workspace_revision, recovery_after, retry_count, expires_at,
+            supervision_command_id, supervision_provider_handle, supervision_generation,
+            supervision_port, supervision_username, cleanup_state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, ?, 'none', ?, ?)`,
+        operation.target_lease_id,
+        operation.session_id,
+        input.provider.providerId,
+        input.provider.providerHandle,
+        input.provider.status,
+        operation.target_revision,
+        operation.target_generation,
+        operation.workspace_revision,
+        input.provider.expiresAt,
+        input.supervision.commandId,
+        input.supervision.providerHandle,
+        input.supervision.generation,
+        input.supervision.port,
+        input.supervision.username,
+        now,
+        now,
+      )
+      this.#execute(
+        `UPDATE sandbox_runtime_state
+            SET lease_id = ?, status = ?, outcome_unknown = 0,
+                active_operation_id = NULL, updated_at = ?
+          WHERE singleton = 1 AND active_operation_id = ?`,
+        operation.target_lease_id,
+        input.provider.status,
+        now,
+        operation.operation_id,
+      )
+      return
+    }
+    if (operation.target_lease_id === null) {
+      throw new ControlPlaneFault('INTEGRITY_ERROR')
+    }
+    const lease = this.#leaseRow(operation.target_lease_id)
+    if (lease === null || lease.generation !== operation.target_generation) {
+      throw new ControlPlaneFault('VERSION_CONFLICT')
+    }
+    if (
+      input.provider !== null &&
+      (input.provider.providerId !== lease.provider_id ||
+        input.provider.providerHandle !== lease.provider_handle)
+    ) {
+      throw new ControlPlaneFault('OPERATION_CONFLICT')
+    }
+    if (operation.effect === 'checkpoint') {
+      if (input.supervision !== null) {
+        throw new ControlPlaneFault('INVALID_TRANSITION')
+      }
+      this.#execute(
+        `UPDATE sandbox_runtime_checkpoints SET state = 'ready', updated_at = ?
+          WHERE operation_id = ? AND state = 'requested'`,
+        now,
+        operation.operation_id,
+      )
+      this.#execute(
+        `UPDATE sandbox_runtime_state
+            SET outcome_unknown = 0, active_operation_id = NULL, updated_at = ?
+          WHERE singleton = 1 AND active_operation_id = ?`,
+        now,
+        operation.operation_id,
+      )
+      return
+    }
+    const finalStatus: SandboxStatus =
+      operation.effect === 'stop'
+        ? 'paused'
+        : operation.effect === 'resume'
+          ? 'running'
+          : 'terminated'
+    if (!isCleanupState(lease.cleanup_state)) {
+      throw new ControlPlaneFault('INTEGRITY_ERROR')
+    }
+    const cleanupState: SandboxCleanupState =
+      operation.effect === 'destroy' ? 'complete' : lease.cleanup_state
+    if (operation.effect === 'resume') {
+      if (
+        input.supervision === null ||
+        input.provider === null ||
+        input.provider.status !== 'running'
+      ) {
+        throw new ControlPlaneFault('INVALID_TRANSITION')
+      }
+      this.#assertLeaseExpiry(input.provider.status, input.provider.expiresAt, now)
+    }
+    if (operation.effect !== 'resume' && input.supervision !== null) {
+      throw new ControlPlaneFault('INVALID_TRANSITION')
+    }
+    this.#execute(
+      `UPDATE sandbox_leases
+          SET status = ?, lifecycle_revision = ?, workspace_revision = ?,
+              cleanup_state = ?,
+              supervision_command_id = ?, supervision_provider_handle = ?,
+              supervision_generation = ?, supervision_port = ?, supervision_username = ?,
+              expires_at = ?,
+              updated_at = ?
+        WHERE lease_id = ? AND generation = ?`,
+      finalStatus,
+      operation.target_revision,
+      operation.workspace_revision,
+      cleanupState,
+      operation.effect === 'resume' ? input.supervision?.commandId ?? null : null,
+      operation.effect === 'resume' ? input.supervision?.providerHandle ?? null : null,
+      operation.effect === 'resume' ? input.supervision?.generation ?? null : null,
+      operation.effect === 'resume' ? input.supervision?.port ?? null : null,
+      operation.effect === 'resume' ? input.supervision?.username ?? null : null,
+      operation.effect === 'resume' ? input.provider?.expiresAt ?? null : lease.expires_at,
+      now,
+      lease.lease_id,
+      operation.target_generation,
+    )
+    this.#execute(
+      `UPDATE sandbox_runtime_state
+          SET status = ?, outcome_unknown = 0, active_operation_id = NULL, updated_at = ?
+        WHERE singleton = 1 AND active_operation_id = ?`,
+      finalStatus,
+      now,
+      operation.operation_id,
+    )
+  }
+
+  #recoverRuntimeOperations(): RuntimeRecoveryCounts {
+    const now = Date.now()
+    const operations = this.#query<RuntimeOperationRow>(
+      `SELECT operation_id, request_fingerprint, kind, effect, session_id,
+              expected_generation, expected_revision, target_generation, target_revision,
+              target_lease_id, target_status, workspace_revision, state, claim_fence,
+              attempt_count, retry_count, claimed_at, effect_started_at, recovery_after,
+              completion_fingerprint, completion_accepted, orphan_cleanup_recorded,
+              provider_id, provider_handle, created_at, updated_at
+         FROM sandbox_runtime_operations
+        WHERE state IN ('claimed', 'effectStarted')
+          AND recovery_after IS NOT NULL AND recovery_after <= ?
+        ORDER BY recovery_after, updated_at, operation_id LIMIT ?`,
+      now,
+      RECOVERY_BATCH_SIZE,
+    )
+    let recovered = 0
+    let outcomeUnknown = 0
+    for (const operation of operations) {
+      this.ctx.storage.transactionSync(() => {
+        const current = this.#runtimeOperation(operation.operation_id)
+        if (
+          current === null ||
+          current.state !== operation.state ||
+          current.claim_fence !== operation.claim_fence ||
+          current.recovery_after === null ||
+          current.recovery_after > now
+        ) {
+          return
+        }
+        if (current.state === 'claimed') {
+          this.#execute(
+            `UPDATE sandbox_runtime_operations
+                SET state = 'reserved', retry_count = retry_count + 1,
+                    claimed_at = NULL, recovery_after = NULL, updated_at = ?
+              WHERE operation_id = ? AND state = 'claimed' AND claim_fence = ?`,
+            now,
+            current.operation_id,
+            current.claim_fence,
+          )
+          recovered += 1
+          return
+        }
+        if (current.effect === 'checkpoint') {
+          this.#execute(
+            `UPDATE sandbox_runtime_checkpoints
+                SET state = 'outcomeUnknown', updated_at = ?
+              WHERE operation_id = ? AND state = 'requested'`,
+            now,
+            current.operation_id,
+          )
+        }
+        this.#execute(
+          `UPDATE sandbox_runtime_state
+              SET lease_id = CASE WHEN ? = 'start' THEN NULL ELSE lease_id END,
+                  status = CASE WHEN ? = 'checkpoint' THEN status ELSE 'unknown' END,
+                  outcome_unknown = 1, active_operation_id = NULL, updated_at = ?
+            WHERE singleton = 1 AND active_operation_id = ?
+              AND generation = ? AND lifecycle_revision = ?`,
+          current.effect,
+          current.effect,
+          now,
+          current.operation_id,
+          current.target_generation,
+          current.target_revision,
+        )
+        this.#execute(
+          `UPDATE sandbox_runtime_operations
+              SET state = 'outcomeUnknown', retry_count = retry_count + 1,
+                  recovery_after = NULL, updated_at = ?
+            WHERE operation_id = ? AND state = 'effectStarted' AND claim_fence = ?`,
+          now,
+          current.operation_id,
+          current.claim_fence,
+        )
+        outcomeUnknown += 1
+      })
+    }
+    return { recovered, outcomeUnknown }
+  }
+
   #scheduleRecovery(): Promise<boolean> {
     const existing = this.#alarmScheduleFlight
     if (existing !== null) {
@@ -1825,7 +3280,10 @@ export class ProjectDurableObject
   #leaseRow(leaseId: string): LeaseRow | null {
     return this.#one<LeaseRow>(
       `SELECT lease_id, session_id, provider_id, provider_handle, status, lifecycle_revision,
-              expires_at, cleanup_state, created_at, updated_at
+               generation, workspace_revision, recovery_after, retry_count,
+               supervision_command_id, supervision_provider_handle, supervision_generation,
+               supervision_port, supervision_username,
+               expires_at, cleanup_state, created_at, updated_at
          FROM sandbox_leases WHERE lease_id = ?`,
       leaseId,
     )
@@ -1854,6 +3312,40 @@ export class ProjectDurableObject
       cleanupState: row.cleanup_state,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+    }
+  }
+
+  #leaseSupervision(row: LeaseRow): SandboxRuntimePrivateSupervision | null {
+    const values = [
+      row.supervision_command_id,
+      row.supervision_provider_handle,
+      row.supervision_generation,
+      row.supervision_port,
+      row.supervision_username,
+    ]
+    if (values.every((value) => value === null)) {
+      return null
+    }
+    if (values.some((value) => value === null)) {
+      throw new ControlPlaneFault('INTEGRITY_ERROR')
+    }
+    try {
+      const supervision = validateSandboxRuntimePrivateSupervision({
+        commandId: row.supervision_command_id,
+        providerHandle: row.supervision_provider_handle,
+        generation: row.supervision_generation,
+        port: row.supervision_port,
+        username: row.supervision_username,
+      })
+      if (
+        supervision.providerHandle !== row.provider_handle ||
+        supervision.generation !== row.generation
+      ) {
+        throw new ControlPlaneFault('INTEGRITY_ERROR')
+      }
+      return supervision
+    } catch {
+      throw new ControlPlaneFault('INTEGRITY_ERROR')
     }
   }
 
