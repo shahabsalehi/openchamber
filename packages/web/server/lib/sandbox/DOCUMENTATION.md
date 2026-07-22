@@ -802,3 +802,141 @@ orphan executor, durable dispatcher invocation of this bounded process-local
 reconciliation path, production heartbeat, private authority transport, and
 production rollout remain future milestones. All sandbox creation, coordinator
 wiring, readiness, deployment, and production gates remain disabled.
+
+## Stage 7A OpenSandbox live acceptance gate (operator-only)
+
+### Scope and non-wiring
+
+`live-acceptance.js` and `live-acceptance-cli.js` own one standalone live lane
+gate. The gate runs only through the explicit root package script below. It is
+not exported from `sandbox/index.js`, imported by the normal OpenChamber CLI or
+server, registered as a route, exposed through `RuntimeAPIs`, or wired to the
+factory, runtime, bridge, coordinator, or dispatcher. It never runs during
+normal tests or startup. `sandboxRuntimeEnabled` remains `false`, hosted sandbox
+routes and capabilities remain absent, the coordinator remains unwired, and the
+OpenSandbox adapter's `supportsRealCreate` remains `false`.
+
+The gate is operator-only and non-interactive. It has no prompts or TTY-specific
+behavior. Stdout contains exactly one deterministic JSON report; native errors,
+provider response bodies, URLs, handles, ownership values, timestamps, elapsed
+durations, credentials, CA paths/content, and control-plane or endpoint headers
+are never emitted. Exit `0` means every required check passed and authoritative
+cleanup found no exact owned leftovers. Missing/invalid lane inputs exit `2` as
+`unavailable`; a check or cleanup failure exits `1`. SIGINT waits for the
+independent cleanup phase, emits JSON, and exits `130` (SIGTERM exits `143`).
+
+### Explicit environment only
+
+The gate reads only these explicit process variables. It does not load dotenv,
+search the repository or host for credentials, or inherit the normal sandbox
+runtime variables.
+
+| Variable | Requirement |
+| --- | --- |
+| `OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_BASE_URL` | Required and exactly a `/v1` URL. HTTP is loopback-only. HTTPS accepts loopback or a literal private/link-local address and requires an explicit CA file. URL credentials, queries, and fragments are rejected. |
+| `OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_IMAGE` | Required operator-supplied known Node image. It must provide `node`, OpenSandbox execd command support, and the requested finite live TTL. |
+| `OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_API_KEY` | One allowed key source. Intended for controlled automation where the secret is already in the process environment. Never put its value on a command line. |
+| `OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_API_KEY_FILE` | The alternative key source used by the documented operator commands. Must be an explicitly named regular non-symlink file no larger than 16 KiB. Exactly one key source is required. |
+| `OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_TLS_CA_FILE` | Required for HTTPS and rejected for HTTP. Must be an explicitly named regular non-symlink file no larger than 256 KiB. TLS verification is always enabled. |
+| `OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_TTL_SECONDS` | Optional, default `300`; integer `60` through `900`. The live create never exceeds the reported 900-second cap. |
+
+The API key is sent only as `OPEN-SANDBOX-API-KEY` on control-plane requests.
+The native `node:http`/`node:https` transport rejects redirects, enforces a
+per-request timeout and bounded response body, uses the explicit HTTPS CA, and
+never disables certificate verification. Provider-returned endpoint URLs and
+routing headers remain internal and are preserved for HTTP, WebSocket, and execd
+traffic; the control-plane key is rejected from and never added to those calls.
+
+### Exact operator invocations
+
+HTTP lane (the accepted HTTP lane is exactly loopback-only):
+
+```sh
+OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_BASE_URL=http://127.0.0.1:18180/v1 \
+OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_IMAGE='<known-node-image-uri>' \
+OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_API_KEY_FILE='/absolute/path/to/opensandbox-api-key' \
+OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_TTL_SECONDS=300 \
+bun run sandbox:opensandbox:live-acceptance
+```
+
+TLS lane (the CA must validate the private non-production endpoint):
+
+```sh
+OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_BASE_URL=https://127.0.0.1:18443/v1 \
+OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_IMAGE='<known-node-image-uri>' \
+OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_API_KEY_FILE='/absolute/path/to/opensandbox-api-key' \
+OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_TLS_CA_FILE='/absolute/path/to/opensandbox-ca.pem' \
+OPENCHAMBER_OPENSANDBOX_ACCEPTANCE_TTL_SECONDS=300 \
+bun run sandbox:opensandbox:live-acceptance
+```
+
+These examples intentionally contain paths/placeholders only, never a secret
+value. The package script runs the ESM entrypoint with the repository's declared
+Node.js 22-or-newer runtime requirement. The operator must separately observe
+and record the lane's host-level
+PID limit and `no-new-privileges` policy before treating a passing report as
+rollout evidence. OpenSandbox does not expose supported create fields for those
+host policies, so the gate records both as optional `skipped` operator
+preconditions and never invents payload fields for them.
+
+### Fixed evidence and readiness policy
+
+The report always contains the same ordered capability matrix. Required checks
+are configuration; unauthenticated health; unauthenticated protected-list 401;
+authenticated health and list; rejection of a single 901-second create; one
+main create; authoritative get; exact metadata pagination/reconciliation;
+endpoint resolution; HTTP routing-header preservation; deny-default egress;
+pause; resume; one renewal plus authoritative GET verification; exact
+list/orphan visibility; destroy; get-after-delete; and authoritative final
+no-owned-leftovers cleanup. The WebSocket routing-header probe is optional and
+may be `skipped` only when unsupported. Host PID/no-new-privileges observations
+are operator preconditions. Restart/orphan visibility is always explicitly
+`skipped` with `restart_forbidden`: Stage 7A never mutates Hetzner or restarts a
+host. A required `skipped`/`unavailable` check, any `failed` check, an unknown
+mutation outcome, or unconfirmed cleanup makes `ready: false`.
+
+The main create requests exactly CPU `250m`, memory `128Mi`, a finite TTL no
+greater than 900 seconds, and `{ defaultAction: 'deny', egress: [] }`. The gate
+starts one hardcoded bounded Node HTTP/WebSocket echo server through existing
+execd command support and probes the adapter-resolved endpoint with every opaque
+routing header. It also starts one hardcoded bounded Node command against the
+fixed harmless `http://example.com/` URL and requires that command to fail to
+connect. Missing required execd/HTTP evidence fails readiness; optional
+WebSocket absence does not manufacture evidence.
+
+Every attempted allocation uses normalized exact ownership
+`{ environment: 'non-production', projectId, sessionId, generation,
+operationId }`, mapped by the adapter to exactly the five `drarticle.io/*`
+labels. Main and over-cap operation IDs are unique and provider-label-valid.
+There are at most two allocation POSTs: one 901-second rejection probe and one
+main create. No create, pause, resume, renew, destroy, command start, or other
+mutation is blindly retried. Ambiguous create outcomes trigger a separately
+bounded exact-metadata scan. Candidates enter the cleanup ledger only after a
+client-side exact tuple match and authoritative GET; multiple verified matches
+are never adopted, but each exact verified match is eligible for cleanup.
+
+Normal work is capped at 192 requests and 120 seconds; cleanup has an independent
+64-request/60-second budget. Reconciliation is at most two rounds, four 50-item
+pages per round, 400 returned candidates, eight exact candidates, and 10
+seconds. Command polling, waits, allocations, and artifacts are fixed and
+bounded in the report. Pagination churn, malformed pagination, or a still-full
+fourth page fails closed.
+
+Cleanup always runs in `finally`. Each exact verified handle is destroyed at
+most once, then checked with bounded GET polling and final exact-metadata
+pagination. A 404 is authoritative absence. Unknown destroy/interrupt/GET/list
+outcomes, incomplete pagination, or any exact leftover produce
+`outcome_unknown`/`cleanup_unconfirmed`, keep `ready: false`, and are never
+converted into an empty success. Cleanup never performs prefix, age, tenant, or
+account-wide inference and never deletes an unrelated sandbox.
+
+### Fake-only validation
+
+`live-acceptance.test.js` injects a complete fake control plane, endpoint,
+WebSocket probe, clock, and filesystem fixtures. It proves exact request and
+metadata shape, auth/routing-header separation, single-dispatch mutations,
+ambiguous-create reconciliation, multiple exact-owned cleanup, per-stage
+failure cleanup, request/page/poll/allocation/artifact bounds, redirect/TLS/body
+transport behavior, no network or file reads on absent configuration,
+readiness/exit/SIGINT behavior, and sentinel exclusion from reports, CLI output,
+and captured logs. It never accesses a live provider lane.
