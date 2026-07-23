@@ -54,7 +54,7 @@ describe('OpenSandbox provider adapter', () => {
   it('translates create requests and keeps auth and provider extras out of safe records', async () => {
     const connectionSecret = 'connection-header-secret';
     const fetchImpl = mock(async () => new Response(JSON.stringify(sandboxPayload({
-      endpoint: 'https://sandbox-123.example',
+      endpoint: 'https://10.23.45.67',
       headers: { Authorization: connectionSecret },
       providerCredential: API_KEY,
     })), {
@@ -183,7 +183,7 @@ describe('OpenSandbox provider adapter', () => {
       if (init.method === 'DELETE') return new Response(null, { status: 204 });
       if (parsedUrl.pathname.endsWith('/endpoints/3000')) {
         return Response.json({
-          endpoint: 'https://sandbox-123.example:3000',
+          endpoint: 'https://10.23.45.67:3000',
           headers: { Authorization: 'Bearer connection-secret' },
         });
       }
@@ -202,7 +202,7 @@ describe('OpenSandbox provider adapter', () => {
       useServerProxy: false,
       expiresAt: '2026-01-01T00:10:00.999Z',
     })).resolves.toEqual({
-      endpoint: 'https://sandbox-123.example:3000',
+      endpoint: 'https://10.23.45.67:3000',
       headers: { Authorization: 'Bearer connection-secret' },
     });
     await expect(provider.destroy('sandbox-123')).resolves.toBeUndefined();
@@ -530,19 +530,88 @@ describe('OpenSandbox provider adapter', () => {
     expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'GET')).toHaveLength(1);
   });
 
-  it('preserves opaque WebSocket endpoint headers and rejects API-key injection', async () => {
-    const routingHeaders = { 'X-Route-Token': 'opaque-routing-token' };
-    const provider = createProvider(mock(async () => Response.json({
-      endpoint: 'wss://sandbox-123.example/socket',
-      headers: routingHeaders,
+  it('normalizes provider-native and explicit private endpoints without losing opaque headers', async () => {
+    const routingHeaders = {
+      'X-Route-Token': 'opaque-routing-token',
+      'OpenSandbox-Secure-Access': 'opaque-secure-access',
+    };
+    const cases = [
+      {
+        controlPlaneUrl: 'http://127.0.0.1:18180/v1',
+        endpoint: '10.23.45.67:8080/sandboxes/sandbox-123/port/8080',
+        expected: 'http://10.23.45.67:8080/sandboxes/sandbox-123/port/8080',
+      },
+      {
+        controlPlaneUrl: 'https://control.example/v1',
+        endpoint: '[fd00::123]:8080/sandboxes/sandbox-123/port/8080',
+        expected: 'https://[fd00::123]:8080/sandboxes/sandbox-123/port/8080',
+      },
+      { endpoint: 'http://127.0.0.1:8080/path', expected: 'http://127.0.0.1:8080/path' },
+      { endpoint: 'https://10.23.45.67/path', expected: 'https://10.23.45.67/path' },
+      { endpoint: 'ws://169.254.20.30/socket', expected: 'ws://169.254.20.30/socket' },
+      { endpoint: 'wss://[fe80::123]/socket', expected: 'wss://[fe80::123]/socket' },
+      { endpoint: 'https://localhost/socket', expected: 'https://localhost/socket' },
+    ];
+
+    for (const endpointCase of cases) {
+      const provider = createProvider(mock(async () => Response.json({
+        endpoint: endpointCase.endpoint,
+        headers: routingHeaders,
+      })), endpointCase.controlPlaneUrl
+        ? { controlPlaneUrl: endpointCase.controlPlaneUrl }
+        : {});
+      await expect(provider.getEndpoint('sandbox-123', { port: 8080 })).resolves.toEqual({
+        endpoint: endpointCase.expected,
+        headers: routingHeaders,
+      });
+    }
+  });
+
+  it('rejects malformed, ambiguous, non-private, or authority-bearing endpoint responses', async () => {
+    const unsafeEndpoints = [
+      '',
+      'javascript:alert(1)',
+      '//10.23.45.67/path',
+      '/relative/path',
+      'https:/10.23.45.67/path',
+      'https:\\10.23.45.67\\path',
+      'https://user:password@10.23.45.67/path',
+      'https://10.23.45.67/path?secret=value',
+      'https://10.23.45.67/path#fragment',
+      'https://10.23.45.67 /path',
+      'https://sandbox-123.example/path',
+      'https://8.8.8.8/path',
+      'https://0.0.0.0/path',
+      'https://224.0.0.1/path',
+      'https://127.1/path',
+      'https://127.0.0.1./path',
+      'https://127.0.0.1:/path',
+      'https://127.0.0.1:0/path',
+      'https://127.0.0.1:00443/path',
+      'https://127.0.0.1:65536/path',
+      'https://[::]/path',
+      'https://[ff02::1]/path',
+      'https://fd00::123/path',
+      '10.23.45.67:invalid/path',
+    ];
+
+    for (const endpoint of unsafeEndpoints) {
+      const provider = createProvider(mock(async () => Response.json({ endpoint, headers: {} })));
+      await expect(provider.getEndpoint('sandbox-123', { port: 8080 }))
+        .rejects.toMatchObject({ code: SANDBOX_ERROR_CODES.RESPONSE_INVALID });
+    }
+  });
+
+  it('rejects duplicate and control-plane routing headers', async () => {
+    const duplicateProvider = createProvider(mock(async () => Response.json({
+      endpoint: 'https://10.23.45.67/socket',
+      headers: { 'X-Route-Token': 'one', 'x-route-token': 'two' },
     })));
-    await expect(provider.getEndpoint('sandbox-123', { port: 8080 })).resolves.toEqual({
-      endpoint: 'wss://sandbox-123.example/socket',
-      headers: routingHeaders,
-    });
+    await expect(duplicateProvider.getEndpoint('sandbox-123', { port: 8080 }))
+      .rejects.toMatchObject({ code: SANDBOX_ERROR_CODES.RESPONSE_INVALID });
 
     const unsafeProvider = createProvider(mock(async () => Response.json({
-      endpoint: 'https://sandbox-123.example',
+      endpoint: 'https://10.23.45.67',
       headers: { 'open-sandbox-api-key': 'must-not-propagate' },
     })));
     await expect(unsafeProvider.getEndpoint('sandbox-123', { port: 8080 }))
@@ -663,7 +732,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         if (String(url).includes('endpoints/44772')) {
           return Response.json({
-            endpoint: 'https://execd-sandbox.example',
+            endpoint: 'https://10.23.45.68',
             headers: { 'X-EXECD-ACCESS-TOKEN': execdSecret },
           });
         }
@@ -671,7 +740,7 @@ describe('OpenSandbox bridge adapter', () => {
       });
       const provider = createProvider(fetchImpl);
       const connection = await provider.execd.getExecdEndpoint('sandbox-123');
-      expect(connection.endpoint).toBe('https://execd-sandbox.example');
+      expect(connection.endpoint).toBe('https://10.23.45.68');
       expect(connection.headers['X-EXECD-ACCESS-TOKEN']).toBe(execdSecret);
       const execdCall = fetchImpl.mock.calls.find(([u]) => String(u).includes('44772'));
       expect(execdCall).toBeDefined();
@@ -680,13 +749,47 @@ describe('OpenSandbox bridge adapter', () => {
   });
 
   describe('command', () => {
+    it('keeps the full provider proxy path for scheme-less execd requests', async () => {
+      const routingHeaders = {
+        'X-EXECD-ACCESS-TOKEN': 'execd-token-proxy-path',
+        'OpenSandbox-Secure-Access': 'secure-access-proxy-path',
+      };
+      const fetchImpl = mock(async (url) => {
+        if (String(url).includes('endpoints/44772')) {
+          return Response.json({
+            endpoint: '10.23.45.68:44772/sandboxes/sandbox-123/port/44772',
+            headers: routingHeaders,
+          });
+        }
+        return new Response('data: {"commandId":"cmd-proxy-path","event":"accepted"}\n\n', {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      });
+      const provider = createProvider(fetchImpl);
+
+      await expect(provider.command.runBackground('sandbox-123', { command: 'echo test' }))
+        .resolves.toMatchObject({ commandId: 'cmd-proxy-path' });
+
+      const commandCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/command'));
+      expect(String(commandCall[0])).toBe(
+        'https://10.23.45.68:44772/sandboxes/sandbox-123/port/44772/command',
+      );
+      expect(commandCall[1].headers['X-EXECD-ACCESS-TOKEN'])
+        .toBe(routingHeaders['X-EXECD-ACCESS-TOKEN']);
+      expect(commandCall[1].headers['OpenSandbox-Secure-Access'])
+        .toBe(routingHeaders['OpenSandbox-Secure-Access']);
+      expect(commandCall[1].headers['OPEN-SANDBOX-API-KEY']).toBeUndefined();
+      expect(commandCall[1].redirect).toBe('error');
+    });
+
     it('runBackground sends POST /command with command string and SSE accept', async () => {
       const execdToken = 'execd-token-run';
       const fetchImpl = mock(async (url, init) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
           return Response.json({
-            endpoint: 'https://execd.example',
+            endpoint: 'https://10.23.45.68',
             headers: {
               'X-EXECD-ACCESS-TOKEN': execdToken,
               'X-ROUTING-TOKEN': 'routing-token',
@@ -731,7 +834,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         if (urlStr.includes('/status')) {
           return Response.json({ commandId: 'cmd-1', status: 'completed', exitCode: 0 });
@@ -749,7 +852,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         if (urlStr.includes('/logs')) {
           return new Response('hello world\n', {
@@ -771,7 +874,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         if (urlStr.includes('/logs')) {
           return new Response('', { status: 404 });
@@ -788,7 +891,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         return new Response('{}', { status: 200 });
       });
@@ -806,7 +909,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         if (urlStr.includes('files/search')) {
           return Response.json([
@@ -828,7 +931,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         return new Response('{}', { status: 200 });
       });
@@ -844,7 +947,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         if (urlStr.includes('files/download')) {
           return new Response('file content', { status: 200, headers: { 'Content-Length': '12' } });
@@ -862,7 +965,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         return new Response('{}', { status: 200 });
       });
@@ -893,7 +996,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         if (urlStr.includes('directories/list')) {
           return Response.json([
@@ -917,7 +1020,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         return new Response('{}', { status: 200 });
       });
@@ -935,7 +1038,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         return new Response('{}', { status: 200 });
       });
@@ -951,7 +1054,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         return new Response('{}', { status: 200 });
       });
@@ -966,7 +1069,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         return new Response('{}', { status: 200 });
       });
@@ -984,7 +1087,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         return new Response('data: {"commandId":"cmd-iso","event":"accepted"}\n\n', {
           status: 200,
@@ -1006,7 +1109,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://execd.example', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
         }
         return new Response('data: {"commandId":"cmd-redirect","event":"accepted"}\n\n', {
           status: 200,
@@ -1027,7 +1130,7 @@ describe('OpenSandbox bridge adapter', () => {
       const fetchImpl = mock(async (url) => {
         if (String(url).includes('endpoints/44772')) {
           return Response.json({
-            endpoint: 'https://execd.example',
+            endpoint: 'https://10.23.45.68',
             headers: { 'content-type': 'provider-value' },
           });
         }

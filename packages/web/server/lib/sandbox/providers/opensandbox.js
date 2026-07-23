@@ -296,6 +296,10 @@ export const createOpenSandboxProvider = ({
   clock,
 }) => {
   const baseUrl = normalizeControlPlaneUrl(controlPlaneUrl);
+  const endpointConnectionOptions = Object.freeze({
+    defaultProtocol: new URL(baseUrl).protocol,
+    requirePrivateHost: true,
+  });
   const timeoutMs = normalizeRequestTimeoutMs(requestTimeoutMs);
   if (typeof apiKey !== 'string' || !apiKey.trim()) throw configurationError();
   if (typeof fetchImpl !== 'function'
@@ -308,6 +312,11 @@ export const createOpenSandboxProvider = ({
   const secretApiKey = apiKey.trim();
 
   const buildUrl = (path) => new URL(path, `${baseUrl}/`);
+  const buildEndpointUrl = (endpoint, path) => {
+    const endpointBase = new URL(endpoint);
+    if (!endpointBase.pathname.endsWith('/')) endpointBase.pathname += '/';
+    return new URL(path, endpointBase);
+  };
 
   const request = async ({
     path,
@@ -630,7 +639,7 @@ export const createOpenSandboxProvider = ({
     return normalizeEndpointConnection({
       endpoint: payload.endpoint,
       headers: payload.headers,
-    });
+    }, endpointConnectionOptions);
   };
 
   const destroy = async (rawHandle, signal) => {
@@ -679,7 +688,7 @@ export const createOpenSandboxProvider = ({
     return normalizeEndpointConnection({
       endpoint: payload.endpoint,
       headers: payload.headers,
-    });
+    }, endpointConnectionOptions);
   };
 
   const execdRequest = async (execdEndpoint, execdHeaders, { path, method, headers: extraHeaders, body, expectedStatus, parseJson, parseJsonArr, rawBody }) => {
@@ -695,7 +704,7 @@ export const createOpenSandboxProvider = ({
     const operation = (async () => {
       let response;
       try { const reqHeaders = mergeEndpointHeaders(execdHeaders, extraHeaders || {});
-      response = await fetchImpl(new URL(path, execdEndpoint), {
+      response = await fetchImpl(buildEndpointUrl(execdEndpoint, path), {
         method,
         headers: reqHeaders,
         ...(body !== undefined && !rawBody ? { body: JSON.stringify(body) } : {}),
@@ -784,7 +793,7 @@ export const createOpenSandboxProvider = ({
 
     const operation = (async () => {
       let response;
-      try { response = await fetchImpl(new URL('command', endpoint.endpoint), {
+      try { response = await fetchImpl(buildEndpointUrl(endpoint.endpoint, 'command'), {
         method: 'POST',
         headers: mergeEndpointHeaders(endpoint.headers, {
           'Accept': 'text/event-stream',
@@ -852,7 +861,7 @@ export const createOpenSandboxProvider = ({
 
     const operation = (async () => {
       let response;
-      try { response = await fetchImpl(new URL(logPath, endpoint.endpoint), {
+      try { response = await fetchImpl(buildEndpointUrl(endpoint.endpoint, logPath), {
         method: 'GET',
         headers: mergeEndpointHeaders(endpoint.headers, {
           'Accept': 'text/plain',
@@ -910,7 +919,7 @@ export const createOpenSandboxProvider = ({
 
     const operation = (async () => {
       let response;
-      try { response = await fetchImpl(new URL(`command?id=${encodeURIComponent(commandId)}`, endpoint.endpoint), {
+      try { response = await fetchImpl(buildEndpointUrl(endpoint.endpoint, `command?id=${encodeURIComponent(commandId)}`), {
         method: 'DELETE',
         headers: mergeEndpointHeaders(endpoint.headers),
         redirect: 'error',
@@ -994,7 +1003,7 @@ export const createOpenSandboxProvider = ({
 
     const operation = (async () => {
       let response;
-      try { response = await fetchImpl(new URL(`files/download?path=${encodeURIComponent(fullPath)}`, endpoint.endpoint), {
+      try { response = await fetchImpl(buildEndpointUrl(endpoint.endpoint, `files/download?path=${encodeURIComponent(fullPath)}`), {
         method: 'GET',
         headers: mergeEndpointHeaders(endpoint.headers),
         redirect: 'error',

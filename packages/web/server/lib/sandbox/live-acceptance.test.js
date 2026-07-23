@@ -18,8 +18,10 @@ import { runOpenSandboxLiveAcceptanceCli } from './live-acceptance-cli.js';
 
 const API_KEY_SECRET = 'api-key-sentinel-must-not-escape';
 const ROUTING_SECRET = 'routing-header-sentinel-must-not-escape';
+const SECURE_ROUTING_SECRET = 'secure-routing-sentinel-must-not-escape';
 const PROVIDER_BODY_SECRET = 'provider-body-sentinel-must-not-escape';
-const ENDPOINT_SECRET = 'endpoint-secret.invalid';
+const ENDPOINT_HOST = '10.23.45.67';
+const ENDPOINT_PORT = '19090';
 const HANDLE_PREFIX = 'handle-sentinel';
 const IMAGE_SECRET = 'node-image-sentinel:22';
 const FIXED_NOW_MS = Date.parse('2026-07-22T00:00:00.000Z');
@@ -145,28 +147,26 @@ const createFakeLane = (options = {}) => {
       body: init.body,
     });
 
-    if (url.hostname === ENDPOINT_SECRET) {
+    if (url.hostname === ENDPOINT_HOST) {
       if (headerValue(init.headers, 'OPEN-SANDBOX-API-KEY') !== null) {
         throw new Error(PROVIDER_BODY_SECRET);
       }
-      if (headerValue(init.headers, 'X-Route-Secret') !== ROUTING_SECRET) {
+      if (headerValue(init.headers, 'X-Route-Secret') !== ROUTING_SECRET
+        || headerValue(init.headers, 'OpenSandbox-Secure-Access') !== SECURE_ROUTING_SECRET) {
         return new Response(PROVIDER_BODY_SECRET, { status: 403 });
       }
-      if (options.failHttpProbe) return new Response(PROVIDER_BODY_SECRET, { status: 503 });
-      return new Response('openchamber-stage7a-http', {
-        status: 200,
-        headers: { 'Content-Type': 'text/plain' },
-      });
-    }
+      if (/\/port\/18080$/.test(url.pathname)) {
+        if (options.failHttpProbe) return new Response(PROVIDER_BODY_SECRET, { status: 503 });
+        return new Response('openchamber-stage7b-http', {
+          status: 200,
+          headers: { 'Content-Type': 'text/plain' },
+        });
+      }
 
-    if (url.hostname === `execd.${ENDPOINT_SECRET}`) {
-      if (headerValue(init.headers, 'OPEN-SANDBOX-API-KEY') !== null) {
-        throw new Error(PROVIDER_BODY_SECRET);
-      }
-      if (headerValue(init.headers, 'X-Route-Secret') !== ROUTING_SECRET) {
-        return new Response(PROVIDER_BODY_SECRET, { status: 403 });
-      }
-      if (url.pathname === '/command' && init.method === 'POST') {
+      const execdPrefix = /^\/sandboxes\/[^/]+\/port\/44772/;
+      const execdMatch = execdPrefix.exec(url.pathname);
+      const execdPath = execdMatch ? url.pathname.slice(execdMatch[0].length) : null;
+      if (execdPath === '/command' && init.method === 'POST') {
         counters.commandPosts += 1;
         const body = JSON.parse(init.body);
         const kind = body.command.includes('example.com') ? 'egress' : 'echo';
@@ -190,14 +190,14 @@ const createFakeLane = (options = {}) => {
           headers: { 'Content-Type': 'text/event-stream' },
         });
       }
-      if (url.pathname.startsWith('/command/status/') && init.method === 'GET') {
+      if (execdPath?.startsWith('/command/status/') && init.method === 'GET') {
         const commandId = decodeURIComponent(url.pathname.split('/').at(-1));
         const command = commands.get(commandId);
         return command
           ? Response.json(command)
           : Response.json({ message: PROVIDER_BODY_SECRET }, { status: 404 });
       }
-      if (url.pathname === '/command' && init.method === 'DELETE') {
+      if (execdPath === '/command' && init.method === 'DELETE') {
         counters.commandDeletes += 1;
         const command = commands.get(url.searchParams.get('id'));
         if (command) command.status = 'completed';
@@ -280,13 +280,13 @@ const createFakeLane = (options = {}) => {
         failedEndpoint = true;
         return Response.json({ message: PROVIDER_BODY_SECRET }, { status: 503 });
       }
-      const endpoint = endpointMatch[2] === '44772'
-        ? `https://execd.${ENDPOINT_SECRET}/`
-        : `https://${ENDPOINT_SECRET}/`;
+      const endpoint = `${ENDPOINT_HOST}:${ENDPOINT_PORT}`
+        + `/sandboxes/${encodeURIComponent(endpointHandle)}/port/${endpointMatch[2]}`;
       return Response.json({
         endpoint,
         headers: {
           'X-Route-Secret': ROUTING_SECRET,
+          'OpenSandbox-Secure-Access': SECURE_ROUTING_SECRET,
           ...(options.injectControlKeyIntoEndpoint
             ? { 'OPEN-SANDBOX-API-KEY': API_KEY_SECRET }
             : {}),
@@ -367,9 +367,16 @@ const createFakeLane = (options = {}) => {
   const webSocketProbe = options.webSocketUnsupported
     ? null
     : vi.fn(async ({ endpoint, headers }) => {
-      websocketCalls.push({ endpoint, headers });
-      if (endpoint !== `https://${ENDPOINT_SECRET}/`
+      const websocketEndpoint = new URL(endpoint);
+      if (websocketEndpoint.protocol === 'http:') websocketEndpoint.protocol = 'ws:';
+      else if (websocketEndpoint.protocol === 'https:') websocketEndpoint.protocol = 'wss:';
+      websocketCalls.push({ endpoint: websocketEndpoint.toString(), headers });
+      if (websocketEndpoint.protocol !== 'ws:'
+        || websocketEndpoint.hostname !== ENDPOINT_HOST
+        || websocketEndpoint.port !== ENDPOINT_PORT
+        || !/\/sandboxes\/[^/]+\/port\/18080$/.test(websocketEndpoint.pathname)
         || headers['X-Route-Secret'] !== ROUTING_SECRET
+        || headers['OpenSandbox-Secure-Access'] !== SECURE_ROUTING_SECRET
         || headerValue(headers, 'OPEN-SANDBOX-API-KEY') !== null) {
         throw new Error(PROVIDER_BODY_SECRET);
       }
@@ -410,7 +417,7 @@ const runFakeGate = (lane, options = {}) => runOpenSandboxLiveAcceptance({
 
 const checkByName = (report, name) => report.checks.find((check) => check.name === name);
 
-describe('Stage 7A OpenSandbox live acceptance gate', () => {
+describe('Stage 7B OpenSandbox live acceptance gate', () => {
   it('is unavailable without explicit configuration and performs no network or file access', async () => {
     const lane = createFakeLane();
     const readFile = vi.fn(async () => Buffer.from(API_KEY_SECRET));
@@ -506,14 +513,27 @@ describe('Stage 7A OpenSandbox live acceptance gate', () => {
       && call.headers['open-sandbox-api-key'] === undefined
     ));
     expect(unauthenticatedCalls).toHaveLength(2);
-    const endpointCalls = lane.calls.filter((call) => new URL(call.url).hostname.endsWith(ENDPOINT_SECRET));
+    const endpointCalls = lane.calls.filter((call) => new URL(call.url).hostname === ENDPOINT_HOST);
     expect(endpointCalls.length).toBeGreaterThan(0);
+    expect(endpointCalls.every((call) => new URL(call.url).protocol === 'http:')).toBe(true);
     expect(endpointCalls.every((call) => call.headers['open-sandbox-api-key'] === undefined)).toBe(true);
     expect(endpointCalls.every((call) => call.headers['x-route-secret'] === ROUTING_SECRET)).toBe(true);
-    expect(lane.websocketCalls).toEqual([{
-      endpoint: `https://${ENDPOINT_SECRET}/`,
-      headers: { 'X-Route-Secret': ROUTING_SECRET },
-    }]);
+    expect(endpointCalls.every((call) => (
+      call.headers['opensandbox-secure-access'] === SECURE_ROUTING_SECRET
+    ))).toBe(true);
+    expect(endpointCalls.some((call) => /\/port\/18080$/.test(new URL(call.url).pathname))).toBe(true);
+    expect(endpointCalls.some((call) => /\/port\/44772\/command$/.test(new URL(call.url).pathname)))
+      .toBe(true);
+    expect(lane.websocketCalls).toHaveLength(1);
+    expect(new URL(lane.websocketCalls[0].endpoint)).toMatchObject({
+      protocol: 'ws:',
+      hostname: ENDPOINT_HOST,
+      port: ENDPOINT_PORT,
+    });
+    expect(lane.websocketCalls[0].headers).toEqual({
+      'X-Route-Secret': ROUTING_SECRET,
+      'OpenSandbox-Secure-Access': SECURE_ROUTING_SECRET,
+    });
     expect(lane.resources.has(lane.unrelatedId)).toBe(true);
     expect(Array.from(lane.resources.keys())).toEqual([lane.unrelatedId]);
 
@@ -521,8 +541,9 @@ describe('Stage 7A OpenSandbox live acceptance gate', () => {
     for (const sentinel of [
       API_KEY_SECRET,
       ROUTING_SECRET,
+      SECURE_ROUTING_SECRET,
       PROVIDER_BODY_SECRET,
-      ENDPOINT_SECRET,
+      ENDPOINT_HOST,
       HANDLE_PREFIX,
       IMAGE_SECRET,
       FIXED_SUFFIX,
@@ -755,7 +776,7 @@ describe('Stage 7A OpenSandbox live acceptance gate', () => {
     expect(checkByName(report, 'endpoint_resolution')).toMatchObject({
       status: 'failed', code: 'response_invalid',
     });
-    expect(lane.calls.filter((call) => new URL(call.url).hostname.endsWith(ENDPOINT_SECRET)))
+    expect(lane.calls.filter((call) => new URL(call.url).hostname === ENDPOINT_HOST))
       .toHaveLength(0);
     expect(checkByName(report, 'final_no_owned_leftovers').status).toBe('passed');
   });
@@ -784,8 +805,9 @@ describe('Stage 7A OpenSandbox live acceptance gate', () => {
     for (const sentinel of [
       API_KEY_SECRET,
       ROUTING_SECRET,
+      SECURE_ROUTING_SECRET,
       PROVIDER_BODY_SECRET,
-      ENDPOINT_SECRET,
+      ENDPOINT_HOST,
       HANDLE_PREFIX,
       IMAGE_SECRET,
       FIXED_SUFFIX,
@@ -802,7 +824,7 @@ describe('Stage 7A OpenSandbox live acceptance gate', () => {
     const runAcceptance = vi.fn(async ({ signal }) => new Promise((resolve) => {
       signal.addEventListener('abort', () => resolve({
         schemaVersion: 1,
-        gate: 'opensandbox-stage-7a-live-acceptance',
+        gate: 'opensandbox-stage-7b-live-acceptance',
         status: 'failed',
         ready: false,
         checks: [],
@@ -846,7 +868,7 @@ describe('Stage 7A OpenSandbox live acceptance gate', () => {
 
 describe('live acceptance configuration files', () => {
   it('accepts only explicit bounded regular key and TLS CA files', async () => {
-    const directory = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'openchamber-stage7a-'));
+    const directory = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'openchamber-stage7b-'));
     tempDirectories.add(directory);
     const keyFile = path.join(directory, 'api-key');
     const caFile = path.join(directory, 'ca.pem');
@@ -868,7 +890,7 @@ describe('live acceptance configuration files', () => {
   });
 
   it('rejects symlink credentials, dual key sources, non-loopback HTTP, and HTTPS without CA', async () => {
-    const directory = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'openchamber-stage7a-'));
+    const directory = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'openchamber-stage7b-'));
     tempDirectories.add(directory);
     const keyFile = path.join(directory, 'api-key');
     const keyLink = path.join(directory, 'api-key-link');

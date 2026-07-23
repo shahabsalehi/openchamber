@@ -48,8 +48,8 @@ const CLEANUP_GET_POLL_DELAY_MS = 250;
 const MAX_ALLOCATIONS = 2;
 const MAX_COMMAND_ARTIFACTS = 2;
 const ECHO_PORT = 18_080;
-const HTTP_ECHO_TEXT = 'openchamber-stage7a-http';
-const WEBSOCKET_ECHO_TEXT = 'openchamber-stage7a-websocket';
+const HTTP_ECHO_TEXT = 'openchamber-stage7b-http';
+const WEBSOCKET_ECHO_TEXT = 'openchamber-stage7b-websocket';
 
 const MAIN_ENTRYPOINT = Object.freeze([
   'node',
@@ -416,7 +416,7 @@ const readBoundedRegularFile = async (filePath, maxBytes) => {
 };
 
 /**
- * Loads only Stage 7A variables from the explicitly supplied environment.
+ * Loads only Stage 7B variables from the explicitly supplied environment.
  * It never reads dotenv files or searches for credentials.
  *
  * @param {{
@@ -849,7 +849,7 @@ const makeMetadataSet = (idFactory) => {
   }
   const base = {
     environment: 'non-production',
-    projectId: 'openchamber-stage7a',
+    projectId: 'openchamber-stage7b',
     sessionId: `acceptance-${suffix}`,
     generation: 1,
   };
@@ -1016,7 +1016,7 @@ const makeReport = (checks) => {
     : (configuration.status === 'unavailable' ? 'unavailable' : 'failed');
   return Object.freeze({
     schemaVersion: 1,
-    gate: 'opensandbox-stage-7a-live-acceptance',
+    gate: 'opensandbox-stage-7b-live-acceptance',
     status,
     ready,
     checks: Object.freeze(checks.map((check) => Object.freeze({ ...check }))),
@@ -1036,7 +1036,7 @@ export const getOpenSandboxLiveAcceptanceExitCode = (report) => {
 };
 
 /**
- * Runs the standalone Stage 7A gate. All dependencies are injectable so tests
+ * Runs the standalone Stage 7B gate. All dependencies are injectable so tests
  * can exercise the complete state machine without provider or network access.
  */
 export const runOpenSandboxLiveAcceptance = async ({

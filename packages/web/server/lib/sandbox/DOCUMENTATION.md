@@ -803,7 +803,7 @@ reconciliation path, production heartbeat, private authority transport, and
 production rollout remain future milestones. All sandbox creation, coordinator
 wiring, readiness, deployment, and production gates remain disabled.
 
-## Stage 7A OpenSandbox live acceptance gate (operator-only)
+## Stage 7B OpenSandbox live acceptance gate (operator-only)
 
 ### Scope and non-wiring
 
@@ -843,9 +843,17 @@ runtime variables.
 The API key is sent only as `OPEN-SANDBOX-API-KEY` on control-plane requests.
 The native `node:http`/`node:https` transport rejects redirects, enforces a
 per-request timeout and bounded response body, uses the explicit HTTPS CA, and
-never disables certificate verification. Provider-returned endpoint URLs and
-routing headers remain internal and are preserved for HTTP, WebSocket, and execd
-traffic; the control-plane key is rejected from and never added to those calls.
+never disables certificate verification. OpenSandbox may return its canonical
+scheme-less `host[:port]/path` endpoint form; the adapter deterministically uses
+the normalized control-plane HTTP or HTTPS scheme for that form. Absolute HTTP,
+HTTPS, WS, and WSS endpoint forms remain supported. Every form must use a
+canonical literal loopback, private, or link-local target (or exact
+`localhost`), and malformed authorities, credentials, queries, fragments,
+backslashes, unsupported schemes, DNS/public/unspecified/multicast hosts, and
+ambiguous IPv4 spellings fail closed. Provider-returned endpoint URLs and every
+opaque routing header remain internal and are preserved for HTTP, WebSocket,
+and execd traffic; redirects remain errors, header collisions fail closed, and
+the control-plane key is rejected from and never added to those calls.
 
 ### Exact operator invocations
 
@@ -891,7 +899,7 @@ list/orphan visibility; destroy; get-after-delete; and authoritative final
 no-owned-leftovers cleanup. The WebSocket routing-header probe is optional and
 may be `skipped` only when unsupported. Host PID/no-new-privileges observations
 are operator preconditions. Restart/orphan visibility is always explicitly
-`skipped` with `restart_forbidden`: Stage 7A never mutates Hetzner or restarts a
+`skipped` with `restart_forbidden`: Stage 7B never mutates Hetzner or restarts a
 host. A required `skipped`/`unavailable` check, any `failed` check, an unknown
 mutation outcome, or unconfirmed cleanup makes `ready: false`.
 

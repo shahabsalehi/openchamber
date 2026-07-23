@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 import { SANDBOX_ERROR_CODES, SandboxRuntimeError } from './errors.js';
 
 const MAX_IMAGE_URI_LENGTH = 4096;
@@ -32,6 +34,8 @@ const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(
 const OWNERSHIP_VALUE_PATTERN = /^[a-zA-Z0-9](?:[a-zA-Z0-9._-]{0,61}[a-zA-Z0-9])?$/;
 const FQDN_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const CONNECTION_HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const CONNECTION_PROTOCOLS = new Set(['http:', 'https:', 'ws:', 'wss:']);
+const CONNECTION_DEFAULT_PROTOCOLS = new Set(['http:', 'https:']);
 const OWNERSHIP_FIELDS = ['environment', 'projectId', 'sessionId', 'generation', 'operationId'];
 const CREATE_INPUT_FIELDS = ['imageUri', 'entrypoint', 'resourceLimits', 'timeoutSeconds', 'metadata', 'networkPolicy'];
 
@@ -373,20 +377,115 @@ export const normalizeFutureSandboxExpiry = (value, now = new Date()) => (
   normalizeFutureIsoTimestamp(value, now, validationError)
 );
 
-export const normalizeEndpointConnection = (value) => {
+const parseRawEndpointAuthority = (endpoint) => {
+  const authorityStart = endpoint.indexOf('://');
+  if (authorityStart < 0) return { valid: false, hostname: '' };
+  const authority = endpoint.slice(authorityStart + 3).split(/[/?#]/u, 1)[0];
+  const hasUserinfo = authority.includes('@');
+  const hostPort = authority.slice(authority.lastIndexOf('@') + 1);
+  let hostname;
+  let port;
+  if (hostPort.startsWith('[')) {
+    const closingBracket = hostPort.indexOf(']');
+    if (closingBracket < 0) return { valid: false, hostname: '' };
+    hostname = hostPort.slice(1, closingBracket);
+    const suffix = hostPort.slice(closingBracket + 1);
+    if (suffix) {
+      if (!suffix.startsWith(':')) return { valid: false, hostname: '' };
+      port = suffix.slice(1);
+    }
+  } else {
+    if (hostPort.includes('[') || hostPort.includes(']')) {
+      return { valid: false, hostname: '' };
+    }
+    const firstSeparator = hostPort.indexOf(':');
+    const lastSeparator = hostPort.lastIndexOf(':');
+    if (firstSeparator !== lastSeparator) return { valid: false, hostname: '' };
+    hostname = firstSeparator < 0 ? hostPort : hostPort.slice(0, firstSeparator);
+    port = firstSeparator < 0 ? undefined : hostPort.slice(firstSeparator + 1);
+  }
+  const validPort = port === undefined
+    || (/^[1-9]\d{0,4}$/.test(port) && Number.parseInt(port, 10) <= 65_535);
+  return { valid: Boolean(hostname) && validPort && !hasUserinfo, hostname };
+};
+
+const isPrivateEndpointHostname = (parsedHostname, rawHostname) => {
+  const hostname = parsedHostname.startsWith('[') && parsedHostname.endsWith(']')
+    ? parsedHostname.slice(1, -1)
+    : parsedHostname;
+  const normalizedHostname = hostname.toLowerCase();
+  if (normalizedHostname === 'localhost') return rawHostname.toLowerCase() === 'localhost';
+
+  const ipVersion = isIP(normalizedHostname);
+  if (ipVersion === 4) {
+    if (rawHostname !== normalizedHostname) return false;
+    const [first, second] = normalizedHostname.split('.').map((part) => Number.parseInt(part, 10));
+    return first === 127
+      || first === 10
+      || (first === 172 && second >= 16 && second <= 31)
+      || (first === 192 && second === 168)
+      || (first === 169 && second === 254);
+  }
+  if (ipVersion === 6) {
+    return normalizedHostname === '::1'
+      || /^f[cd]/.test(normalizedHostname)
+      || /^fe[89ab]/.test(normalizedHostname);
+  }
+  return false;
+};
+
+export const normalizeEndpointConnection = (value, options = {}) => {
   if (!isRecord(value)
     || typeof value.endpoint !== 'string'
     || !value.endpoint.trim()
-    || value.endpoint.length > MAX_CONNECTION_ENDPOINT_LENGTH) {
+    || value.endpoint.length > MAX_CONNECTION_ENDPOINT_LENGTH
+    || value.endpoint !== value.endpoint.trim()
+    || hasControlChars(value.endpoint)
+    || /\s/u.test(value.endpoint)
+    || value.endpoint.includes('\\')) {
     throw responseError();
   }
+  if (!isRecord(options)
+    || Object.keys(options).some((key) => !['defaultProtocol', 'requirePrivateHost'].includes(key))) {
+    throw responseError();
+  }
+  const defaultProtocol = options.defaultProtocol;
+  if ((defaultProtocol !== undefined && !CONNECTION_DEFAULT_PROTOCOLS.has(defaultProtocol))
+    || (options.requirePrivateHost !== undefined
+      && typeof options.requirePrivateHost !== 'boolean')) {
+    throw responseError();
+  }
+  const hasExplicitScheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value.endpoint);
+  if (!hasExplicitScheme
+    && (defaultProtocol === undefined
+      || value.endpoint.startsWith('/')
+      || value.endpoint.includes('://'))) {
+    throw responseError();
+  }
+  const endpoint = hasExplicitScheme
+    ? value.endpoint
+    : `${defaultProtocol}//${value.endpoint}`;
   let parsedEndpoint;
   try {
-    parsedEndpoint = new URL(value.endpoint);
+    parsedEndpoint = new URL(endpoint);
   } catch {
     throw responseError();
   }
-  if (!['http:', 'https:', 'ws:', 'wss:'].includes(parsedEndpoint.protocol)) throw responseError();
+  const rawAuthority = parseRawEndpointAuthority(endpoint);
+  if (!CONNECTION_PROTOCOLS.has(parsedEndpoint.protocol)
+    || !rawAuthority.valid
+    || parsedEndpoint.username
+    || parsedEndpoint.password
+    || parsedEndpoint.search
+    || parsedEndpoint.hash
+    || !parsedEndpoint.hostname
+    || (options.requirePrivateHost === true
+      && !isPrivateEndpointHostname(
+        parsedEndpoint.hostname,
+        rawAuthority.hostname,
+      ))) {
+    throw responseError();
+  }
 
   const headerEntries = [];
   const headerNames = new Set();
@@ -413,7 +512,7 @@ export const normalizeEndpointConnection = (value) => {
   }
 
   return Object.freeze({
-    endpoint: value.endpoint,
+    endpoint,
     headers: Object.freeze(Object.fromEntries(headerEntries)),
   });
 };
