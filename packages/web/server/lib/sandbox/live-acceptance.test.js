@@ -181,11 +181,11 @@ const createFakeLane = (options = {}) => {
         if (options.ambiguousCommandStart && kind === 'echo') {
           throw new Error(PROVIDER_BODY_SECRET);
         }
-        return new Response(`data: ${JSON.stringify({
-          commandId,
-          event: 'accepted',
-          exitCode: null,
-        })}\n\n`, {
+        return new Response([
+          JSON.stringify({ type: 'init', text: commandId }),
+          JSON.stringify({ type: 'execution_complete', text: '' }),
+          '',
+        ].join('\n\n'), {
           status: 200,
           headers: { 'Content-Type': 'text/event-stream' },
         });

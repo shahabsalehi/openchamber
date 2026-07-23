@@ -27,6 +27,9 @@ const EXECD_PORT = 44772;
 const EXECD_LOG_CURSOR_HEADER = 'EXECD-COMMANDS-TAIL-CURSOR';
 const MAX_LOG_BYTES = 256 * 1024;
 const MAX_SSE_BYTES = 64 * 1024;
+const MAX_SSE_FRAME_BYTES = 16 * 1024;
+const MAX_SSE_FRAME_COUNT = 256;
+const MAX_SSE_LINE_COUNT = 1024;
 const MAX_FILE_DOWNLOAD_BYTES = 1024 * 1024;
 const FIXED_WORKSPACE_ROOT = '/workspace/project';
 const LIFECYCLE_POLL_MAX_ATTEMPTS = 20;
@@ -742,31 +745,273 @@ export const createOpenSandboxProvider = ({
     }
   };
 
-  const parseSSECommand = async (response) => {
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.includes('text/event-stream')) {
-      throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+  const parseSSECommand = async (response, signal) => {
+    const responseInvalid = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+    const contentType = response.headers.get('content-type');
+    if (typeof contentType !== 'string'
+      || !/^\s*text\/event-stream\s*(?:;\s*[!#$%&'*+.^_`|~0-9A-Za-z-]+\s*=\s*(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"(?:[\t !#-\[\]-~]|\\[\t !-~])*")\s*)*$/i.test(contentType)) {
+      throw responseInvalid();
     }
-    const sseText = await readStreamedText(response, MAX_SSE_BYTES);
-    const lines = sseText.split('\n');
-    let latestData = null;
-    for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        try {
-          latestData = JSON.parse(line.slice(6));
-        } catch {
-          continue;
-        }
+
+    const contentLength = response.headers.get('content-length');
+    if (contentLength !== null) {
+      const normalizedLength = contentLength.trim();
+      if (!/^\d+$/.test(normalizedLength)) throw responseInvalid();
+      const declaredLength = Number(normalizedLength);
+      if (!Number.isSafeInteger(declaredLength) || declaredLength > MAX_SSE_BYTES) {
+        throw responseInvalid();
       }
     }
-    if (!latestData || typeof latestData !== 'object') {
-      throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+    if (!response.body || typeof response.body.getReader !== 'function') {
+      throw responseInvalid();
     }
-    return normalizeSSECommandResult({
-      commandId: latestData.commandId || latestData.command_id || '',
-      event: latestData.event || latestData.type || 'accepted',
-      exitCode: latestData.exitCode !== undefined ? latestData.exitCode : null,
-    });
+
+    let reader;
+    try {
+      reader = response.body.getReader();
+    } catch {
+      throw responseInvalid();
+    }
+
+    const rawEventTypes = new Set([
+      'init',
+      'status',
+      'error',
+      'stdout',
+      'stderr',
+      'result',
+      'execution_complete',
+      'execution_count',
+      'ping',
+    ]);
+    const rawEventKeys = new Set([
+      'type',
+      'text',
+      'execution_count',
+      'execution_time',
+      'timestamp',
+      'results',
+      'error',
+    ]);
+    const canonicalKeys = new Set(['commandId', 'command_id', 'event', 'type', 'exitCode']);
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    let mode = null;
+    let totalBytes = 0;
+    let frameCount = 0;
+    let lineCount = 0;
+    let rawPendingCr = false;
+    let rawLineBytes = 0;
+    let rawFrameBytes = 0;
+    let textPendingCr = false;
+    let currentLine = '';
+    let frameLines = [];
+    let commandId = null;
+    let rawTerminal = null;
+    let canonicalResult = null;
+    let cancellationPromise = null;
+
+    const cancelReader = () => {
+      if (cancellationPromise !== null) return cancellationPromise;
+      try {
+        cancellationPromise = Promise.resolve(reader.cancel()).catch(() => undefined);
+      } catch {
+        cancellationPromise = Promise.resolve();
+      }
+      return cancellationPromise;
+    };
+    const cancelOnAbort = () => {
+      void cancelReader();
+    };
+    signal.addEventListener('abort', cancelOnAbort, { once: true });
+    if (signal.aborted) cancelOnAbort();
+
+    const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+    const parseJsonRecord = (value) => {
+      let parsed;
+      try {
+        parsed = JSON.parse(value);
+      } catch {
+        throw responseInvalid();
+      }
+      if (!isRecord(parsed)) throw responseInvalid();
+      return parsed;
+    };
+    const validateOptionalRawFields = (event) => {
+      if (Object.keys(event).some((key) => !rawEventKeys.has(key))) throw responseInvalid();
+      if (event.text !== undefined && typeof event.text !== 'string') throw responseInvalid();
+      if (event.execution_count !== undefined
+        && (!Number.isInteger(event.execution_count) || event.execution_count < 0)) {
+        throw responseInvalid();
+      }
+      if (event.execution_time !== undefined
+        && (!Number.isFinite(event.execution_time) || event.execution_time < 0)) {
+        throw responseInvalid();
+      }
+      if (event.timestamp !== undefined
+        && (!Number.isInteger(event.timestamp) || event.timestamp < 0)) {
+        throw responseInvalid();
+      }
+      if (event.results !== undefined && !Array.isArray(event.results)) throw responseInvalid();
+      if (event.error !== undefined && typeof event.error !== 'string') throw responseInvalid();
+    };
+    const processRawFrame = (lines) => {
+      if (lines.length !== 1 || !lines[0].trim()) throw responseInvalid();
+      const event = parseJsonRecord(lines[0]);
+      if (typeof event.type !== 'string' || !rawEventTypes.has(event.type)) throw responseInvalid();
+      validateOptionalRawFields(event);
+
+      if (rawTerminal !== null && event.type !== 'ping') throw responseInvalid();
+      if (event.type === 'ping') return;
+      if (event.type === 'init') {
+        if (commandId !== null
+          || typeof event.text !== 'string'
+          || !event.text.trim()) {
+          throw responseInvalid();
+        }
+        commandId = event.text.trim();
+        return;
+      }
+      if (commandId === null) throw responseInvalid();
+      if (event.type === 'execution_complete' || event.type === 'error') {
+        if (rawTerminal !== null) throw responseInvalid();
+        rawTerminal = event.type;
+      }
+    };
+    const processCanonicalFrame = (lines) => {
+      let data = null;
+      for (const line of lines) {
+        if (line.startsWith(':')) continue;
+        if (!line.startsWith('data:') || data !== null) throw responseInvalid();
+        const rawData = line.slice(5);
+        data = rawData.startsWith(' ') ? rawData.slice(1) : rawData;
+      }
+      if (data === null) return;
+      if (canonicalResult !== null) throw responseInvalid();
+      const payload = parseJsonRecord(data);
+      if (Object.keys(payload).some((key) => !canonicalKeys.has(key))) throw responseInvalid();
+      const hasCamelId = Object.hasOwn(payload, 'commandId');
+      const hasSnakeId = Object.hasOwn(payload, 'command_id');
+      const hasEvent = Object.hasOwn(payload, 'event');
+      const hasType = Object.hasOwn(payload, 'type');
+      if (hasCamelId === hasSnakeId || hasEvent === hasType) throw responseInvalid();
+      const payloadCommandId = hasCamelId ? payload.commandId : payload.command_id;
+      const payloadEvent = hasEvent ? payload.event : payload.type;
+      const hasExitCode = Object.hasOwn(payload, 'exitCode');
+      if (typeof payloadCommandId !== 'string'
+        || !payloadCommandId.trim()
+        || typeof payloadEvent !== 'string'
+        || (hasExitCode && payload.exitCode !== null && !Number.isInteger(payload.exitCode))) {
+        throw responseInvalid();
+      }
+      canonicalResult = normalizeSSECommandResult({
+        commandId: payloadCommandId,
+        event: payloadEvent,
+        exitCode: hasExitCode ? payload.exitCode : null,
+      });
+    };
+    const processFrame = () => {
+      if (frameLines.length === 0) return;
+      frameCount += 1;
+      if (frameCount > MAX_SSE_FRAME_COUNT) throw responseInvalid();
+      if (mode === null) {
+        const firstProtocolLine = frameLines.find((line) => !line.startsWith(':'));
+        if (firstProtocolLine === undefined || firstProtocolLine.startsWith('data:')) {
+          mode = 'canonical';
+        } else if (frameLines.length === 1 && firstProtocolLine.trim().startsWith('{')) {
+          mode = 'raw';
+        } else {
+          throw responseInvalid();
+        }
+      }
+      if (mode === 'raw') processRawFrame(frameLines);
+      else processCanonicalFrame(frameLines);
+      frameLines = [];
+    };
+    const finishTextLine = () => {
+      lineCount += 1;
+      if (lineCount > MAX_SSE_LINE_COUNT) throw responseInvalid();
+      if (currentLine === '') processFrame();
+      else frameLines.push(currentLine);
+      currentLine = '';
+    };
+    const processText = (text) => {
+      for (const character of text) {
+        if (textPendingCr) {
+          if (character !== '\n') throw responseInvalid();
+          textPendingCr = false;
+          finishTextLine();
+        } else if (character === '\r') {
+          textPendingCr = true;
+        } else if (character === '\n') {
+          finishTextLine();
+        } else {
+          currentLine += character;
+        }
+      }
+    };
+    const finishRawLine = (terminatorBytes) => {
+      if (rawLineBytes === 0) rawFrameBytes = 0;
+      else rawFrameBytes += terminatorBytes;
+      if (rawFrameBytes > MAX_SSE_FRAME_BYTES) throw responseInvalid();
+      rawLineBytes = 0;
+    };
+    const processRawBytes = (value) => {
+      for (const byte of value) {
+        if (rawPendingCr) {
+          if (byte !== 0x0a) throw responseInvalid();
+          rawPendingCr = false;
+          finishRawLine(2);
+        } else if (byte === 0x0d) {
+          rawPendingCr = true;
+        } else if (byte === 0x0a) {
+          finishRawLine(1);
+        } else {
+          rawLineBytes += 1;
+          rawFrameBytes += 1;
+          if (rawFrameBytes > MAX_SSE_FRAME_BYTES) throw responseInvalid();
+        }
+      }
+    };
+
+    try {
+      signal.throwIfAborted();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!(value instanceof Uint8Array) || value.length === 0) throw responseInvalid();
+        totalBytes += value.length;
+        if (totalBytes > MAX_SSE_BYTES) throw responseInvalid();
+        processRawBytes(value);
+        processText(decoder.decode(value, { stream: true }));
+      }
+      processText(decoder.decode());
+      if (rawPendingCr
+        || rawLineBytes !== 0
+        || rawFrameBytes !== 0
+        || textPendingCr
+        || currentLine !== ''
+        || frameLines.length !== 0) {
+        throw responseInvalid();
+      }
+      if (mode === 'raw') {
+        if (commandId === null || rawTerminal === null) throw responseInvalid();
+        return normalizeSSECommandResult({
+          commandId,
+          event: rawTerminal === 'execution_complete' ? 'accepted' : 'failed',
+          exitCode: null,
+        });
+      }
+      if (mode === 'canonical' && canonicalResult !== null) return canonicalResult;
+      throw responseInvalid();
+    } catch (error) {
+      if (signal.aborted) signal.throwIfAborted();
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      await cancelReader();
+      throw responseInvalid();
+    } finally {
+      signal.removeEventListener('abort', cancelOnAbort);
+      reader.releaseLock();
+    }
   };
 
   const runBackground = async (rawHandle, spec) => {
@@ -813,7 +1058,14 @@ export const createOpenSandboxProvider = ({
         }
         throw mapHttpError(response.status);
       }
-      return parseSSECommand(response);
+      try {
+        return await parseSSECommand(response, controller.signal);
+      } catch (error) {
+        if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+          throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.REQUEST_TIMEOUT);
+        }
+        throw error;
+      }
     })();
 
     try {

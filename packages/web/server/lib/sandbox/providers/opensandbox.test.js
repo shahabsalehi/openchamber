@@ -42,6 +42,48 @@ const createProvider = (fetchImpl, overrides = {}) => createOpenSandboxProvider(
   ...overrides,
 });
 
+const streamResponse = (chunks, {
+  contentType = 'text/event-stream',
+  contentLength,
+} = {}) => {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(typeof chunk === 'string' ? encoder.encode(chunk) : chunk);
+      }
+      controller.close();
+    },
+  });
+  return new Response(body, {
+    status: 200,
+    headers: {
+      'Content-Type': contentType,
+      ...(contentLength === undefined ? {} : { 'Content-Length': contentLength }),
+    },
+  });
+};
+
+const createCommandProvider = (responseFactory) => createProvider(mock(async (url) => {
+  if (String(url).includes('endpoints/44772')) {
+    return Response.json({
+      endpoint: 'https://10.23.45.68',
+      headers: { 'X-EXECD-ACCESS-TOKEN': 'execd-command-stream-token' },
+    });
+  }
+  return responseFactory();
+}));
+
+const expectResponseInvalid = async (promise, excludedText = '') => {
+  try {
+    await promise;
+    throw new Error('expected command stream rejection');
+  } catch (error) {
+    expect(error).toMatchObject({ code: SANDBOX_ERROR_CODES.RESPONSE_INVALID });
+    if (excludedText) expect(JSON.stringify(error)).not.toContain(excludedText);
+  }
+};
+
 const sandboxPayload = (overrides = {}) => ({
   id: 'sandbox-123',
   status: { state: 'Running' },
@@ -797,7 +839,11 @@ describe('OpenSandbox bridge adapter', () => {
           });
         }
         if (urlStr.endsWith('/command') || urlStr.includes('/command')) {
-          return new Response('data: {"commandId":"cmd-bg-1","event":"accepted"}\n\n', {
+          return new Response([
+            JSON.stringify({ type: 'init', text: 'cmd-bg-1' }),
+            JSON.stringify({ type: 'execution_complete', text: '' }),
+            '',
+          ].join('\n\n'), {
             status: 200,
             headers: { 'Content-Type': 'text/event-stream' },
           });
@@ -812,6 +858,7 @@ describe('OpenSandbox bridge adapter', () => {
       });
       expect(result.commandId).toBe('cmd-bg-1');
       expect(result.event).toBe('accepted');
+      expect(result.exitCode).toBeNull();
 
       const commandCall = fetchImpl.mock.calls.find(([u]) => {
         const s = String(u);
@@ -827,6 +874,266 @@ describe('OpenSandbox bridge adapter', () => {
       expect(commandCall[1].headers['X-ROUTING-TOKEN']).toBe('routing-token');
       expect(commandCall[1].headers['Accept']).toBe('text/event-stream');
       expect(commandCall[1].headers['OPEN-SANDBOX-API-KEY']).toBeUndefined();
+    });
+
+    it('parses official raw execd frames incrementally across CRLF and UTF-8 chunks', async () => {
+      const rawStream = [
+        '',
+        JSON.stringify({ type: 'ping', text: 'pong', timestamp: 1 }),
+        JSON.stringify({ type: 'init', text: 'cmd-raw-chunked' }),
+        JSON.stringify({ type: 'stdout', text: 'ignored snowman: ☃' }),
+        JSON.stringify({ type: 'status', text: 'running' }),
+        JSON.stringify({ type: 'execution_complete', execution_time: 0.25 }),
+        '',
+      ].join('\r\n\r\n');
+      const bytes = new TextEncoder().encode(rawStream);
+      const chunks = Array.from(bytes, (_byte, index) => bytes.slice(index, index + 1));
+      const provider = createCommandProvider(() => streamResponse(chunks, {
+        contentType: 'Text/Event-Stream; charset="utf-8"',
+      }));
+
+      await expect(provider.command.runBackground('sandbox-123', { command: 'echo test' }))
+        .resolves.toEqual({ commandId: 'cmd-raw-chunked', event: 'accepted', exitCode: null });
+    });
+
+    it('keeps canonical SSE compatibility strict and chunk-safe', async () => {
+      const provider = createCommandProvider(() => streamResponse([
+        ': heartbeat\n\n',
+        'da',
+        'ta: {"command_id":"cmd-canonical","type":"accepted","exitCode":null}\n',
+        '\n',
+        ': trailing heartbeat\n\n',
+      ]));
+
+      await expect(provider.command.runBackground('sandbox-123', { command: 'echo test' }))
+        .resolves.toEqual({ commandId: 'cmd-canonical', event: 'accepted', exitCode: null });
+    });
+
+    it('maps a validated raw error terminal without exposing provider text', async () => {
+      const providerSecret = 'raw-command-provider-secret';
+      const provider = createCommandProvider(() => streamResponse([
+        `${JSON.stringify({ type: 'init', text: 'cmd-failed' })}\n\n`,
+        `${JSON.stringify({ type: 'error', text: providerSecret, error: providerSecret })}\n\n`,
+      ]));
+
+      const result = await provider.command.runBackground('sandbox-123', { command: 'echo test' });
+      expect(result).toEqual({ commandId: 'cmd-failed', event: 'failed', exitCode: null });
+      expect(JSON.stringify(result)).not.toContain(providerSecret);
+    });
+
+    it.each([
+      ['malformed raw JSON', () => streamResponse(['{"type":"init"\n\n'])],
+      ['unknown raw event', () => streamResponse(['{"type":"mystery"}\n\n'])],
+      ['invalid raw field type', () => streamResponse([
+        '{"type":"ping","timestamp":"not-an-integer"}\n\n',
+      ])],
+      ['unknown raw field', () => streamResponse([
+        '{"type":"init","text":"cmd","providerSecret":"must-not-escape"}\n\n',
+      ])],
+      ['terminal before init', () => streamResponse(['{"type":"execution_complete"}\n\n'])],
+      ['duplicate init', () => streamResponse([
+        '{"type":"init","text":"cmd-one"}\n\n',
+        '{"type":"init","text":"cmd-two"}\n\n',
+        '{"type":"execution_complete"}\n\n',
+      ])],
+      ['duplicate terminal', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"type":"execution_complete"}\n\n',
+        '{"type":"execution_complete"}\n\n',
+      ])],
+      ['contradictory terminal', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"type":"execution_complete"}\n\n',
+        '{"type":"error","text":"must-not-escape"}\n\n',
+      ])],
+      ['non-heartbeat after terminal', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"type":"execution_complete"}\n\n',
+        '{"type":"stdout","text":"must-not-escape"}\n\n',
+      ])],
+      ['early EOF after init', () => streamResponse(['{"type":"init","text":"cmd"}\n\n'])],
+      ['truncated final frame', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"type":"execution_complete"}\n',
+      ])],
+      ['mixed raw and canonical modes', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        'data: {"commandId":"cmd","event":"accepted"}\n\n',
+      ])],
+      ['duplicate canonical result', () => streamResponse([
+        'data: {"commandId":"cmd","event":"accepted"}\n\n',
+        'data: {"commandId":"cmd","event":"completed"}\n\n',
+      ])],
+      ['malformed canonical JSON', () => streamResponse([
+        'data: {"commandId":"cmd","event":"accepted"\n\n',
+      ])],
+      ['ambiguous canonical aliases', () => streamResponse([
+        'data: {"commandId":"cmd","command_id":"cmd","event":"accepted"}\n\n',
+      ])],
+      ['invalid canonical exit code', () => streamResponse([
+        'data: {"commandId":"cmd","event":"accepted","exitCode":"zero"}\n\n',
+      ])],
+      ['unknown canonical field', () => streamResponse([
+        'data: {"commandId":"cmd","event":"accepted","output":"must-not-escape"}\n\n',
+      ])],
+      ['multiple canonical data lines', () => streamResponse([
+        'data: {"commandId":"cmd","event":"accepted"}\n',
+        'data: {"commandId":"cmd","event":"accepted"}\n\n',
+      ])],
+      ['unsupported canonical field', () => streamResponse([
+        'event: accepted\n',
+        'data: {"commandId":"cmd","event":"accepted"}\n\n',
+      ])],
+      ['bare carriage return', () => streamResponse([
+        '{"type":"init","text":"cmd"}\rX\n\n',
+      ])],
+    ])('rejects %s with a sanitized response error', async (_label, responseFactory) => {
+      const provider = createCommandProvider(responseFactory);
+      await expectResponseInvalid(
+        provider.command.runBackground('sandbox-123', { command: 'echo test' }),
+        'must-not-escape',
+      );
+    });
+
+    it.each([
+      ['missing terminal delimiter', [new TextEncoder().encode('{"type":"init","text":"cmd"}\n\n'), Uint8Array.of(0xc3)]],
+      ['invalid UTF-8', [Uint8Array.of(0xc3, 0x28, 0x0a, 0x0a)]],
+    ])('rejects %s', async (_label, chunks) => {
+      const provider = createCommandProvider(() => streamResponse(chunks));
+      await expectResponseInvalid(provider.command.runBackground('sandbox-123', { command: 'echo test' }));
+    });
+
+    it.each([
+      'application/json',
+      'text/event-streaming',
+      'text/event-stream, application/json',
+      'text/event-stream;',
+    ])('rejects non-canonical content type %s', async (contentType) => {
+      const provider = createCommandProvider(() => streamResponse([
+        'data: {"commandId":"cmd","event":"accepted"}\n\n',
+      ], { contentType }));
+      await expectResponseInvalid(provider.command.runBackground('sandbox-123', { command: 'echo test' }));
+    });
+
+    it.each([
+      ['LF', '\n'],
+      ['CRLF', '\r\n'],
+    ])('accepts an exact 16 KiB %s frame', async (_label, newline) => {
+      const frameBytes = 16 * 1024;
+      const heartbeat = `:${'x'.repeat(frameBytes - newline.length - 1)}${newline}${newline}`;
+      const provider = createCommandProvider(() => streamResponse([
+        heartbeat,
+        `data: {"commandId":"cmd-boundary","event":"accepted"}${newline}${newline}`,
+      ]));
+
+      await expect(provider.command.runBackground('sandbox-123', { command: 'echo test' }))
+        .resolves.toEqual({ commandId: 'cmd-boundary', event: 'accepted', exitCode: null });
+    });
+
+    it.each([
+      ['LF', '\n'],
+      ['CRLF', '\r\n'],
+    ])('rejects a %s frame one byte over 16 KiB', async (_label, newline) => {
+      const frameBytes = 16 * 1024;
+      const heartbeat = `:${'x'.repeat(frameBytes - newline.length)}${newline}${newline}`;
+      const provider = createCommandProvider(() => streamResponse([
+        heartbeat,
+        `data: {"commandId":"cmd-overflow","event":"accepted"}${newline}${newline}`,
+      ]));
+
+      await expectResponseInvalid(provider.command.runBackground('sandbox-123', { command: 'echo test' }));
+    });
+
+    it('cancels and releases a pending command stream reader at the deadline', async () => {
+      let timeoutCallback = null;
+      let timerId = 0;
+      let requestSignal = null;
+      let rejectRead;
+      let resolveReadStarted;
+      let resolveReleased;
+      const readStarted = new Promise((resolve) => {
+        resolveReadStarted = resolve;
+      });
+      const released = new Promise((resolve) => {
+        resolveReleased = resolve;
+      });
+      const cancel = mock(() => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        rejectRead(error);
+        return Promise.resolve();
+      });
+      const releaseLock = mock(() => {
+        resolveReleased();
+      });
+      const reader = {
+        read: mock(() => {
+          resolveReadStarted();
+          return new Promise((_resolve, reject) => {
+            rejectRead = reject;
+          });
+        }),
+        cancel,
+        releaseLock,
+      };
+      const clock = {
+        now: () => new Date('2026-01-01T00:00:00.000Z'),
+        setTimeout: (callback) => {
+          timeoutCallback = callback;
+          timerId += 1;
+          return timerId;
+        },
+        clearTimeout: mock(),
+      };
+      const fetchImpl = mock(async (url, init) => {
+        if (String(url).includes('endpoints/44772')) {
+          return Response.json({
+            endpoint: 'https://10.23.45.68',
+            headers: { 'X-EXECD-ACCESS-TOKEN': 'execd-command-stream-token' },
+          });
+        }
+        requestSignal = init.signal;
+        return {
+          status: 200,
+          headers: new Headers({ 'Content-Type': 'text/event-stream' }),
+          body: { getReader: () => reader },
+        };
+      });
+      const provider = createProvider(fetchImpl, { clock });
+
+      const request = provider.command.runBackground('sandbox-123', { command: 'echo test' });
+      await readStarted;
+      expect(timeoutCallback).toBeTypeOf('function');
+      timeoutCallback();
+
+      await expect(request).rejects.toMatchObject({ code: SANDBOX_ERROR_CODES.REQUEST_TIMEOUT });
+      await released;
+      expect(requestSignal.aborted).toBe(true);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(releaseLock).toHaveBeenCalledTimes(1);
+      expect(clock.clearTimeout).toHaveBeenCalledWith(2);
+    });
+
+    it('rejects declared, aggregate, frame, frame-count, and line-count overflow', async () => {
+      const cases = [
+        () => streamResponse([''], { contentLength: String((64 * 1024) + 1) }),
+        () => streamResponse(Array.from({ length: 70 }, () => (
+          `${JSON.stringify({ type: 'ping', text: 'x'.repeat(1000) })}\n\n`
+        ))),
+        () => streamResponse([
+          `${JSON.stringify({ type: 'init', text: 'x'.repeat(16 * 1024) })}\n\n`,
+        ]),
+        () => streamResponse([
+          '{"type":"init","text":"cmd"}\n\n',
+          ...Array.from({ length: 256 }, () => '{"type":"ping"}\n\n'),
+        ]),
+        () => streamResponse(['\n'.repeat(1025)]),
+      ];
+
+      for (const responseFactory of cases) {
+        const provider = createCommandProvider(responseFactory);
+        await expectResponseInvalid(provider.command.runBackground('sandbox-123', { command: 'echo test' }));
+      }
     });
 
     it('commandStatus fetches GET /command/status/{id}', async () => {

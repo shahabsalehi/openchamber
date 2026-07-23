@@ -912,6 +912,23 @@ fixed harmless `http://example.com/` URL and requires that command to fail to
 connect. Missing required execd/HTTP evidence fails readiness; optional
 WebSocket absence does not manufacture evidence.
 
+OpenSandbox execd labels command streams as `text/event-stream` but emits its
+documented events as raw JSON records separated by a blank line. The adapter
+also preserves strict compatibility with its existing canonical SSE `data:`
+record consumer. It locks to one framing mode on the first non-empty protocol
+frame and never falls back or mixes modes. Decoding is incremental with fatal
+UTF-8 validation and fixed limits of 64 KiB per response, 16 KiB per frame, 256
+non-empty frames, and 1,024 lines. Unknown events or fields, malformed JSON,
+truncated frames, invalid UTF-8, duplicate or contradictory command/terminal
+records, missing completion, trailing non-heartbeat data, and media-type or
+limit violations fail closed as a redacted response error. Command output,
+provider bodies, raw parse errors, endpoint URLs, and routing headers are never
+returned or logged. A valid raw `execution_complete` closes the background
+launch stream as `accepted`; the separately bounded status endpoint remains the
+authority for whether that background process is running or has exited. The
+command deadline directly cancels an active response-body reader and releases
+its lock; abort does not leave stream parsing detached from the bounded request.
+
 Every attempted allocation uses normalized exact ownership
 `{ environment: 'non-production', projectId, sessionId, generation,
 operationId }`, mapped by the adapter to exactly the five `drarticle.io/*`
