@@ -20,6 +20,7 @@ const API_KEY_SECRET = 'api-key-sentinel-must-not-escape';
 const ROUTING_SECRET = 'routing-header-sentinel-must-not-escape';
 const SECURE_ROUTING_SECRET = 'secure-routing-sentinel-must-not-escape';
 const PROVIDER_BODY_SECRET = 'provider-body-sentinel-must-not-escape';
+const COMMAND_ERROR_SECRET = 'command-error-sentinel-must-not-escape';
 const ENDPOINT_HOST = '10.23.45.67';
 const ENDPOINT_PORT = '19090';
 const HANDLE_PREFIX = 'handle-sentinel';
@@ -49,6 +50,33 @@ const systemClock = Object.freeze({
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
   clearTimeout: (timer) => clearTimeout(timer),
 });
+
+const createFastPollClock = () => {
+  let timerId = 0;
+  const timers = new Map();
+  return Object.freeze({
+    now: systemClock.now,
+    setTimeout: (callback, delayMs) => {
+      timerId += 1;
+      const id = timerId;
+      if (delayMs === 250) {
+        timers.set(id, true);
+        queueMicrotask(() => {
+          if (timers.delete(id)) callback();
+        });
+        return id;
+      }
+      const timer = setTimeout(callback, delayMs);
+      timers.set(id, timer);
+      return id;
+    },
+    clearTimeout: (id) => {
+      const timer = timers.get(id);
+      timers.delete(id);
+      if (timer && timer !== true) clearTimeout(timer);
+    },
+  });
+};
 
 const headerValue = (headers, name) => new Headers(headers ?? {}).get(name);
 
@@ -106,6 +134,7 @@ const createFakeLane = (options = {}) => {
   let failedOwnershipList = false;
   let failedEndpoint = false;
   let failedVisibilityList = false;
+  let failedCleanupReconciliation = false;
 
   const unrelatedId = 'unrelated-resource-must-survive';
   resources.set(unrelatedId, {
@@ -170,16 +199,51 @@ const createFakeLane = (options = {}) => {
         counters.commandPosts += 1;
         const body = JSON.parse(init.body);
         const kind = body.command.includes('example.com') ? 'egress' : 'echo';
+        if (options.commandScenario === 'rejected' && kind === 'echo') {
+          return Response.json({ message: PROVIDER_BODY_SECRET }, { status: 503 });
+        }
         const commandId = `command-${nextCommand}`;
         nextCommand += 1;
         commands.set(commandId, {
-          commandId,
+          id: commandId,
           kind,
-          status: kind === 'echo' ? 'running' : 'completed',
-          exitCode: kind === 'egress' ? (options.egressAllowed ? 9 : 0) : null,
+          content: COMMAND_ERROR_SECRET,
+          running: kind === 'echo' || (kind === 'egress' && options.commandScenario === 'timeout'),
+          exit_code: kind === 'egress' && options.commandScenario !== 'timeout'
+            ? (options.egressAllowed ? 9 : 0)
+            : null,
+          error: null,
+          started_at: 1,
+          finished_at: kind === 'echo' || options.commandScenario === 'timeout' ? null : 2,
         });
         if (options.ambiguousCommandStart && kind === 'echo') {
           throw new Error(PROVIDER_BODY_SECRET);
+        }
+        if (options.commandScenario === 'nonzero' && kind === 'echo') {
+          return new Response([
+            JSON.stringify({ type: 'init', text: commandId }),
+            JSON.stringify({
+              type: 'error',
+              error: {
+                ename: 'CommandExecError',
+                evalue: '19',
+                traceback: [COMMAND_ERROR_SECRET],
+              },
+            }),
+            '',
+          ].join('\n\n'), {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          });
+        }
+        if (options.commandScenario === 'terminal_missing' && kind === 'echo') {
+          return new Response([
+            JSON.stringify({ type: 'init', text: commandId }),
+            '',
+          ].join('\n\n'), {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          });
         }
         return new Response([
           JSON.stringify({ type: 'init', text: commandId }),
@@ -193,14 +257,24 @@ const createFakeLane = (options = {}) => {
       if (execdPath?.startsWith('/command/status/') && init.method === 'GET') {
         const commandId = decodeURIComponent(url.pathname.split('/').at(-1));
         const command = commands.get(commandId);
-        return command
-          ? Response.json(command)
-          : Response.json({ message: PROVIDER_BODY_SECRET }, { status: 404 });
+        if (command) {
+          const { kind, ...status } = command;
+          if (options.commandScenario === 'protocol_invalid' && kind === 'echo') {
+            return Response.json({ ...status, running: true, exit_code: 0 });
+          }
+          return Response.json(status);
+        }
+        return Response.json({ message: PROVIDER_BODY_SECRET }, { status: 404 });
       }
       if (execdPath === '/command' && init.method === 'DELETE') {
         counters.commandDeletes += 1;
+        if (options.failCommandInterrupt) throw new Error(PROVIDER_BODY_SECRET);
         const command = commands.get(url.searchParams.get('id'));
-        if (command) command.status = 'completed';
+        if (command) {
+          command.running = false;
+          if (command.exit_code === null) command.exit_code = 0;
+          command.finished_at = 2;
+        }
         return new Response(null, { status: 200 });
       }
       return Response.json({ message: PROVIDER_BODY_SECRET }, { status: 404 });
@@ -250,6 +324,11 @@ const createFakeLane = (options = {}) => {
       if (isMainFilter && options.failCleanupReconciliation && counters.commandPosts > 0) {
         return Response.json({ message: PROVIDER_BODY_SECRET }, { status: 503 });
       }
+      if (isMainFilter && options.failCleanupReconciliationOnce
+        && counters.commandPosts > 0 && !failedCleanupReconciliation) {
+        failedCleanupReconciliation = true;
+        return Response.json({ message: PROVIDER_BODY_SECRET }, { status: 503 });
+      }
       if (isMainFilter && options.failOwnershipListOnce && mainCreated && !failedOwnershipList) {
         failedOwnershipList = true;
         return Response.json({ message: PROVIDER_BODY_SECRET }, { status: 503 });
@@ -261,8 +340,16 @@ const createFakeLane = (options = {}) => {
       }
       const matching = Array.from(resources.values())
         .filter((resource) => metadataMatches(resource.metadata, filters));
+      if (isMainFilter && options.partialCleanupPagination && counters.deletes > 0) {
+        return Response.json(paginationPayload([], page, pageSize, 1));
+      }
       if (isMainFilter && options.endlessMainPagination) {
-        return Response.json(paginationPayload(matching.slice(0, 1), page, pageSize, 250));
+        return Response.json(paginationPayload(
+          Array.from({ length: pageSize }, () => matching[0]),
+          page,
+          pageSize,
+          250,
+        ));
       }
       return Response.json(paginationPayload(matching, page, pageSize));
     }
@@ -357,7 +444,16 @@ const createFakeLane = (options = {}) => {
       if (!resources.has(handle)) {
         return Response.json({ message: PROVIDER_BODY_SECRET }, { status: 404 });
       }
-      resources.delete(handle);
+      if (options.destroyNotFoundMode === 'retained') {
+        return Response.json({ message: PROVIDER_BODY_SECRET }, { status: 404 });
+      }
+      if (options.destroyNotFoundMode === 'absent') {
+        resources.delete(handle);
+        return Response.json({ message: PROVIDER_BODY_SECRET }, { status: 404 });
+      }
+      const resource = resources.get(handle);
+      if (options.retainAfterDestroyStatus) resource.status = options.retainAfterDestroyStatus;
+      else resources.delete(handle);
       if (options.ambiguousDestroy) throw new Error(PROVIDER_BODY_SECRET);
       return new Response(null, { status: 204 });
     }
@@ -552,6 +648,38 @@ describe('Stage 7B OpenSandbox live acceptance gate', () => {
     }
   });
 
+  it.each([
+    ['rejected', 'http_routing_headers', 'command_rejected'],
+    ['nonzero', 'http_routing_headers', 'command_nonzero'],
+    ['terminal_missing', 'http_routing_headers', 'command_terminal_missing'],
+    ['protocol_invalid', 'http_routing_headers', 'command_protocol_invalid'],
+  ])('reports a fixed redacted %s execd acceptance failure', async (commandScenario, checkName, code) => {
+    const lane = createFakeLane({ commandScenario });
+
+    const report = await runFakeGate(lane);
+
+    expect(report.ready).toBe(false);
+    expect(checkByName(report, checkName)).toMatchObject({ status: 'failed', code });
+    expect(checkByName(report, 'final_no_owned_leftovers')).toMatchObject({ status: 'passed' });
+    const serialized = JSON.stringify(report);
+    expect(serialized).not.toContain(PROVIDER_BODY_SECRET);
+    expect(serialized).not.toContain(COMMAND_ERROR_SECRET);
+  });
+
+  it('reports bounded command poll exhaustion as command_timeout after HTTP evidence passes', async () => {
+    const lane = createFakeLane({ commandScenario: 'timeout' });
+
+    const report = await runFakeGate(lane, { dependencies: { clock: createFastPollClock() } });
+
+    expect(report.ready).toBe(false);
+    expect(checkByName(report, 'http_routing_headers')).toMatchObject({ status: 'passed' });
+    expect(checkByName(report, 'deny_default_egress')).toMatchObject({
+      status: 'failed', code: 'command_timeout',
+    });
+    expect(checkByName(report, 'final_no_owned_leftovers')).toMatchObject({ status: 'passed' });
+    expect(JSON.stringify(report)).not.toContain(COMMAND_ERROR_SECRET);
+  });
+
   it('never retries ambiguous main create and cleans every exact verified match only', async () => {
     const lane = createFakeLane({
       ambiguousMainCreate: true,
@@ -706,6 +834,42 @@ describe('Stage 7B OpenSandbox live acceptance gate', () => {
     expect(Array.from(lane.resources.keys())).toEqual([lane.unrelatedId]);
   });
 
+  it('does not treat DELETE 404 as authoritative absence while GET still finds the sandbox', async () => {
+    const lane = createFakeLane({ destroyNotFoundMode: 'retained' });
+
+    const report = await runFakeGate(lane, {
+      dependencies: { clock: createFastPollClock() },
+    });
+
+    expect(checkByName(report, 'destroy')).toMatchObject({ status: 'passed', code: 'ok' });
+    expect(checkByName(report, 'get_after_delete')).toMatchObject({
+      status: 'failed', code: 'cleanup_unconfirmed',
+    });
+    expect(checkByName(report, 'final_no_owned_leftovers')).toMatchObject({
+      status: 'failed', code: 'cleanup_unconfirmed',
+    });
+    expect(report.ready).toBe(false);
+    expect(lane.counters.deletes).toBe(1);
+    expect(lane.resources.has(lane.unrelatedId)).toBe(true);
+    expect(Array.from(lane.resources.keys()).filter((id) => id.startsWith(HANDLE_PREFIX)))
+      .toHaveLength(1);
+  });
+
+  it('accepts DELETE 404 only after authoritative GET also proves absence', async () => {
+    const lane = createFakeLane({ destroyNotFoundMode: 'absent' });
+
+    const report = await runFakeGate(lane);
+
+    expect(checkByName(report, 'destroy')).toMatchObject({ status: 'passed', code: 'ok' });
+    expect(checkByName(report, 'get_after_delete')).toMatchObject({ status: 'passed', code: 'ok' });
+    expect(checkByName(report, 'final_no_owned_leftovers')).toMatchObject({
+      status: 'passed', code: 'ok',
+    });
+    expect(report.ready).toBe(true);
+    expect(lane.counters.deletes).toBe(1);
+    expect(Array.from(lane.resources.keys())).toEqual([lane.unrelatedId]);
+  });
+
   it('fails safe at the fixed pagination cap without broad cleanup or extra allocation', async () => {
     const lane = createFakeLane({ endlessMainPagination: true });
 
@@ -761,6 +925,61 @@ describe('Stage 7B OpenSandbox live acceptance gate', () => {
 
     expect(report.ready).toBe(false);
     expect(checkByName(report, 'http_routing_headers').status).toBe('failed');
+    expect(checkByName(report, 'final_no_owned_leftovers')).toMatchObject({
+      status: 'failed', code: 'cleanup_unconfirmed',
+    });
+    expect(lane.counters.deletes).toBe(1);
+    expect(Array.from(lane.resources.keys())).toEqual([lane.unrelatedId]);
+  });
+
+  it.each([
+    ['command interruption', { failCommandInterrupt: true }],
+    ['cleanup reconciliation', { failCleanupReconciliationOnce: true }],
+  ])('supersedes a transient %s failure with final authoritative absence', async (_label, options) => {
+    const lane = createFakeLane({ failHttpProbe: true, ...options });
+
+    const report = await runFakeGate(lane);
+
+    expect(report.ready).toBe(false);
+    expect(checkByName(report, 'http_routing_headers').status).toBe('failed');
+    expect(checkByName(report, 'final_no_owned_leftovers')).toMatchObject({
+      status: 'passed', code: 'ok',
+    });
+    expect(lane.counters.deletes).toBe(1);
+    expect(Array.from(lane.resources.keys())).toEqual([lane.unrelatedId]);
+  });
+
+  it.each(['Running', 'Unknown', 'Terminated', 'Failed'])(
+    'refuses cleanup confirmation while an exact owned %s record remains',
+    async (status) => {
+      const lane = createFakeLane({ retainAfterDestroyStatus: status });
+
+      const report = await runFakeGate(lane, {
+        dependencies: { clock: createFastPollClock() },
+      });
+
+      expect(report.ready).toBe(false);
+      expect(checkByName(report, 'get_after_delete')).toMatchObject({
+        status: 'failed', code: 'cleanup_unconfirmed',
+      });
+      expect(checkByName(report, 'final_no_owned_leftovers')).toMatchObject({
+        status: 'failed', code: 'cleanup_unconfirmed',
+      });
+      expect(lane.counters.deletes).toBe(1);
+      expect(lane.resources.has(lane.unrelatedId)).toBe(true);
+      expect(Array.from(lane.resources.keys()).filter((id) => id.startsWith(HANDLE_PREFIX)))
+        .toHaveLength(1);
+    },
+  );
+
+  it('fails closed when final exact pagination returns a declared partial page', async () => {
+    const lane = createFakeLane({ partialCleanupPagination: true });
+
+    const report = await runFakeGate(lane);
+
+    expect(report.ready).toBe(false);
+    expect(checkByName(report, 'destroy')).toMatchObject({ status: 'passed' });
+    expect(checkByName(report, 'get_after_delete')).toMatchObject({ status: 'passed' });
     expect(checkByName(report, 'final_no_owned_leftovers')).toMatchObject({
       status: 'failed', code: 'cleanup_unconfirmed',
     });

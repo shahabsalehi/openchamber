@@ -593,6 +593,8 @@ returned to public callers. The supervision record carries no secrets.
 | `SANDBOX_BRIDGE_CHECKPOINT_FAILED` | File checkpoint failed (any list, read, or validation error). |
 | `SANDBOX_BRIDGE_COMMAND_FAILED` | Command execution in sandbox failed. |
 | `SANDBOX_BRIDGE_OPENCODE_FAILED` | OpenCode failed to start or become ready within the timeout. |
+| `SANDBOX_COMMAND_TERMINAL_MISSING` | A syntactically valid command stream ended without a terminal event. |
+| `SANDBOX_COMMAND_PROTOCOL_INVALID` | A command stream or status response violated the strict execd wire contract. |
 
 ### Factory and exports
 
@@ -920,14 +922,40 @@ frame and never falls back or mixes modes. Decoding is incremental with fatal
 UTF-8 validation and fixed limits of 64 KiB per response, 16 KiB per frame, 256
 non-empty frames, and 1,024 lines. Unknown events or fields, malformed JSON,
 truncated frames, invalid UTF-8, duplicate or contradictory command/terminal
-records, missing completion, trailing non-heartbeat data, and media-type or
-limit violations fail closed as a redacted response error. Command output,
-provider bodies, raw parse errors, endpoint URLs, and routing headers are never
-returned or logged. A valid raw `execution_complete` closes the background
-launch stream as `accepted`; the separately bounded status endpoint remains the
-authority for whether that background process is running or has exited. The
-command deadline directly cancels an active response-body reader and releases
-its lock; abort does not leave stream parsing detached from the bounded request.
+records, trailing non-heartbeat data, and media-type or limit violations fail
+closed as `SANDBOX_COMMAND_PROTOCOL_INVALID`. A syntactically valid, fully
+delimited stream that closes after a command ID but without a terminal is
+distinguished as `SANDBOX_COMMAND_TERMINAL_MISSING`. A raw error terminal must
+be exactly the official nested shape
+`{ type: 'error', error: { ename, evalue, traceback? }, timestamp? }`, with
+string `ename`/`evalue` and an optional string-array traceback. Only a canonical
+safe nonzero decimal `evalue` for `CommandExecError` becomes an internal exit
+code; zero, unsafe, malformed, or contradictory numeric evidence is protocol
+invalid, while a valid nonnumeric remote start/runtime failure remains
+`failed` with no exit code. An official `execution_complete` carries no exit
+code and closes the background launch stream as `accepted`.
+
+The separately bounded status endpoint is authoritative after background
+acceptance. Its official JSON fields are exactly `id`, `content`, `running`,
+`exit_code`, `error`, `started_at`, and `finished_at`; unknown or wrong-typed
+fields fail closed. `id` and boolean `running` are required, and `id` must equal
+the requested command ID. `exit_code` is absent/null or a safe integer:
+running requires no exit, stopped zero is completed, stopped nonzero is failed,
+and stopped without an exit is failed only when a nonempty string `error`
+exists. Contradictory combinations are protocol invalid. Optional timestamps,
+when non-null, must be nonnegative safe integers. Optional command, error, and
+timestamp values are type-checked but discarded.
+
+The live report maps request/non-2xx rejection, validated nonzero exit, a
+missing terminal, bounded request or poll exhaustion, and malformed protocol to
+the fixed redacted reasons `command_rejected`, `command_nonzero`,
+`command_terminal_missing`, `command_timeout`, and `command_protocol_invalid`.
+`command_failed` is reserved for a valid remote failure without a safe numeric
+exit. Command content/output, error text/tracebacks, provider bodies, raw parse
+errors, endpoint URLs, routing headers, handles, and credentials are never
+returned, reported, or logged. The command deadline directly cancels an active
+response-body reader and releases its lock; abort does not leave stream parsing
+detached from the bounded request.
 
 Every attempted allocation uses normalized exact ownership
 `{ environment: 'non-production', projectId, sessionId, generation,
@@ -949,11 +977,17 @@ fourth page fails closed.
 
 Cleanup always runs in `finally`. Each exact verified handle is destroyed at
 most once, then checked with bounded GET polling and final exact-metadata
-pagination. A 404 is authoritative absence. Unknown destroy/interrupt/GET/list
-outcomes, incomplete pagination, or any exact leftover produce
-`outcome_unknown`/`cleanup_unconfirmed`, keep `ready: false`, and are never
-converted into an empty success. Cleanup never performs prefix, age, tenant, or
-account-wide inference and never deletes an unrelated sandbox.
+pagination. Final cleanup proof requires every known ledger handle to have an
+authoritative GET 404, every attempted exact ownership tuple to have a complete
+final scan with no records, and no ambiguous destroy outcome. Those final facts
+may supersede an earlier interrupt, reconciliation, transient GET, or transient
+list failure; historical operational noise is not treated as authoritative
+resource state. An ambiguous destroy remains `outcome_unknown` even if later
+absence is observed. A short, failed, malformed, or incomplete page never proves
+absence, and any exact record remains a leftover regardless of whether its state
+is active, transitional, terminal, failed, or unknown. No tombstone status is
+accepted as cleanup. Cleanup never performs prefix, age, tenant, or account-wide
+inference and never deletes an unrelated sandbox.
 
 ### Fake-only validation
 

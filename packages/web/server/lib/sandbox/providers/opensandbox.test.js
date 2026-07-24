@@ -11,6 +11,13 @@ const ownershipMetadata = Object.freeze({
   generation: 2,
   operationId: 'operation-123',
 });
+const providerOwnershipMetadata = Object.freeze({
+  'drarticle.io/environment': 'non-production',
+  'drarticle.io/project': 'project-123',
+  'drarticle.io/session': 'session-123',
+  'drarticle.io/generation': '2',
+  'drarticle.io/operation': 'operation-123',
+});
 const denyNetworkPolicy = Object.freeze({
   defaultAction: 'deny',
   egress: Object.freeze([
@@ -74,12 +81,12 @@ const createCommandProvider = (responseFactory) => createProvider(mock(async (ur
   return responseFactory();
 }));
 
-const expectResponseInvalid = async (promise, excludedText = '') => {
+const expectCommandProtocolInvalid = async (promise, excludedText = '') => {
   try {
     await promise;
     throw new Error('expected command stream rejection');
   } catch (error) {
-    expect(error).toMatchObject({ code: SANDBOX_ERROR_CODES.RESPONSE_INVALID });
+    expect(error).toMatchObject({ code: SANDBOX_ERROR_CODES.COMMAND_PROTOCOL_INVALID });
     if (excludedText) expect(JSON.stringify(error)).not.toContain(excludedText);
   }
 };
@@ -537,6 +544,64 @@ describe('OpenSandbox provider adapter', () => {
       .rejects.toMatchObject({ code: SANDBOX_ERROR_CODES.RESPONSE_INVALID });
   });
 
+  it('accepts only complete official empty, full, and final list pages', async () => {
+    const pages = [
+      {
+        input: { page: 1, pageSize: 2 },
+        items: [],
+        pagination: { page: 1, pageSize: 2, totalItems: 0, totalPages: 0, hasNextPage: false },
+      },
+      {
+        input: { page: 1, pageSize: 2 },
+        items: [
+          sandboxPayload({ id: 'sandbox-1', metadata: providerOwnershipMetadata }),
+          sandboxPayload({ id: 'sandbox-2', metadata: providerOwnershipMetadata }),
+        ],
+        pagination: { page: 1, pageSize: 2, totalItems: 3, totalPages: 2, hasNextPage: true },
+      },
+      {
+        input: { page: 2, pageSize: 2 },
+        items: [sandboxPayload({ id: 'sandbox-3', metadata: providerOwnershipMetadata })],
+        pagination: { page: 2, pageSize: 2, totalItems: 3, totalPages: 2, hasNextPage: false },
+      },
+    ];
+    const fetchImpl = mock(async () => {
+      const page = pages.shift();
+      return Response.json({ items: page.items, pagination: page.pagination });
+    });
+    const provider = createProvider(fetchImpl);
+
+    await expect(provider.list({ metadata: ownershipMetadata, page: 1, pageSize: 2 }))
+      .resolves.toMatchObject({ page: 1, pageSize: 2, hasMore: false, items: [] });
+    await expect(provider.list({ metadata: ownershipMetadata, page: 1, pageSize: 2 }))
+      .resolves.toMatchObject({ page: 1, pageSize: 2, hasMore: true, items: [{ handle: 'sandbox-1' }, { handle: 'sandbox-2' }] });
+    await expect(provider.list({ metadata: ownershipMetadata, page: 2, pageSize: 2 }))
+      .resolves.toMatchObject({ page: 2, pageSize: 2, hasMore: false, items: [{ handle: 'sandbox-3' }] });
+  });
+
+  it.each([
+    ['short full page', 1, [sandboxPayload()], 3, 2, true],
+    ['short final page', 2, [], 3, 2, false],
+    ['beyond-end page', 3, [], 3, 2, false],
+    ['beyond empty page', 2, [], 0, 0, false],
+  ])('rejects a %s that cannot prove complete pagination', async (
+    _label,
+    page,
+    items,
+    totalItems,
+    totalPages,
+    hasNextPage,
+  ) => {
+    const fetchImpl = mock(async () => Response.json({
+      items,
+      pagination: { page, pageSize: 2, totalItems, totalPages, hasNextPage },
+    }));
+    const provider = createProvider(fetchImpl);
+
+    await expect(provider.list({ metadata: ownershipMetadata, page, pageSize: 2 }))
+      .rejects.toMatchObject({ code: SANDBOX_ERROR_CODES.RESPONSE_INVALID });
+  });
+
   it('renews once with an absolute expiry and returns only safe renewal data', async () => {
     const expiresAt = '2026-01-01T02:00:00.000Z';
     const fetchImpl = mock(async () => Response.json({
@@ -909,15 +974,44 @@ describe('OpenSandbox bridge adapter', () => {
         .resolves.toEqual({ commandId: 'cmd-canonical', event: 'accepted', exitCode: null });
     });
 
-    it('maps a validated raw error terminal without exposing provider text', async () => {
+    it('maps an official CommandExecError terminal to a safe nonzero exit without retaining details', async () => {
       const providerSecret = 'raw-command-provider-secret';
+      const tracebackSecret = 'raw-command-traceback-secret';
       const provider = createCommandProvider(() => streamResponse([
         `${JSON.stringify({ type: 'init', text: 'cmd-failed' })}\n\n`,
-        `${JSON.stringify({ type: 'error', text: providerSecret, error: providerSecret })}\n\n`,
+        `${JSON.stringify({
+          type: 'error',
+          error: {
+            ename: 'CommandExecError',
+            evalue: '17',
+            traceback: [tracebackSecret, providerSecret],
+          },
+          timestamp: 4,
+        })}\n\n`,
       ]));
 
       const result = await provider.command.runBackground('sandbox-123', { command: 'echo test' });
-      expect(result).toEqual({ commandId: 'cmd-failed', event: 'failed', exitCode: null });
+      expect(result).toEqual({ commandId: 'cmd-failed', event: 'failed', exitCode: 17 });
+      expect(JSON.stringify(result)).not.toContain(providerSecret);
+      expect(JSON.stringify(result)).not.toContain(tracebackSecret);
+    });
+
+    it('maps a valid nonnumeric official remote error to failed without retaining text', async () => {
+      const providerSecret = 'raw-runtime-error-secret';
+      const provider = createCommandProvider(() => streamResponse([
+        `${JSON.stringify({ type: 'init', text: 'cmd-runtime-failed' })}\n\n`,
+        `${JSON.stringify({
+          type: 'error',
+          error: {
+            ename: 'CommandExecError',
+            evalue: providerSecret,
+            traceback: [],
+          },
+        })}\n\n`,
+      ]));
+
+      const result = await provider.command.runBackground('sandbox-123', { command: 'echo test' });
+      expect(result).toEqual({ commandId: 'cmd-runtime-failed', event: 'failed', exitCode: null });
       expect(JSON.stringify(result)).not.toContain(providerSecret);
     });
 
@@ -926,6 +1020,33 @@ describe('OpenSandbox bridge adapter', () => {
       ['unknown raw event', () => streamResponse(['{"type":"mystery"}\n\n'])],
       ['invalid raw field type', () => streamResponse([
         '{"type":"ping","timestamp":"not-an-integer"}\n\n',
+      ])],
+      ['missing nested raw error', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"type":"error"}\n\n',
+      ])],
+      ['unknown nested raw error field', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"type":"error","error":{"ename":"RuntimeError","evalue":"failed","detail":"must-not-escape"}}\n\n',
+      ])],
+      ['invalid nested traceback', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"type":"error","error":{"ename":"RuntimeError","evalue":"failed","traceback":[1]}}\n\n',
+      ])],
+      ['nested error on a non-error event', () => streamResponse([
+        '{"type":"init","text":"cmd","error":{"ename":"RuntimeError","evalue":"must-not-escape"}}\n\n',
+      ])],
+      ['zero CommandExecError exit', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"type":"error","error":{"ename":"CommandExecError","evalue":"0"}}\n\n',
+      ])],
+      ['unsafe CommandExecError exit', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"type":"error","error":{"ename":"CommandExecError","evalue":"9007199254740992"}}\n\n',
+      ])],
+      ['non-canonical CommandExecError exit', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"type":"error","error":{"ename":"CommandExecError","evalue":"03"}}\n\n',
       ])],
       ['unknown raw field', () => streamResponse([
         '{"type":"init","text":"cmd","providerSecret":"must-not-escape"}\n\n',
@@ -944,14 +1065,13 @@ describe('OpenSandbox bridge adapter', () => {
       ['contradictory terminal', () => streamResponse([
         '{"type":"init","text":"cmd"}\n\n',
         '{"type":"execution_complete"}\n\n',
-        '{"type":"error","text":"must-not-escape"}\n\n',
+        '{"type":"error","error":{"ename":"RuntimeError","evalue":"must-not-escape"}}\n\n',
       ])],
       ['non-heartbeat after terminal', () => streamResponse([
         '{"type":"init","text":"cmd"}\n\n',
         '{"type":"execution_complete"}\n\n',
         '{"type":"stdout","text":"must-not-escape"}\n\n',
       ])],
-      ['early EOF after init', () => streamResponse(['{"type":"init","text":"cmd"}\n\n'])],
       ['truncated final frame', () => streamResponse([
         '{"type":"init","text":"cmd"}\n\n',
         '{"type":"execution_complete"}\n',
@@ -989,10 +1109,19 @@ describe('OpenSandbox bridge adapter', () => {
       ])],
     ])('rejects %s with a sanitized response error', async (_label, responseFactory) => {
       const provider = createCommandProvider(responseFactory);
-      await expectResponseInvalid(
+      await expectCommandProtocolInvalid(
         provider.command.runBackground('sandbox-123', { command: 'echo test' }),
         'must-not-escape',
       );
+    });
+
+    it('distinguishes a fully delimited stream that closes without a terminal event', async () => {
+      const provider = createCommandProvider(() => streamResponse([
+        '{"type":"init","text":"cmd-terminal-missing"}\n\n',
+      ]));
+
+      await expect(provider.command.runBackground('sandbox-123', { command: 'echo test' }))
+        .rejects.toMatchObject({ code: SANDBOX_ERROR_CODES.COMMAND_TERMINAL_MISSING });
     });
 
     it.each([
@@ -1000,7 +1129,7 @@ describe('OpenSandbox bridge adapter', () => {
       ['invalid UTF-8', [Uint8Array.of(0xc3, 0x28, 0x0a, 0x0a)]],
     ])('rejects %s', async (_label, chunks) => {
       const provider = createCommandProvider(() => streamResponse(chunks));
-      await expectResponseInvalid(provider.command.runBackground('sandbox-123', { command: 'echo test' }));
+      await expectCommandProtocolInvalid(provider.command.runBackground('sandbox-123', { command: 'echo test' }));
     });
 
     it.each([
@@ -1012,7 +1141,7 @@ describe('OpenSandbox bridge adapter', () => {
       const provider = createCommandProvider(() => streamResponse([
         'data: {"commandId":"cmd","event":"accepted"}\n\n',
       ], { contentType }));
-      await expectResponseInvalid(provider.command.runBackground('sandbox-123', { command: 'echo test' }));
+      await expectCommandProtocolInvalid(provider.command.runBackground('sandbox-123', { command: 'echo test' }));
     });
 
     it.each([
@@ -1041,7 +1170,7 @@ describe('OpenSandbox bridge adapter', () => {
         `data: {"commandId":"cmd-overflow","event":"accepted"}${newline}${newline}`,
       ]));
 
-      await expectResponseInvalid(provider.command.runBackground('sandbox-123', { command: 'echo test' }));
+      await expectCommandProtocolInvalid(provider.command.runBackground('sandbox-123', { command: 'echo test' }));
     });
 
     it('cancels and releases a pending command stream reader at the deadline', async () => {
@@ -1132,26 +1261,91 @@ describe('OpenSandbox bridge adapter', () => {
 
       for (const responseFactory of cases) {
         const provider = createCommandProvider(responseFactory);
-        await expectResponseInvalid(provider.command.runBackground('sandbox-123', { command: 'echo test' }));
+        await expectCommandProtocolInvalid(provider.command.runBackground('sandbox-123', { command: 'echo test' }));
       }
     });
 
-    it('commandStatus fetches GET /command/status/{id}', async () => {
-      const execdToken = 'execd-token-status';
+    it.each([
+      [
+        'running',
+        {
+          id: 'cmd-1',
+          content: 'sensitive command content',
+          running: true,
+          exit_code: null,
+          error: null,
+          started_at: 1,
+          finished_at: null,
+        },
+        { commandId: 'cmd-1', status: 'running', exitCode: null },
+      ],
+      [
+        'completed',
+        { id: 'cmd-1', running: false, exit_code: 0, started_at: 1, finished_at: 2 },
+        { commandId: 'cmd-1', status: 'completed', exitCode: 0 },
+      ],
+      [
+        'nonzero',
+        { id: 'cmd-1', running: false, exit_code: 23, error: 'sensitive failure text' },
+        { commandId: 'cmd-1', status: 'failed', exitCode: 23 },
+      ],
+      [
+        'remote failure without a numeric exit',
+        { id: 'cmd-1', running: false, exit_code: null, error: 'sensitive runtime failure' },
+        { commandId: 'cmd-1', status: 'failed', exitCode: null },
+      ],
+    ])('maps official %s command status without retaining provider fields', async (_label, payload, expected) => {
       const fetchImpl = mock(async (url) => {
         const urlStr = String(url);
         if (urlStr.includes('endpoints/44772')) {
-          return Response.json({ endpoint: 'https://10.23.45.68', headers: { 'X-EXECD-ACCESS-TOKEN': execdToken } });
+          return Response.json({
+            endpoint: 'https://10.23.45.68',
+            headers: { 'X-EXECD-ACCESS-TOKEN': 'execd-token-status' },
+          });
         }
-        if (urlStr.includes('/status')) {
-          return Response.json({ commandId: 'cmd-1', status: 'completed', exitCode: 0 });
-        }
-        return new Response('{}', { status: 200 });
+        return Response.json(payload);
       });
       const provider = createProvider(fetchImpl);
+
       const result = await provider.command.commandStatus('sandbox-123', 'cmd-1');
-      expect(result.status).toBe('completed');
-      expect(result.exitCode).toBe(0);
+
+      expect(result).toEqual(expected);
+      expect(JSON.stringify(result)).not.toContain('sensitive');
+      expect(String(fetchImpl.mock.calls.at(-1)[0])).toContain('/command/status/cmd-1');
+    });
+
+    it.each([
+      ['wrong command id', { id: 'cmd-other', running: false, exit_code: 0 }],
+      ['missing command id', { running: false, exit_code: 0 }],
+      ['missing running state', { id: 'cmd-1', exit_code: 0 }],
+      ['unknown field', { id: 'cmd-1', running: false, exit_code: 0, detail: 'must-not-escape' }],
+      ['wrong running type', { id: 'cmd-1', running: 'false', exit_code: 0 }],
+      ['wrong exit type', { id: 'cmd-1', running: false, exit_code: '0' }],
+      ['unsafe exit', { id: 'cmd-1', running: false, exit_code: Number.MAX_SAFE_INTEGER + 1 }],
+      ['running with an exit', { id: 'cmd-1', running: true, exit_code: 0 }],
+      ['running with an error', { id: 'cmd-1', running: true, error: 'must-not-escape' }],
+      ['completed with an error', {
+        id: 'cmd-1', running: false, exit_code: 0, error: 'must-not-escape',
+      }],
+      ['failed without exit or error', { id: 'cmd-1', running: false, exit_code: null }],
+      ['failed with empty error', { id: 'cmd-1', running: false, error: '   ' }],
+      ['wrong content type', { id: 'cmd-1', running: false, exit_code: 0, content: 1 }],
+      ['wrong error type', { id: 'cmd-1', running: false, exit_code: 1, error: {} }],
+      ['wrong start timestamp type', { id: 'cmd-1', running: false, exit_code: 0, started_at: '1' }],
+      ['fractional start timestamp', { id: 'cmd-1', running: false, exit_code: 0, started_at: 1.5 }],
+      ['invalid finish timestamp', { id: 'cmd-1', running: false, exit_code: 0, finished_at: -1 }],
+      ['unsafe finish timestamp', {
+        id: 'cmd-1',
+        running: false,
+        exit_code: 0,
+        finished_at: Number.MAX_SAFE_INTEGER + 1,
+      }],
+    ])('rejects official status with %s before generic normalization', async (_label, payload) => {
+      const provider = createCommandProvider(() => Response.json(payload));
+      await expectCommandProtocolInvalid(
+        provider.command.commandStatus('sandbox-123', 'cmd-1'),
+        'must-not-escape',
+      );
     });
 
     it('commandLog fetches GET /command/{id}/logs with text/plain accept', async () => {

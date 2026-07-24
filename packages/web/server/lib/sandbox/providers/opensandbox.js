@@ -30,6 +30,16 @@ const MAX_SSE_BYTES = 64 * 1024;
 const MAX_SSE_FRAME_BYTES = 16 * 1024;
 const MAX_SSE_FRAME_COUNT = 256;
 const MAX_SSE_LINE_COUNT = 1024;
+const OPEN_SANDBOX_COMMAND_STATUS_KEYS = new Set([
+  'id',
+  'content',
+  'running',
+  'exit_code',
+  'error',
+  'started_at',
+  'finished_at',
+]);
+const OPEN_SANDBOX_COMMAND_ERROR_KEYS = new Set(['ename', 'evalue', 'traceback']);
 const MAX_FILE_DOWNLOAD_BYTES = 1024 * 1024;
 const FIXED_WORKSPACE_ROOT = '/workspace/project';
 const LIFECYCLE_POLL_MAX_ATTEMPTS = 20;
@@ -153,6 +163,71 @@ const normalizeOpenSandboxRecord = (payload, now) => normalizeProviderRecord({
   createdAt: payload.createdAt,
   expiresAt: payload.expiresAt,
 }, now);
+
+const normalizeOpenSandboxCommandStatus = (payload, requestedCommandId) => {
+  const responseInvalid = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.COMMAND_PROTOCOL_INVALID);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+    || Object.keys(payload).some((key) => !OPEN_SANDBOX_COMMAND_STATUS_KEYS.has(key))
+    || !Object.hasOwn(payload, 'id')
+    || !Object.hasOwn(payload, 'running')
+    || typeof payload.id !== 'string'
+    || payload.id !== requestedCommandId
+    || typeof payload.running !== 'boolean') {
+    throw responseInvalid();
+  }
+
+  if (Object.hasOwn(payload, 'content') && typeof payload.content !== 'string') {
+    throw responseInvalid();
+  }
+  if (Object.hasOwn(payload, 'error')
+    && payload.error !== null
+    && typeof payload.error !== 'string') {
+    throw responseInvalid();
+  }
+  for (const timestampKey of ['started_at', 'finished_at']) {
+    const timestamp = payload[timestampKey];
+    if (Object.hasOwn(payload, timestampKey)
+      && timestamp !== null
+      && (!Number.isSafeInteger(timestamp) || timestamp < 0)) {
+      throw responseInvalid();
+    }
+  }
+
+  const hasExitCode = Object.hasOwn(payload, 'exit_code');
+  const exitCode = hasExitCode ? payload.exit_code : null;
+  if (exitCode !== null && !Number.isSafeInteger(exitCode)) throw responseInvalid();
+  const errorText = typeof payload.error === 'string' ? payload.error.trim() : '';
+
+  if (payload.running) {
+    if (exitCode !== null || errorText) throw responseInvalid();
+    return normalizeBridgeCommandResult({
+      commandId: requestedCommandId,
+      status: 'running',
+      exitCode: null,
+    });
+  }
+  if (exitCode === 0) {
+    if (errorText) throw responseInvalid();
+    return normalizeBridgeCommandResult({
+      commandId: requestedCommandId,
+      status: 'completed',
+      exitCode: 0,
+    });
+  }
+  if (exitCode !== null) {
+    return normalizeBridgeCommandResult({
+      commandId: requestedCommandId,
+      status: 'failed',
+      exitCode,
+    });
+  }
+  if (!errorText) throw responseInvalid();
+  return normalizeBridgeCommandResult({
+    commandId: requestedCommandId,
+    status: 'failed',
+    exitCode: null,
+  });
+};
 
 const toOpenSandboxMetadata = (metadata) => Object.freeze({
   [OWNERSHIP_LABELS.environment]: metadata.environment,
@@ -525,9 +600,6 @@ export const createOpenSandboxProvider = ({
       throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
     }
     const pagination = payload.pagination;
-    const expectedTotalPages = pagination.totalItems === 0
-      ? 0
-      : Math.ceil(pagination.totalItems / input.pageSize);
     if (!Number.isSafeInteger(pagination.page)
       || pagination.page !== input.page
       || !Number.isSafeInteger(pagination.pageSize)
@@ -536,11 +608,24 @@ export const createOpenSandboxProvider = ({
       || pagination.totalItems < 0
       || !Number.isSafeInteger(pagination.totalPages)
       || pagination.totalPages < 0
-      || pagination.totalPages !== expectedTotalPages
-      || typeof pagination.hasNextPage !== 'boolean'
+      || typeof pagination.hasNextPage !== 'boolean') {
+      throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+    }
+    const expectedTotalPages = pagination.totalItems === 0
+      ? 0
+      : Math.ceil(pagination.totalItems / input.pageSize);
+    const pageExists = pagination.totalItems === 0
+      ? pagination.page === 1
+      : pagination.page <= expectedTotalPages;
+    const expectedItemCount = pagination.totalItems === 0
+      ? 0
+      : (pagination.page < expectedTotalPages
+        ? input.pageSize
+        : pagination.totalItems - ((expectedTotalPages - 1) * input.pageSize));
+    if (pagination.totalPages !== expectedTotalPages
+      || !pageExists
       || pagination.hasNextPage !== (pagination.page < pagination.totalPages)
-      || payload.items.length > input.pageSize
-      || payload.items.length > pagination.totalItems) {
+      || payload.items.length !== expectedItemCount) {
       throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
     }
     const items = payload.items.map((item) => Object.freeze({
@@ -746,7 +831,7 @@ export const createOpenSandboxProvider = ({
   };
 
   const parseSSECommand = async (response, signal) => {
-    const responseInvalid = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.RESPONSE_INVALID);
+    const responseInvalid = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.COMMAND_PROTOCOL_INVALID);
     const contentType = response.headers.get('content-type');
     if (typeof contentType !== 'string'
       || !/^\s*text\/event-stream\s*(?:;\s*[!#$%&'*+.^_`|~0-9A-Za-z-]+\s*=\s*(?:[!#$%&'*+.^_`|~0-9A-Za-z-]+|"(?:[\t !#-\[\]-~]|\\[\t !-~])*")\s*)*$/i.test(contentType)) {
@@ -852,7 +937,31 @@ export const createOpenSandboxProvider = ({
         throw responseInvalid();
       }
       if (event.results !== undefined && !Array.isArray(event.results)) throw responseInvalid();
-      if (event.error !== undefined && typeof event.error !== 'string') throw responseInvalid();
+      if (event.type !== 'error' && Object.hasOwn(event, 'error')) throw responseInvalid();
+    };
+    const parseRawError = (event) => {
+      if (Object.keys(event).some((key) => !['type', 'error', 'timestamp'].includes(key))
+        || !Object.hasOwn(event, 'error')
+        || !isRecord(event.error)
+        || Object.keys(event.error).some((key) => !OPEN_SANDBOX_COMMAND_ERROR_KEYS.has(key))
+        || !Object.hasOwn(event.error, 'ename')
+        || !Object.hasOwn(event.error, 'evalue')
+        || typeof event.error.ename !== 'string'
+        || typeof event.error.evalue !== 'string'
+        || (Object.hasOwn(event.error, 'traceback')
+          && (!Array.isArray(event.error.traceback)
+            || event.error.traceback.some((line) => typeof line !== 'string')))) {
+        throw responseInvalid();
+      }
+      if (event.error.ename !== 'CommandExecError') return null;
+      if (!/^-?(?:0|[1-9]\d*)$/.test(event.error.evalue)) {
+        const numericValue = Number(event.error.evalue.trim());
+        if (event.error.evalue.trim() && Number.isFinite(numericValue)) throw responseInvalid();
+        return null;
+      }
+      const exitCode = Number(event.error.evalue);
+      if (!Number.isSafeInteger(exitCode) || exitCode === 0) throw responseInvalid();
+      return exitCode;
     };
     const processRawFrame = (lines) => {
       if (lines.length !== 1 || !lines[0].trim()) throw responseInvalid();
@@ -874,7 +983,10 @@ export const createOpenSandboxProvider = ({
       if (commandId === null) throw responseInvalid();
       if (event.type === 'execution_complete' || event.type === 'error') {
         if (rawTerminal !== null) throw responseInvalid();
-        rawTerminal = event.type;
+        rawTerminal = Object.freeze({
+          event: event.type === 'execution_complete' ? 'accepted' : 'failed',
+          exitCode: event.type === 'error' ? parseRawError(event) : null,
+        });
       }
     };
     const processCanonicalFrame = (lines) => {
@@ -900,7 +1012,7 @@ export const createOpenSandboxProvider = ({
       if (typeof payloadCommandId !== 'string'
         || !payloadCommandId.trim()
         || typeof payloadEvent !== 'string'
-        || (hasExitCode && payload.exitCode !== null && !Number.isInteger(payload.exitCode))) {
+        || (hasExitCode && payload.exitCode !== null && !Number.isSafeInteger(payload.exitCode))) {
         throw responseInvalid();
       }
       canonicalResult = normalizeSSECommandResult({
@@ -994,19 +1106,30 @@ export const createOpenSandboxProvider = ({
         throw responseInvalid();
       }
       if (mode === 'raw') {
-        if (commandId === null || rawTerminal === null) throw responseInvalid();
+        if (commandId === null) throw responseInvalid();
+        if (rawTerminal === null) {
+          throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.COMMAND_TERMINAL_MISSING);
+        }
         return normalizeSSECommandResult({
           commandId,
-          event: rawTerminal === 'execution_complete' ? 'accepted' : 'failed',
-          exitCode: null,
+          event: rawTerminal.event,
+          exitCode: rawTerminal.exitCode,
         });
       }
       if (mode === 'canonical' && canonicalResult !== null) return canonicalResult;
+      if (mode === 'canonical') {
+        throw new SandboxRuntimeError(SANDBOX_ERROR_CODES.COMMAND_TERMINAL_MISSING);
+      }
       throw responseInvalid();
     } catch (error) {
       if (signal.aborted) signal.throwIfAborted();
       if (error instanceof Error && error.name === 'AbortError') throw error;
       await cancelReader();
+      if (error instanceof SandboxRuntimeError
+        && (error.code === SANDBOX_ERROR_CODES.COMMAND_TERMINAL_MISSING
+          || error.code === SANDBOX_ERROR_CODES.COMMAND_PROTOCOL_INVALID)) {
+        throw error;
+      }
       throw responseInvalid();
     } finally {
       signal.removeEventListener('abort', cancelOnAbort);
@@ -1085,11 +1208,7 @@ export const createOpenSandboxProvider = ({
       expectedStatus: 200,
       parseJson: true,
     });
-    return normalizeBridgeCommandResult({
-      commandId: payload.commandId || commandId,
-      status: payload.status || 'unknown',
-      exitCode: payload.exitCode !== undefined ? payload.exitCode : null,
-    });
+    return normalizeOpenSandboxCommandStatus(payload, commandId);
   };
 
   const commandLog = async (rawHandle, commandId, cursor) => {

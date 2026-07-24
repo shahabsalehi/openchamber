@@ -149,6 +149,11 @@ const SAFE_REASON_CODES = new Set([
   'pagination_incomplete',
   'candidate_limit',
   'resource_mismatch',
+  'command_rejected',
+  'command_nonzero',
+  'command_terminal_missing',
+  'command_timeout',
+  'command_protocol_invalid',
   'command_failed',
   'egress_allowed',
   'cleanup_unconfirmed',
@@ -308,12 +313,32 @@ const mapFailureCode = (error) => {
       return 'request_timeout';
     case SANDBOX_ERROR_CODES.RESPONSE_INVALID:
       return 'response_invalid';
+    case SANDBOX_ERROR_CODES.COMMAND_TERMINAL_MISSING:
+      return 'response_invalid';
+    case SANDBOX_ERROR_CODES.COMMAND_PROTOCOL_INVALID:
+      return 'response_invalid';
     case SANDBOX_ERROR_CODES.PROVIDER_FAILURE:
       return 'provider_failure';
     default:
       return 'internal_failure';
   }
 };
+
+const mapCommandFailureCode = (error) => {
+  if (error instanceof LiveAcceptanceError) return error.code;
+  if (!(error instanceof SandboxRuntimeError)) return 'command_rejected';
+  if (error.code === SANDBOX_ERROR_CODES.REQUEST_TIMEOUT) return 'command_timeout';
+  if (error.code === SANDBOX_ERROR_CODES.COMMAND_TERMINAL_MISSING) {
+    return 'command_terminal_missing';
+  }
+  if (error.code === SANDBOX_ERROR_CODES.COMMAND_PROTOCOL_INVALID
+    || error.code === SANDBOX_ERROR_CODES.RESPONSE_INVALID) {
+    return 'command_protocol_invalid';
+  }
+  return 'command_rejected';
+};
+
+const commandFailure = (error) => new LiveAcceptanceError(mapCommandFailureCode(error));
 
 const isAmbiguousMutationError = (error) => error instanceof SandboxRuntimeError
   && [
@@ -967,22 +992,49 @@ const reconcileVerifiedOwnership = async (options) => {
   return verified;
 };
 
-const pollCommand = async ({ provider, handle, commandId, signal, clock, requireRunning }) => {
+const pollCommand = async ({
+  provider,
+  handle,
+  commandId,
+  signal,
+  clock,
+  requireRunning,
+  nonzeroFailureCode,
+}) => {
   for (let attempt = 0; attempt < COMMAND_MAX_POLLS; attempt += 1) {
     if (signal.aborted) throw new LiveAcceptanceError('interrupted');
-    const result = await provider.command.commandStatus(handle, commandId);
-    if (result.commandId !== commandId) throw new LiveAcceptanceError('response_invalid');
+    let result;
+    try {
+      result = await provider.command.commandStatus(handle, commandId);
+    } catch (error) {
+      throw commandFailure(error);
+    }
+    if (!result || typeof result !== 'object' || Array.isArray(result)
+      || result.commandId !== commandId
+      || !['running', 'completed', 'failed'].includes(result.status)
+      || (result.exitCode !== null && !Number.isSafeInteger(result.exitCode))) {
+      throw new LiveAcceptanceError('command_protocol_invalid');
+    }
+    if (result.status === 'running' && result.exitCode !== null) {
+      throw new LiveAcceptanceError('command_protocol_invalid');
+    }
+    if (result.status === 'completed' && result.exitCode !== 0) {
+      throw new LiveAcceptanceError('command_protocol_invalid');
+    }
+    if (result.status === 'failed') {
+      if (result.exitCode === 0) throw new LiveAcceptanceError('command_protocol_invalid');
+      throw new LiveAcceptanceError(result.exitCode === null ? 'command_failed' : nonzeroFailureCode);
+    }
     if (requireRunning && result.status === 'running') return result;
     if (!requireRunning && result.status === 'completed') return result;
-    if (result.status === 'failed' || result.status === 'unknown'
-      || (requireRunning && result.status === 'completed')) {
-      throw new LiveAcceptanceError('command_failed');
+    if (requireRunning && result.status === 'completed') {
+      throw new LiveAcceptanceError('command_rejected');
     }
     if (attempt + 1 < COMMAND_MAX_POLLS) {
       await waitFor(COMMAND_POLL_DELAY_MS, signal, clock);
     }
   }
-  throw new LiveAcceptanceError('request_timeout');
+  throw new LiveAcceptanceError('command_timeout');
 };
 
 const createCheckState = () => {
@@ -1107,9 +1159,11 @@ export const runOpenSandboxLiveAcceptance = async ({
         set(name, 'skipped', 'optional_unsupported');
         return true;
       }
-      set(name, 'failed', normalPhase.signal.aborted
-        ? (signal?.aborted ? 'interrupted' : 'request_timeout')
-        : mapFailureCode(error));
+      set(name, 'failed', error instanceof LiveAcceptanceError
+        ? error.code
+        : (normalPhase.signal.aborted
+          ? (signal?.aborted ? 'interrupted' : 'request_timeout')
+          : mapFailureCode(error)));
       normalAllowed = false;
       return false;
     }
@@ -1135,21 +1189,49 @@ export const runOpenSandboxLiveAcceptance = async ({
     commandArtifacts.push(Object.freeze({ handle, commandId }));
   };
 
-  const startBackgroundCommand = async ({ command, requireRunning }) => {
+  const startBackgroundCommand = async ({
+    command,
+    requireRunning,
+    nonzeroFailureCode = 'command_nonzero',
+  }) => {
     if (!provider?.command || typeof provider.command.runBackground !== 'function'
       || typeof provider.command.commandStatus !== 'function') {
       throw new OptionalCapabilityUnavailable();
     }
-    const result = await provider.command.runBackground(mainRecord.handle, {
-      command,
-      timeout: 10,
-    });
+    let result;
+    try {
+      result = await provider.command.runBackground(mainRecord.handle, {
+        command,
+        timeout: 10,
+      });
+    } catch (error) {
+      throw commandFailure(error);
+    }
+    if (!result || typeof result !== 'object' || Array.isArray(result)
+      || typeof result.commandId !== 'string'
+      || !result.commandId.trim()
+      || result.commandId !== result.commandId.trim()
+      || !['accepted', 'completed', 'failed'].includes(result.event)
+      || (result.exitCode !== null && !Number.isSafeInteger(result.exitCode))) {
+      throw new LiveAcceptanceError('command_protocol_invalid');
+    }
     registerCommandArtifact(mainRecord.handle, result.commandId);
-    if (result.event === 'failed') throw new LiveAcceptanceError('command_failed');
+    if (result.event === 'accepted' && result.exitCode !== null) {
+      throw new LiveAcceptanceError('command_protocol_invalid');
+    }
+    if (result.event === 'failed') {
+      if (result.exitCode === 0) throw new LiveAcceptanceError('command_protocol_invalid');
+      throw new LiveAcceptanceError(result.exitCode === null ? 'command_failed' : nonzeroFailureCode);
+    }
     if (requireRunning && result.event === 'completed') {
-      throw new LiveAcceptanceError('command_failed');
+      throw new LiveAcceptanceError('command_rejected');
     }
     if (!requireRunning && result.event === 'completed') {
+      if (result.exitCode !== 0) {
+        throw new LiveAcceptanceError(result.exitCode === null
+          ? 'command_protocol_invalid'
+          : nonzeroFailureCode);
+      }
       return Object.freeze({
         commandId: result.commandId,
         status: 'completed',
@@ -1163,6 +1245,7 @@ export const runOpenSandboxLiveAcceptance = async ({
       signal: normalPhase.signal,
       clock,
       requireRunning,
+      nonzeroFailureCode,
     });
   };
 
@@ -1176,7 +1259,6 @@ export const runOpenSandboxLiveAcceptance = async ({
       return true;
     } catch (error) {
       if (error instanceof SandboxRuntimeError && error.code === SANDBOX_ERROR_CODES.NOT_FOUND) {
-        confirmedAbsent.add(entry.handle);
         return true;
       }
       destroyUnknown.add(entry.handle);
@@ -1401,8 +1483,9 @@ export const runOpenSandboxLiveAcceptance = async ({
       const result = await startBackgroundCommand({
         command: DENY_EGRESS_COMMAND,
         requireRunning: false,
+        nonzeroFailureCode: 'egress_allowed',
       });
-      if (result.status !== 'completed') throw new LiveAcceptanceError('command_failed');
+      if (result.status !== 'completed') throw new LiveAcceptanceError('command_protocol_invalid');
       if (result.exitCode !== 0) throw new LiveAcceptanceError('egress_allowed');
       return 'ok';
     });
@@ -1493,7 +1576,6 @@ export const runOpenSandboxLiveAcceptance = async ({
       clock,
     });
     requestBudget.beginCleanup(cleanupPhase.signal);
-    let cleanupConfirmed = true;
     let finalScansComplete = false;
     try {
       for (const artifact of commandArtifacts) {
@@ -1503,7 +1585,7 @@ export const runOpenSandboxLiveAcceptance = async ({
         try {
           await provider.command.interruptCommand(artifact.handle, artifact.commandId);
         } catch {
-          cleanupConfirmed = false;
+          continue;
         }
       }
 
@@ -1513,18 +1595,16 @@ export const runOpenSandboxLiveAcceptance = async ({
           try {
             await reconcileAndRecord(kind, metadata, cleanupPhase.signal, 1);
           } catch {
-            cleanupConfirmed = false;
+            continue;
           }
         }
 
         for (const entry of cleanupLedger.values()) {
-          const destroyed = await destroyOnce(entry, cleanupPhase.signal);
-          if (!destroyed) cleanupConfirmed = false;
+          await destroyOnce(entry, cleanupPhase.signal);
         }
 
         for (const entry of cleanupLedger.values()) {
-          const absent = await confirmAbsent(entry.handle, cleanupPhase.signal);
-          if (!absent) cleanupConfirmed = false;
+          await confirmAbsent(entry.handle, cleanupPhase.signal);
         }
 
         let leftovers = 0;
@@ -1541,7 +1621,6 @@ export const runOpenSandboxLiveAcceptance = async ({
             leftovers += candidates.length;
           } catch {
             scansComplete = false;
-            cleanupConfirmed = false;
           }
         }
         if (scansComplete && leftovers === 0) {
@@ -1553,7 +1632,7 @@ export const runOpenSandboxLiveAcceptance = async ({
         }
       }
     } catch {
-      cleanupConfirmed = false;
+      finalScansComplete = false;
     } finally {
       cleanupPhase.cleanup();
     }
@@ -1570,10 +1649,11 @@ export const runOpenSandboxLiveAcceptance = async ({
       else if (destroyAttempts.has(mainRecord.handle)) set('get_after_delete', 'failed', 'cleanup_unconfirmed');
     }
 
-    if (cleanupConfirmed
-      && finalScansComplete
+    const everyKnownHandleAbsent = Array.from(cleanupLedger.keys())
+      .every((handle) => confirmedAbsent.has(handle));
+    if (finalScansComplete
       && destroyUnknown.size === 0
-      && cleanupLedger.size === confirmedAbsent.size) {
+      && everyKnownHandleAbsent) {
       set('final_no_owned_leftovers', 'passed', 'ok');
     } else {
       set('final_no_owned_leftovers', 'failed', destroyUnknown.size > 0
