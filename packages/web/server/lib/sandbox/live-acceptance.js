@@ -57,19 +57,7 @@ const MAIN_ENTRYPOINT = Object.freeze([
   'setInterval(() => {}, 1000)',
 ]);
 
-const ECHO_SERVER_COMMAND = [
-  "node -e \"const http=require('node:http')",
-  "crypto=require('node:crypto')",
-  `reply='${HTTP_ECHO_TEXT}'`,
-  "server=http.createServer((_req,res)=>{res.writeHead(200,{'content-type':'text/plain'});res.end(reply)})",
-  "server.on('upgrade',(req,socket)=>{const key=req.headers['sec-websocket-key'];if(typeof key!=='string'){socket.destroy();return}",
-  "const accept=crypto.createHash('sha1').update(key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64')",
-  "socket.write('HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: '+accept+'\\r\\n\\r\\n')",
-  "socket.once('data',buf=>{if(buf.length<6){socket.destroy();return}const length=buf[1]&127;if(length>125||buf.length<6+length){socket.destroy();return}",
-  "const mask=buf.subarray(2,6),payload=Buffer.from(buf.subarray(6,6+length));for(let i=0;i<payload.length;i+=1)payload[i]^=mask[i%4]",
-  "socket.write(Buffer.concat([Buffer.from([129,payload.length]),payload]))})})",
-  `server.listen(${ECHO_PORT},'0.0.0.0')\"`,
-].join(';');
+const ECHO_SERVER_COMMAND = "node -e \"const http=require('node:http'),crypto=require('node:crypto'),reply='openchamber-stage7b-http';const server=http.createServer((req,res)=>{res.writeHead(200,{'content-type':'text/plain'});res.end(reply)});server.on('upgrade',(req,socket)=>{const key=req.headers['sec-websocket-key'];if(typeof key!=='string'){socket.destroy();return}const accept=crypto.createHash('sha1').update(key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');socket.write('HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: '+accept+'\\r\\n\\r\\n');let data=Buffer.alloc(0);socket.on('data',chunk=>{data=Buffer.concat([data,chunk]);if(data.length<6)return;const length=data[1]&127;if((data[0]&15)!==1||(data[1]&128)===0||length>125||data.length<6+length){socket.destroy();return}const mask=data.subarray(2,6),payload=Buffer.from(data.subarray(6,6+length));for(let i=0;i<payload.length;i+=1)payload[i]^=mask[i%4];socket.end(Buffer.concat([Buffer.from([129,payload.length]),payload]))})});server.on('error',()=>process.exit(1));server.listen(18080,'0.0.0.0')\"";
 
 const DENY_EGRESS_COMMAND = [
   "node -e \"const http=require('node:http')",

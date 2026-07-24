@@ -40,6 +40,7 @@ const OPEN_SANDBOX_COMMAND_STATUS_KEYS = new Set([
   'finished_at',
 ]);
 const OPEN_SANDBOX_COMMAND_ERROR_KEYS = new Set(['ename', 'evalue', 'traceback']);
+const MAX_RFC3339_TIMESTAMP_LENGTH = 35;
 const MAX_FILE_DOWNLOAD_BYTES = 1024 * 1024;
 const FIXED_WORKSPACE_ROOT = '/workspace/project';
 const LIFECYCLE_POLL_MAX_ATTEMPTS = 20;
@@ -164,6 +165,34 @@ const normalizeOpenSandboxRecord = (payload, now) => normalizeProviderRecord({
   expiresAt: payload.expiresAt,
 }, now);
 
+const isRfc3339Timestamp = (value) => {
+  if (typeof value !== 'string' || value.length > MAX_RFC3339_TIMESTAMP_LENGTH) return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match) return false;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, , zone] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false;
+  const daysInMonth = month === 2
+    ? (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28)
+    : ([4, 6, 9, 11].includes(month) ? 30 : 31);
+  if (day < 1 || day > daysInMonth) return false;
+  if (zone !== 'Z') {
+    const zoneHour = Number(zone.slice(1, 3));
+    const zoneMinute = Number(zone.slice(4, 6));
+    if (zoneHour > 23 || zoneMinute > 59) return false;
+  }
+  return true;
+};
+
+const isOpenSandboxCommandTimestamp = (value) => value === null
+  || (Number.isSafeInteger(value) && value >= 0)
+  || isRfc3339Timestamp(value);
+
 const normalizeOpenSandboxCommandStatus = (payload, requestedCommandId) => {
   const responseInvalid = () => new SandboxRuntimeError(SANDBOX_ERROR_CODES.COMMAND_PROTOCOL_INVALID);
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)
@@ -187,8 +216,7 @@ const normalizeOpenSandboxCommandStatus = (payload, requestedCommandId) => {
   for (const timestampKey of ['started_at', 'finished_at']) {
     const timestamp = payload[timestampKey];
     if (Object.hasOwn(payload, timestampKey)
-      && timestamp !== null
-      && (!Number.isSafeInteger(timestamp) || timestamp < 0)) {
+      && !isOpenSandboxCommandTimestamp(timestamp)) {
       throw responseInvalid();
     }
   }
@@ -879,6 +907,7 @@ export const createOpenSandboxProvider = ({
       'error',
     ]);
     const canonicalKeys = new Set(['commandId', 'command_id', 'event', 'type', 'exitCode']);
+    const maxRuntimeErrorMessageBytes = MAX_SSE_FRAME_BYTES;
     const decoder = new TextDecoder('utf-8', { fatal: true });
     let mode = null;
     let totalBytes = 0;
@@ -963,9 +992,25 @@ export const createOpenSandboxProvider = ({
       if (!Number.isSafeInteger(exitCode) || exitCode === 0) throw responseInvalid();
       return exitCode;
     };
+    const isRuntimeErrorEnvelope = (event) => {
+      if (commandId === null || rawTerminal !== null
+        || Object.keys(event).length !== 2
+        || event.code !== 'RUNTIME_ERROR'
+        || typeof event.message !== 'string'
+        || !event.message.trim()
+        || Buffer.byteLength(event.message, 'utf8') > maxRuntimeErrorMessageBytes) {
+        return false;
+      }
+      return Object.hasOwn(event, 'code') && Object.hasOwn(event, 'message');
+    };
     const processRawFrame = (lines) => {
       if (lines.length !== 1 || !lines[0].trim()) throw responseInvalid();
       const event = parseJsonRecord(lines[0]);
+      if (!Object.hasOwn(event, 'type')) {
+        if (!isRuntimeErrorEnvelope(event)) throw responseInvalid();
+        rawTerminal = Object.freeze({ event: 'failed', exitCode: null });
+        return;
+      }
       if (typeof event.type !== 'string' || !rawEventTypes.has(event.type)) throw responseInvalid();
       validateOptionalRawFields(event);
 

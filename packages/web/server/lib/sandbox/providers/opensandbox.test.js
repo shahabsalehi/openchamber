@@ -1015,6 +1015,20 @@ describe('OpenSandbox bridge adapter', () => {
       expect(JSON.stringify(result)).not.toContain(providerSecret);
     });
 
+    it('maps the v1.0.21 raw RUNTIME_ERROR envelope to a failed result without retaining its message', async () => {
+      const providerSecret = 'raw-runtime-envelope-secret';
+      const provider = createCommandProvider(() => streamResponse([
+        `${JSON.stringify({ type: 'init', text: 'cmd-runtime-envelope' })}\n\n`,
+        `${JSON.stringify({ type: 'ping', text: 'pong', timestamp: 1 })}\n\n`,
+        `${JSON.stringify({ code: 'RUNTIME_ERROR', message: providerSecret })}\n\n`,
+      ]));
+
+      const result = await provider.command.runBackground('sandbox-123', { command: 'echo test' });
+
+      expect(result).toEqual({ commandId: 'cmd-runtime-envelope', event: 'failed', exitCode: null });
+      expect(JSON.stringify(result)).not.toContain(providerSecret);
+    });
+
     it.each([
       ['malformed raw JSON', () => streamResponse(['{"type":"init"\n\n'])],
       ['unknown raw event', () => streamResponse(['{"type":"mystery"}\n\n'])],
@@ -1047,6 +1061,46 @@ describe('OpenSandbox bridge adapter', () => {
       ['non-canonical CommandExecError exit', () => streamResponse([
         '{"type":"init","text":"cmd"}\n\n',
         '{"type":"error","error":{"ename":"CommandExecError","evalue":"03"}}\n\n',
+      ])],
+      ['raw RUNTIME_ERROR before init', () => streamResponse([
+        '{"code":"RUNTIME_ERROR","message":"must-not-escape"}\n\n',
+      ])],
+      ['raw RUNTIME_ERROR with an extra field', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"code":"RUNTIME_ERROR","message":"must-not-escape","detail":"extra"}\n\n',
+      ])],
+      ['raw RUNTIME_ERROR with an empty message', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"code":"RUNTIME_ERROR","message":"   "}\n\n',
+      ])],
+      ['raw RUNTIME_ERROR with the wrong code', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"code":"RUNTIME_FAILURE","message":"must-not-escape"}\n\n',
+      ])],
+      ['raw RUNTIME_ERROR after a terminal', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"type":"execution_complete"}\n\n',
+        '{"code":"RUNTIME_ERROR","message":"must-not-escape"}\n\n',
+      ])],
+      ['duplicate raw RUNTIME_ERROR terminal', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"code":"RUNTIME_ERROR","message":"must-not-escape"}\n\n',
+        '{"code":"RUNTIME_ERROR","message":"must-not-escape"}\n\n',
+      ])],
+      ['raw RUNTIME_ERROR with a non-string code', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"code":1,"message":"must-not-escape"}\n\n',
+      ])],
+      ['raw RUNTIME_ERROR with a non-string message', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        '{"code":"RUNTIME_ERROR","message":1}\n\n',
+      ])],
+      ['raw RUNTIME_ERROR with an oversized message', () => streamResponse([
+        '{"type":"init","text":"cmd"}\n\n',
+        `${JSON.stringify({ code: 'RUNTIME_ERROR', message: 'must-not-escape'.repeat(2_048) })}\n\n`,
+      ])],
+      ['RUNTIME_ERROR envelope in canonical framing', () => streamResponse([
+        'data: {"code":"RUNTIME_ERROR","message":"must-not-escape"}\n\n',
       ])],
       ['unknown raw field', () => streamResponse([
         '{"type":"init","text":"cmd","providerSecret":"must-not-escape"}\n\n',
@@ -1280,6 +1334,28 @@ describe('OpenSandbox bridge adapter', () => {
         { commandId: 'cmd-1', status: 'running', exitCode: null },
       ],
       [
+        'RFC3339Nano timestamps',
+        {
+          id: 'cmd-1',
+          running: false,
+          exit_code: 0,
+          started_at: '2026-07-22T00:00:00.123456789Z',
+          finished_at: '2026-07-22T02:03:04.5+07:30',
+        },
+        { commandId: 'cmd-1', status: 'completed', exitCode: 0 },
+      ],
+      [
+        'RFC3339 negative timezone offset timestamps',
+        {
+          id: 'cmd-1',
+          running: false,
+          exit_code: 0,
+          started_at: '2026-07-22T00:00:00-07:30',
+          finished_at: '2026-07-22T00:00:01.123456789-07:30',
+        },
+        { commandId: 'cmd-1', status: 'completed', exitCode: 0 },
+      ],
+      [
         'completed',
         { id: 'cmd-1', running: false, exit_code: 0, started_at: 1, finished_at: 2 },
         { commandId: 'cmd-1', status: 'completed', exitCode: 0 },
@@ -1340,6 +1416,24 @@ describe('OpenSandbox bridge adapter', () => {
         exit_code: 0,
         finished_at: Number.MAX_SAFE_INTEGER + 1,
       }],
+      ...[
+        '2026-02-29T00:00:00Z',
+        '2024-02-30T00:00:00Z',
+        '2026-04-31T00:00:00Z',
+        '2026-01-01T24:00:00Z',
+        '2026-01-01T00:60:00Z',
+        '2026-01-01T00:00:60Z',
+        '2026-01-01T00:00:00+24:00',
+        '2026-01-01T00:00:00+00:60',
+        '2026-01-01T00:00:00.1234567890Z',
+        ' 2026-01-01T00:00:00Z',
+        '2026-01-01T00:00:00Z ',
+      ].map((timestamp) => [
+        `invalid RFC3339 timestamp ${timestamp}`,
+        { id: 'cmd-1', running: false, exit_code: 0, started_at: timestamp },
+      ]),
+      ['non-string timestamp object', { id: 'cmd-1', running: false, exit_code: 0, started_at: {} }],
+      ['non-string timestamp boolean', { id: 'cmd-1', running: false, exit_code: 0, finished_at: true }],
     ])('rejects official status with %s before generic normalization', async (_label, payload) => {
       const provider = createCommandProvider(() => Response.json(payload));
       await expectCommandProtocolInvalid(

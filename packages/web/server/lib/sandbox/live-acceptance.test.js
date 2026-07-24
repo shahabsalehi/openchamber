@@ -212,9 +212,13 @@ const createFakeLane = (options = {}) => {
           exit_code: kind === 'egress' && options.commandScenario !== 'timeout'
             ? (options.egressAllowed ? 9 : 0)
             : null,
-          error: null,
-          started_at: 1,
-          finished_at: kind === 'echo' || options.commandScenario === 'timeout' ? null : 2,
+          error: options.commandScenario === 'runtime_error' && kind === 'echo'
+            ? COMMAND_ERROR_SECRET
+            : null,
+          started_at: '2026-07-22T00:00:00.123456789Z',
+          finished_at: kind === 'echo' || options.commandScenario === 'timeout'
+            ? null
+            : '2026-07-22T00:00:01+00:00',
         });
         if (options.ambiguousCommandStart && kind === 'echo') {
           throw new Error(PROVIDER_BODY_SECRET);
@@ -222,6 +226,7 @@ const createFakeLane = (options = {}) => {
         if (options.commandScenario === 'nonzero' && kind === 'echo') {
           return new Response([
             JSON.stringify({ type: 'init', text: commandId }),
+            JSON.stringify({ type: 'ping', text: 'pong', timestamp: 1 }),
             JSON.stringify({
               type: 'error',
               error: {
@@ -239,6 +244,18 @@ const createFakeLane = (options = {}) => {
         if (options.commandScenario === 'terminal_missing' && kind === 'echo') {
           return new Response([
             JSON.stringify({ type: 'init', text: commandId }),
+            JSON.stringify({ type: 'ping', text: 'pong', timestamp: 1 }),
+            '',
+          ].join('\n\n'), {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          });
+        }
+        if (options.commandScenario === 'runtime_error' && kind === 'echo') {
+          return new Response([
+            JSON.stringify({ type: 'init', text: commandId }),
+            JSON.stringify({ type: 'ping', text: 'pong', timestamp: 1 }),
+            JSON.stringify({ code: 'RUNTIME_ERROR', message: COMMAND_ERROR_SECRET }),
             '',
           ].join('\n\n'), {
             status: 200,
@@ -247,6 +264,7 @@ const createFakeLane = (options = {}) => {
         }
         return new Response([
           JSON.stringify({ type: 'init', text: commandId }),
+          JSON.stringify({ type: 'ping', text: 'pong', timestamp: 1 }),
           JSON.stringify({ type: 'execution_complete', text: '' }),
           '',
         ].join('\n\n'), {
@@ -601,6 +619,19 @@ describe('Stage 7B OpenSandbox live acceptance gate', () => {
       .not.toBe(mainBody.metadata[OWNERSHIP_LABELS.operation]);
     expect(mainBody).not.toHaveProperty('pids');
     expect(mainBody).not.toHaveProperty('noNewPrivileges');
+    const echoCommandCall = lane.calls.find((call) => (
+      call.method === 'POST'
+      && /\/port\/44772\/command$/.test(new URL(call.url).pathname)
+      && !call.body.includes('example.com')
+    ));
+    const echoCommand = JSON.parse(echoCommandCall.body).command;
+    expect(echoCommand).toMatch(/^node -e "/);
+    expect(echoCommand).toContain("require('node:http')");
+    expect(echoCommand).toContain("require('node:crypto')");
+    expect(echoCommand).toContain("server.on('upgrade'");
+    expect(echoCommand).toContain("server.on('error',()=>process.exit(1))");
+    expect(echoCommand).toContain("server.listen(18080,'0.0.0.0')");
+    expect(echoCommand).not.toContain('\n');
 
     const unauthenticatedCalls = lane.calls.filter((call) => (
       call.url.endsWith('/health') && call.headers['open-sandbox-api-key'] === undefined
@@ -653,6 +684,7 @@ describe('Stage 7B OpenSandbox live acceptance gate', () => {
     ['nonzero', 'http_routing_headers', 'command_nonzero'],
     ['terminal_missing', 'http_routing_headers', 'command_terminal_missing'],
     ['protocol_invalid', 'http_routing_headers', 'command_protocol_invalid'],
+    ['runtime_error', 'http_routing_headers', 'command_failed'],
   ])('reports a fixed redacted %s execd acceptance failure', async (commandScenario, checkName, code) => {
     const lane = createFakeLane({ commandScenario });
 

@@ -907,14 +907,14 @@ mutation outcome, or unconfirmed cleanup makes `ready: false`.
 
 The main create requests exactly CPU `250m`, memory `128Mi`, a finite TTL no
 greater than 900 seconds, and `{ defaultAction: 'deny', egress: [] }`. The gate
-starts one hardcoded bounded Node HTTP/WebSocket echo server through existing
-execd command support and probes the adapter-resolved endpoint with every opaque
-routing header. It also starts one hardcoded bounded Node command against the
+starts one static Node-built-in HTTP/WebSocket echo server through existing execd
+command support and probes the adapter-resolved endpoint with every opaque
+routing header; listen failure exits nonzero. It also starts one hardcoded bounded Node command against the
 fixed harmless `http://example.com/` URL and requires that command to fail to
 connect. Missing required execd/HTTP evidence fails readiness; optional
 WebSocket absence does not manufacture evidence.
 
-OpenSandbox execd labels command streams as `text/event-stream` but emits its
+OpenSandbox execd v1.0.21 labels command streams as `text/event-stream` but emits its
 documented events as raw JSON records separated by a blank line. The adapter
 also preserves strict compatibility with its existing canonical SSE `data:`
 record consumer. It locks to one framing mode on the first non-empty protocol
@@ -932,8 +932,13 @@ string `ename`/`evalue` and an optional string-array traceback. Only a canonical
 safe nonzero decimal `evalue` for `CommandExecError` becomes an internal exit
 code; zero, unsafe, malformed, or contradictory numeric evidence is protocol
 invalid, while a valid nonnumeric remote start/runtime failure remains
-`failed` with no exit code. An official `execution_complete` carries no exit
-code and closes the background launch stream as `accepted`.
+`failed` with no exit code. After raw `init`, the exact
+`{ code: 'RUNTIME_ERROR', message }` envelope is also a terminal failed result
+only when it has exactly those keys, the code is exact, and its bounded nonblank
+string message is discarded. It is rejected before init, in canonical framing,
+or with extra, duplicate, or out-of-order terminal data. An official
+`execution_complete` carries no exit code and closes the background launch stream
+as `accepted`.
 
 The separately bounded status endpoint is authoritative after background
 acceptance. Its official JSON fields are exactly `id`, `content`, `running`,
@@ -943,8 +948,11 @@ the requested command ID. `exit_code` is absent/null or a safe integer:
 running requires no exit, stopped zero is completed, stopped nonzero is failed,
 and stopped without an exit is failed only when a nonempty string `error`
 exists. Contradictory combinations are protocol invalid. Optional timestamps,
-when non-null, must be nonnegative safe integers. Optional command, error, and
-timestamp values are type-checked but discarded.
+when non-null, are established nonnegative safe integers or validated and
+discarded RFC3339/RFC3339Nano strings. String timestamps require semantically
+valid dates, times, and timezone offsets with no whitespace or precision beyond
+nanoseconds. Optional command, error, and timestamp values are type-checked but
+discarded.
 
 The live report maps request/non-2xx rejection, validated nonzero exit, a
 missing terminal, bounded request or poll exhaustion, and malformed protocol to
